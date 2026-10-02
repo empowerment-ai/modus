@@ -210,6 +210,7 @@ function DesignTab({ app, wf, node }: { app: App; wf: Workflow; node: UserStep }
               label={<span className="text-xs">People can hand items to a colleague in the same group</span>}
             />
           )}
+          <SeparationOfDuties app={app} wf={wf} node={node} />
         </div>
       </Section>
 
@@ -433,5 +434,46 @@ function StepFormPreview({ open, onClose, app, node }: { open: boolean; onClose:
         ))}
       </div>
     </Modal>
+  )
+}
+
+/** Four eyes: nobody who released one of the chosen steps on an item may work it here. */
+function SeparationOfDuties({ app, wf, node }: { app: App; wf: Workflow; node: UserStep }) {
+  const update = useNodeUpdater<UserStep>(app.id, wf.id, node.id)
+  const chosen = node.data.separateFrom ?? []
+  // Any people step the same item can pass through: this workflow and the others for its object type.
+  const steps = app.workflows
+    .filter((w) => w.objectTypeId === wf.objectTypeId)
+    .flatMap((w) => w.nodes.filter((n) => n.type === 'user' && n.id !== node.id).map((n) => ({ id: n.id, label: n.data.label, where: w.id === wf.id ? '' : w.name })))
+  const label = (id: string) => steps.find((x) => x.id === id)?.label ?? 'a removed step'
+  const set = (ids: string[]) => update((n) => void (n.data.separateFrom = ids.length ? ids : undefined))
+  return (
+    <div className="rounded-lg border border-slate-200 p-2.5">
+      <div className="text-xs font-medium text-slate-700">Separation of duties</div>
+      <p className="mt-0.5 text-[11px] leading-snug text-slate-500">Someone else must do this step than whoever released these steps on the same item (four eyes).</p>
+      {chosen.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {chosen.map((id) => (
+            <span key={id} className="inline-flex items-center gap-1 rounded bg-slate-100 py-0.5 pr-0.5 pl-1.5 text-[11px] font-medium text-slate-700">
+              Not the person who did “{label(id)}”
+              <IconButton label={`Remove ${label(id)}`} className="h-5 w-5" onClick={() => set(chosen.filter((x) => x !== id))}>
+                <Trash2 size={11} />
+              </IconButton>
+            </span>
+          ))}
+        </div>
+      )}
+      <Select className="mt-2 h-7 text-xs" value="" onChange={(e) => e.target.value && set([...chosen, e.target.value])} aria-label="Add a step to keep separate from">
+        <option value="">{chosen.length ? 'Add another step…' : 'Pick a step…'}</option>
+        {steps
+          .filter((x) => !chosen.includes(x.id))
+          .map((x) => (
+            <option key={x.id} value={x.id}>
+              {x.label}
+              {x.where ? ` (${x.where})` : ''}
+            </option>
+          ))}
+      </Select>
+    </div>
   )
 }
