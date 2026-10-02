@@ -7,7 +7,7 @@ import { Badge, Button, Card, cx, Modal } from '../../components/ui'
 import { useDesign } from '../../store/design'
 import { useUi } from '../../store/ui'
 import { CompareChart } from './CompareChart'
-import { applyPlan, describeChange, HOLDING, KPIS, type Tone, verdict } from './lab'
+import { applyPlan, HOLDING, KPIS, type Tone } from './lab'
 import { type Run, useLab } from './runs'
 
 const TONE_BOX: Record<Tone, string> = {
@@ -22,7 +22,7 @@ const TONE_ICON_COLOR: Record<Tone, string> = { good: 'text-emerald-600', bad: '
 /** Everything about one finished run: verdict, KPIs, chart, steps, apply. */
 export const Results = memo(function Results({ run, ctx }: { run: Run; ctx: Ctx }) {
   const idx = useMemo(() => buildIndex(ctx), [ctx])
-  const v = useMemo(() => verdict(run.result, run.changes, ctx), [run, ctx])
+  const v = run.verdict
   const { baseline: b, scenario: s } = run.result
   const Icon = TONE_ICON[v.tone]
   const label = (id?: Id) => (id ? (idx.node.get(id)?.node.data.label ?? 'A removed step') : undefined)
@@ -35,7 +35,7 @@ export const Results = memo(function Results({ run, ctx }: { run: Run; ctx: Ctx 
           <p className="text-sm font-medium">{v.text}</p>
           <p className="mt-0.5 text-[11px] opacity-75">
             {run.hours} simulated hours from {formatClock(run.from)}, same random numbers on both sides.
-            {run.changes.length > 0 && ` Changes: ${run.changes.map((c) => describeChange(idx, c)).join(' · ')}.`}
+            {run.labels.length > 0 && ` Changes: ${run.labels.join(' · ')}.`}
           </p>
         </div>
       </div>

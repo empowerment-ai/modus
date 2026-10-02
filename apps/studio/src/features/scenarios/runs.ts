@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { ScenarioChange, ScenarioResult } from '@throughline/core'
 import type { Id } from '@throughline/core/model/types'
+import type { Verdict } from './lab'
 
 // The lab's working state lives outside the view so a draft and recent runs
 // survive a trip to People & Security (to hire) or the designer and back.
@@ -19,6 +20,9 @@ export interface Run {
   hours: number
   changes: ScenarioChange[]
   result: ScenarioResult
+  /** Worded when the run finished, so later design edits (or applying it) don't rewrite history. */
+  labels: string[]
+  verdict: Verdict
   applied?: boolean
 }
 
