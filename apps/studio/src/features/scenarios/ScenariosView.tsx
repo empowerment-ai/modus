@@ -52,7 +52,9 @@ export function ScenariosView() {
         const live = ctxFor(appId)
         if (!sim || !live) return
         const result = runScenario(sim, live, changes, hours)
-        useLab.getState().record({ appId, from: sim.clock, hours, changes, result })
+        const idx = buildIndex(live)
+        const labels = changes.map((c) => describeChange(idx, c))
+        useLab.getState().record({ appId, from: sim.clock, hours, changes, result, labels, verdict: verdict(result, changes, live) })
       } catch (e) {
         useUi.getState().toast(`The run failed: ${e instanceof Error ? e.message : String(e)}`, 'warn')
       } finally {
@@ -225,7 +227,6 @@ function signed(n: number, fmt: (n: number) => string = (x) => x.toLocaleString(
 
 /** The last few runs, side by side, so fixes can be compared. */
 function RunHistory({ runs, selectedId, ctx }: { runs: Run[]; selectedId?: number; ctx: Ctx }) {
-  const idx = useMemo(() => buildIndex(ctx), [ctx])
   const appId = ctx.app.id
   return (
     <Card className="overflow-hidden">
@@ -253,7 +254,7 @@ function RunHistory({ runs, selectedId, ctx }: { runs: Run[]; selectedId?: numbe
           <tbody>
             {[...runs].reverse().map((r, i) => {
               const { baseline: b, scenario: s } = r.result
-              const tone = verdict(r.result, r.changes, ctx).tone
+              const tone = r.verdict.tone
               return (
                 <tr
                   key={r.id}
@@ -266,8 +267,8 @@ function RunHistory({ runs, selectedId, ctx }: { runs: Run[]; selectedId?: numbe
                       {r.applied && <Badge tone="green">Applied</Badge>}
                     </span>
                   </td>
-                  <td className="max-w-[420px] truncate px-2 py-2 text-slate-600" title={r.changes.map((c) => describeChange(idx, c)).join(' · ')}>
-                    {r.changes.length ? r.changes.map((c) => describeChange(idx, c)).join(' · ') : 'As designed (no changes)'}
+                  <td className="max-w-[420px] truncate px-2 py-2 text-slate-600" title={r.labels.join(' · ')}>
+                    {r.labels.length ? r.labels.join(' · ') : 'As designed (no changes)'}
                   </td>
                   <td className="px-2 py-2 text-right text-slate-600">{r.hours}h</td>
                   <td className="px-2 py-2 text-right text-slate-700">{signed(s.completed - b.completed)}</td>
