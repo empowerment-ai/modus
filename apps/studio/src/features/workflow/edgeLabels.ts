@@ -1,5 +1,8 @@
 import { describeCondition } from '@throughline/core/model/conditions'
+import { subflowOutcomes } from '@throughline/core/model/templates'
+import { AUTO_FAILURE, AUTO_SUCCESS } from '@throughline/core/model/types'
 import type { App, User, WfEdge, Workflow } from '@throughline/core/model/types'
+import { isRuled } from './model'
 
 export type EdgeTone = 'outcome-ok' | 'outcome-bad' | 'outcome' | 'rule' | 'default' | 'warn' | 'plain'
 
@@ -10,9 +13,10 @@ export interface EdgeLabel {
   order?: number
 }
 
-const BAD = /reject|deny|return|cancel/i
+const BAD = /reject|deny|return|cancel|fail/i
 const GOOD = /approv|resolv|order|accept|complete|done|ok/i
 
+/** Rule branches of a decision (or inclusive split): ruled paths in order, then the default. */
 export function decisionBranches(wf: Workflow, nodeId: string): WfEdge[] {
   const out = wf.edges.filter((e) => e.source === nodeId)
   return out.sort((a, b) => {
@@ -30,9 +34,23 @@ export function edgeLabel(app: App, wf: Workflow, edge: WfEdge, users: User[]): 
     if (!outcome) return siblings.length > 1 ? { text: 'Pick an outcome', tone: 'warn' } : undefined
     return { text: outcome.label, tone: BAD.test(outcome.label) ? 'outcome-bad' : GOOD.test(outcome.label) ? 'outcome-ok' : 'outcome' }
   }
-  if (src.type === 'decision') {
+  if (src.type === 'auto') {
+    if (edge.data.outcomeId === AUTO_FAILURE) return { text: 'Failed', tone: 'outcome-bad' }
+    if (edge.data.outcomeId === AUTO_SUCCESS) return { text: 'Succeeded', tone: 'outcome-ok' }
+    // A plain path is the success path; name it only when a Failed path sits beside it.
+    return wf.edges.some((e) => e.source === src.id && e.data.outcomeId === AUTO_FAILURE) ? { text: 'Succeeded', tone: 'outcome-ok' } : undefined
+  }
+  if (src.type === 'subflow') {
+    const key = edge.data.outcomeId
+    if (!key) return undefined
+    const child = app.workflows.find((w) => w.id === src.data.workflowId)
+    const ending = subflowOutcomes(child).find((o) => o.key === key || o.result === key)
+    if (child && !ending) return { text: `${key} (no such ending)`, tone: 'warn' }
+    return { text: key, tone: (ending && ending.result !== 'completed') || BAD.test(key) ? 'outcome-bad' : 'outcome-ok' }
+  }
+  if (isRuled(src)) {
     const branches = decisionBranches(wf, src.id)
-    const order = branches.indexOf(edge) + 1
+    const order = src.type === 'decision' ? branches.indexOf(edge) + 1 : undefined
     if (edge.data.isDefault) return { text: 'Otherwise', tone: 'default' }
     const type = app.objectTypes.find((t) => t.id === wf.objectTypeId)
     if (!type || !edge.data.condition || edge.data.condition.rules.length === 0) return { text: 'Set a rule', tone: 'warn', order }

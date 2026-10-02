@@ -1,6 +1,6 @@
 import { Trash2, X } from 'lucide-react'
 import { type ReactNode, useCallback } from 'react'
-import { IconButton } from '../../../components/ui'
+import { cx, IconButton } from '../../../components/ui'
 import type { Id, WfNode, Workflow } from '@throughline/core/model/types'
 import { useDesign } from '../../../store/design'
 import { useSim } from '../../../store/sim'
@@ -67,7 +67,23 @@ export function deleteNode(appId: Id, wf: Workflow, nodeId: Id) {
   useUi.getState().select(null)
 }
 
-export function NumberInput({ value, onChange, min = 0, max, step = 1, suffix, className }: { value: number | undefined; onChange: (v: number | undefined) => void; min?: number; max?: number; step?: number; suffix?: string; className?: string }) {
+export function NumberInput({
+  value,
+  onChange,
+  min = 0,
+  max,
+  step = 1,
+  suffix,
+  className,
+}: {
+  value: number | undefined
+  onChange: (v: number | undefined) => void
+  min?: number
+  max?: number
+  step?: number
+  suffix?: string
+  className?: string
+}) {
   return (
     <div className={`relative ${className ?? ''}`}>
       <input
@@ -82,4 +98,41 @@ export function NumberInput({ value, onChange, min = 0, max, step = 1, suffix, c
       {suffix && <span className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 text-xs text-slate-400">{suffix}</span>}
     </div>
   )
+}
+
+/** One of a few mutually exclusive ways a step can behave, as a selectable card. */
+export function ChoiceCard({
+  active,
+  title,
+  text,
+  hint,
+  icon,
+  onClick,
+  children,
+}: {
+  active: boolean
+  title: ReactNode
+  text: ReactNode
+  hint?: string
+  icon?: ReactNode
+  onClick: () => void
+  children?: ReactNode
+}) {
+  return (
+    <div className={cx('rounded-lg border transition-colors', active ? 'border-brand-500 bg-brand-50/50 ring-1 ring-brand-500' : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50')}>
+      <button type="button" onClick={onClick} aria-pressed={active} className="w-full px-2.5 py-2 text-left">
+        <span className="flex items-center gap-1.5 text-[12.5px] font-medium text-slate-800">
+          {icon && <span className={active ? 'text-brand-600' : 'text-slate-400'}>{icon}</span>}
+          {title}
+          {hint && <span className="ml-auto text-[10.5px] font-normal text-slate-400">{hint}</span>}
+        </span>
+        <span className="mt-0.5 block text-[11.5px] leading-snug text-slate-600">{text}</span>
+      </button>
+      {active && children && <div className="px-2.5 pb-2.5">{children}</div>}
+    </div>
+  )
+}
+
+export function Body({ children }: { children: ReactNode }) {
+  return <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
 }

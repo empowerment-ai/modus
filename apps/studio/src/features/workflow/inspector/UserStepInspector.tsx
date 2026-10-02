@@ -4,13 +4,14 @@ import { FormRenderer } from '../../../components/FormRenderer'
 import { DISTRIBUTION } from '../../../components/icons'
 import { Button, cx, Field, IconButton, Input, Modal, Segmented, Select, Textarea, Toggle } from '../../../components/ui'
 import { generateData } from '@throughline/core/engine/generate'
-import type { App, Distribution, FieldAccess, Outcome, WfNode, Workflow } from '@throughline/core/model/types'
+import type { App, Distribution, Escalation, FieldAccess, Outcome, WfNode, Workflow } from '@throughline/core/model/types'
 import { uid } from '@throughline/core/model/util'
 import { useDesign } from '../../../store/design'
 import { useSimView } from '../../../store/sim'
 import { useUi } from '../../../store/ui'
 import { ActionsEditor } from './ActionsEditor'
 import { deleteNode, NumberInput, PanelHeader, Section, useNodeUpdater } from './common'
+import { ExpandToSubflow } from './ExpandToSubflow'
 import { WorkPanel } from './WorkPanel'
 
 type UserStep = Extract<WfNode, { type: 'user' }>
@@ -55,6 +56,16 @@ function DesignTab({ app, wf, node }: { app: App; wf: Workflow; node: UserStep }
   const [preview, setPreview] = useState(false)
   const outgoing = wf.edges.filter((e) => e.source === node.id)
   const totalWeight = d.outcomes.reduce((s, o) => s + Math.max(0, o.weight), 0)
+  const teams = groups.filter((g) => g.kind !== 'distribution' || g.id === d.groupId)
+  const distributionGroups = groups.filter((g) => g.kind === 'distribution')
+  const dispatchers = groups.find((g) => g.id === d.distributorGroupId)
+  const personFields = type?.fields.filter((f) => f.type === 'user') ?? []
+  const escalation = d.escalation ?? { raisePriority: true, toDistributors: false }
+
+  const setEscalation = (patch: Partial<Escalation>) =>
+    update((n) => {
+      n.data.escalation = { ...(n.data.escalation ?? { raisePriority: true, toDistributors: false }), ...patch }
+    })
 
   const setOutcome = (id: string, patch: Partial<Outcome>) =>
     update((n) => {
@@ -98,6 +109,19 @@ function DesignTab({ app, wf, node }: { app: App; wf: Workflow; node: UserStep }
           })}
         </div>
         <div className="space-y-3">
+          {d.distribution === 'field' && (
+            <Field label="Person field" hint={`The person named in this field gets the item. When it is empty, it is load balanced across ${group?.name ?? 'the group below'}.`}>
+              <Select value={d.assigneeFieldId ?? ''} onChange={(e) => update((n) => void (n.data.assigneeFieldId = e.target.value || undefined))}>
+                <option value="">Choose a person field…</option>
+                {personFields.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.label}
+                  </option>
+                ))}
+              </Select>
+              {personFields.length === 0 && <span className="mt-1 block text-[11px] text-amber-700">{type?.name ?? 'This object type'} has no person fields yet. Add one in Object Types.</span>}
+            </Field>
+          )}
           {d.distribution === 'direct' ? (
             <Field label="Assign every item to">
               <Select value={d.userId ?? ''} onChange={(e) => update((n) => void (n.data.userId = e.target.value || undefined))}>
@@ -110,10 +134,13 @@ function DesignTab({ app, wf, node }: { app: App; wf: Workflow; node: UserStep }
               </Select>
             </Field>
           ) : (
-            <Field label="Group" hint={group ? `${group.memberIds.length} members${group.supervisorId ? ` · supervisor ${users.find((u) => u.id === group.supervisorId)?.name}` : ''}` : undefined}>
+            <Field
+              label={d.distribution === 'field' ? 'Fallback group' : 'Group'}
+              hint={group ? `${group.memberIds.length} members${group.supervisorId ? ` · supervisor ${users.find((u) => u.id === group.supervisorId)?.name}` : ''}` : undefined}
+            >
               <Select value={d.groupId ?? ''} onChange={(e) => update((n) => void (n.data.groupId = e.target.value || undefined))}>
                 <option value="">Choose a group…</option>
-                {groups.map((g) => (
+                {teams.map((g) => (
                   <option key={g.id} value={g.id}>
                     {g.name} ({g.memberIds.length})
                   </option>
@@ -123,7 +150,27 @@ function DesignTab({ app, wf, node }: { app: App; wf: Workflow; node: UserStep }
           )}
           {d.distribution === 'manager' && (
             <>
-              <Field label="Supervisor who hands out the work">
+              <Field
+                label="Who hands out the work"
+                hint={
+                  dispatchers
+                    ? `Any of ${dispatchers.memberIds
+                        .map((id) => users.find((u) => u.id === id)?.name)
+                        .filter(Boolean)
+                        .join(', ')} can hand items to ${group?.name ?? 'the group'}.`
+                    : 'The supervisor hands out every item.'
+                }
+              >
+                <Select value={d.distributorGroupId ?? ''} onChange={(e) => update((n) => void (n.data.distributorGroupId = e.target.value || undefined))}>
+                  <option value="">Supervisor only</option>
+                  {distributionGroups.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.name} ({g.memberIds.length} dispatchers)
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Supervisor" hint={dispatchers ? 'Steps in when no dispatcher is set up.' : undefined}>
                 <Select value={d.supervisorId ?? group?.supervisorId ?? ''} onChange={(e) => update((n) => void (n.data.supervisorId = e.target.value || undefined))}>
                   <option value="">Choose…</option>
                   {users.map((u) => (
@@ -134,17 +181,34 @@ function DesignTab({ app, wf, node }: { app: App; wf: Workflow; node: UserStep }
                 </Select>
               </Field>
               <div className="rounded-lg bg-slate-50 p-2.5">
-                <Toggle checked={d.autoDistribute} onChange={(on) => update((n) => void (n.data.autoDistribute = on))} label={<span className="text-xs">Simulate the supervisor handing out work</span>} />
+                <Toggle
+                  checked={d.autoDistribute}
+                  onChange={(on) => update((n) => void (n.data.autoDistribute = on))}
+                  label={<span className="text-xs">Simulate the {dispatchers ? 'dispatchers' : 'supervisor'} handing out work</span>}
+                />
                 {d.autoDistribute ? (
                   <div className="mt-2 flex items-center gap-2 text-xs text-slate-600">
                     every
-                    <NumberInput className="w-[100px]" value={d.distributeEveryMinutes} min={5} suffix="min" onChange={(v) => update((n) => void (n.data.distributeEveryMinutes = Math.max(5, v ?? 30)))} />
+                    <NumberInput
+                      className="w-[100px]"
+                      value={d.distributeEveryMinutes}
+                      min={5}
+                      suffix="min"
+                      onChange={(v) => update((n) => void (n.data.distributeEveryMinutes = Math.max(5, v ?? 30)))}
+                    />
                   </div>
                 ) : (
-                  <p className="mt-1.5 text-[11px] text-slate-500">Work waits until you assign it from the Live work tab.</p>
+                  <p className="mt-1.5 text-[11px] text-slate-500">Work waits until you assign it from the Live work tab, or a dispatcher does in the Workspace.</p>
                 )}
               </div>
             </>
+          )}
+          {d.distribution !== 'direct' && (
+            <Toggle
+              checked={d.allowDelegate ?? true}
+              onChange={(on) => update((n) => void (n.data.allowDelegate = on))}
+              label={<span className="text-xs">People can hand items to a colleague in the same group</span>}
+            />
           )}
         </div>
       </Section>
@@ -158,6 +222,34 @@ function DesignTab({ app, wf, node }: { app: App; wf: Workflow; node: UserStep }
             <NumberInput value={d.slaHours} min={0} suffix="hours" onChange={(v) => update((n) => void (n.data.slaHours = v || undefined))} />
           </Field>
         </div>
+      </Section>
+
+      <Section title="Escalation" hint="What happens to an item that sits at this step too long.">
+        <Toggle
+          checked={!!d.escalateAfterHours}
+          onChange={(on) =>
+            update((n) => {
+              n.data.escalateAfterHours = on ? (n.data.slaHours ?? 24) : undefined
+              if (on) n.data.escalation ??= { raisePriority: true, toDistributors: false }
+            })
+          }
+          label={<span className="text-sm">Escalate items that wait too long</span>}
+        />
+        {d.escalateAfterHours ? (
+          <div className="mt-3 space-y-2.5">
+            <Field label="Escalate after">
+              <NumberInput value={d.escalateAfterHours} min={0.25} step={0.25} suffix="hours" onChange={(v) => update((n) => void (n.data.escalateAfterHours = Math.max(0.25, v ?? 0.25)))} />
+            </Field>
+            <Toggle checked={escalation.raisePriority} onChange={(on) => setEscalation({ raisePriority: on })} label={<span className="text-xs">Raise its priority one level</span>} />
+            <Toggle checked={escalation.toDistributors} onChange={(on) => setEscalation({ toDistributors: on })} label={<span className="text-xs">Send it back to be handed out again</span>} />
+            {escalation.toDistributors && (
+              <p className="-mt-1 pl-11 text-[11px] text-slate-500">Takes it out of the person’s basket so a dispatcher (or the supervisor) can give it to someone else.</p>
+            )}
+            <Field label="Notify" hint="Who hears about it, e.g. the AP Supervisor. Leave empty for no message.">
+              <Input value={escalation.notify ?? ''} placeholder="Nobody" onChange={(e) => setEscalation({ notify: e.target.value || undefined })} />
+            </Field>
+          </div>
+        ) : null}
       </Section>
 
       <Section
@@ -241,6 +333,8 @@ function DesignTab({ app, wf, node }: { app: App; wf: Workflow; node: UserStep }
           <StepFormPreview open={preview} onClose={() => setPreview(false)} app={app} node={node} />
         </Section>
       )}
+
+      <ExpandToSubflow app={app} wf={wf} nodeId={node.id} />
     </>
   )
 }
