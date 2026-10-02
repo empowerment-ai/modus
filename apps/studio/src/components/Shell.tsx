@@ -23,9 +23,9 @@ import {
 } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { PRODUCT } from '../brand'
-import { blankApp } from '@throughline/core/model/seed'
-import type { Design } from '@throughline/core/model/types'
-import { formatClock, formatDuration } from '@throughline/core/model/util'
+import { blankApp } from '@modus-bpm/core/model/seed'
+import type { Design } from '@modus-bpm/core/model/types'
+import { formatClock, formatDuration } from '@modus-bpm/core/model/util'
 import { useApp, useDesign } from '../store/design'
 import { SPEEDS, useSim, useSimView } from '../store/sim'
 import { type Mode, useUi, type View } from '../store/ui'
@@ -87,7 +87,7 @@ function TopBar() {
       </div>
       <div className="leading-tight">
         <div className="text-sm font-semibold text-slate-900">{PRODUCT.name}</div>
-        <div className="text-[10.5px] font-medium tracking-wide text-slate-400 uppercase">{PRODUCT.tagline}</div>
+        <div className="hidden text-[10.5px] font-medium tracking-wide text-slate-400 uppercase min-[1440px]:block">{PRODUCT.tagline}</div>
       </div>
       <div className="mx-2 h-6 w-px bg-slate-200" />
       <ModeSwitch />
@@ -149,7 +149,7 @@ function AppSwitcher() {
         <AppWindow size={15} style={{ color: app?.color }} />
         <span className="leading-tight">
           <span className="block text-[10px] font-medium tracking-wide text-slate-400 uppercase">Application</span>
-          <span className="block text-sm font-semibold text-slate-800">{app?.name}</span>
+          <span className="block max-w-[190px] truncate text-sm font-semibold text-slate-800" title={app?.name}>{app?.name}</span>
         </span>
         <ChevronDown size={14} className="ml-1 text-slate-400" />
       </button>
@@ -263,7 +263,7 @@ function SimControls() {
 
   return (
     <div className="flex items-center gap-2.5">
-      <div className="hidden items-center gap-3 pr-1 text-xs xl:flex">
+      <div className="hidden items-center gap-3 pr-1 text-xs min-[1760px]:flex">
         <Kpi label="In flight" value={view?.active ?? 0} />
         <Kpi label="Completed" value={view?.completed ?? 0} tone="green" />
         <Kpi label="Rejected" value={view?.rejected ?? 0} tone="red" />
@@ -271,10 +271,25 @@ function SimControls() {
         {(view?.stuck ?? 0) > 0 && <Kpi label="Stuck" value={view!.stuck} tone="red" />}
       </div>
       <div className="h-6 w-px bg-slate-200" />
-      <div className="rounded-md bg-slate-900 px-2.5 py-1 font-mono text-xs text-slate-100 tabular-nums" title="Simulated time">
+      <div className="rounded-md bg-slate-900 px-2.5 py-1 font-mono text-xs whitespace-nowrap text-slate-100 tabular-nums" title="Simulated time">
         {formatClock(view?.clock ?? 0)}
       </div>
-      <Segmented size="sm" value={speed} onChange={setSpeed} options={SPEEDS.map((s) => ({ value: s.value, label: s.label, title: `${s.label} of simulated time` }))} />
+      <div className="hidden min-[1440px]:block">
+        <Segmented size="sm" value={speed} onChange={setSpeed} options={SPEEDS.map((s) => ({ value: s.value, label: s.label, title: `${s.label} of simulated time` }))} />
+      </div>
+      {/* Narrower screens: the same choice as a compact menu. */}
+      <select
+        value={speed}
+        onChange={(e) => setSpeed(Number(e.target.value))}
+        aria-label="Simulation speed"
+        className="h-7 rounded-md border border-slate-200 bg-white px-1.5 text-xs text-slate-700 min-[1440px]:hidden"
+      >
+        {SPEEDS.map((s) => (
+          <option key={s.value} value={s.value}>
+            {s.label}
+          </option>
+        ))}
+      </select>
       <Button variant="ghost" size="sm" icon={<FastForward size={14} />} onClick={() => fastForward(60)} title="Jump ahead one simulated hour">
         1h
       </Button>
@@ -286,13 +301,14 @@ function SimControls() {
         variant="ghost"
         size="sm"
         icon={<RotateCcw size={14} />}
-        title="Clear all simulated work for this application"
+        title="Reset: clear all simulated work for this application"
+        aria-label="Reset the simulation"
         onClick={() => {
           reset()
           useUi.getState().toast('Simulation reset: all simulated work cleared.')
         }}
       >
-        Reset
+        <span className="hidden min-[1440px]:inline">Reset</span>
       </Button>
       <Button variant={running ? 'secondary' : 'primary'} onClick={toggle} icon={running ? <Pause size={14} /> : <Play size={14} />} className="w-[118px]" title="Space bar">
         {running ? 'Pause' : 'Run simulation'}

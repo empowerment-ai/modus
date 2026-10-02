@@ -1,4 +1,4 @@
-import type { WfEdge, WfNode, XY } from '@throughline/core/model/types'
+import type { WfEdge, WfNode, XY } from '@modus-bpm/core/model/types'
 
 // A thumbnail of a template's map: each step drawn at its canvas position with
 // a simple shape per type, scaled to fit. Labels are left to the hover title.

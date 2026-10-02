@@ -1,7 +1,7 @@
 import { GitBranch, ShieldCheck } from 'lucide-react'
 import { TYPE_ICONS, TypeIcon } from '../../components/icons'
 import { cx, Field, Input, Select } from '../../components/ui'
-import type { App, ObjectType } from '@throughline/core/model/types'
+import type { App, ObjectType } from '@modus-bpm/core/model/types'
 import { useDesign } from '../../store/design'
 import { useUi } from '../../store/ui'
 

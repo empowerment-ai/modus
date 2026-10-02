@@ -1,4 +1,4 @@
-import type { ActionDef, App, FieldDef, FieldType, Id, ObjectType } from '@throughline/core/model/types'
+import type { ActionDef, App, FieldDef, FieldType, Id, ObjectType } from '@modus-bpm/core/model/types'
 
 function actionUses(a: ActionDef, fieldId: Id): boolean {
   return (a.kind === 'setField' && a.fieldId === fieldId) || (a.kind === 'integration' && a.resultFieldId === fieldId)

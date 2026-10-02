@@ -4,8 +4,8 @@
 // the clock, writes every new audit entry to the event log, and tells listeners
 // (the live stream) what changed.
 
-import { advance, type Ctx, type Design, type Id, newSim, type SimState } from '@throughline/core'
-import { seedDesign } from '@throughline/core/model/seed'
+import { advance, type Ctx, type Design, type Id, newSim, type SimState } from '@modus-bpm/core'
+import { seedDesign } from '@modus-bpm/core/model/seed'
 import type { LoggedEvent, Storage } from './ports'
 
 export interface RuntimeOptions {

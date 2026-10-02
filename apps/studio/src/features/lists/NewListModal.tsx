@@ -1,7 +1,7 @@
 import { ChevronRight, Plus, X } from 'lucide-react'
 import { Fragment, useEffect, useState } from 'react'
 import { Button, Field, IconButton, Input, Modal, Segmented } from '../../components/ui'
-import { uid } from '@throughline/core/model/util'
+import { uid } from '@modus-bpm/core/model/util'
 import { useDesign } from '../../store/design'
 import { useUi } from '../../store/ui'
 

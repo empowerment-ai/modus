@@ -1,6 +1,6 @@
 import { Eye, EyeOff, type LucideIcon, Pencil, X } from 'lucide-react'
-import { fieldVerdicts, type FieldVerdict, reachable } from '@throughline/core'
-import type { FieldAccess, Group, Id, ObjectType, User, WfNode, Workflow } from '@throughline/core/model/types'
+import { fieldVerdicts, type FieldVerdict, reachable } from '@modus-bpm/core'
+import type { FieldAccess, Group, Id, ObjectType, User, WfNode, Workflow } from '@modus-bpm/core/model/types'
 import { cx, Select } from '../../components/ui'
 
 export type UserNode = Extract<WfNode, { type: 'user' }>

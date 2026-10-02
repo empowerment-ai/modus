@@ -1,6 +1,6 @@
-import { buildIndex, serviceOf, type NodeMetrics, type SimView } from '@throughline/core'
-import type { App, Design, Id, ServiceDef, WfNode, Workflow } from '@throughline/core/model/types'
-import { formatDuration } from '@throughline/core/model/util'
+import { buildIndex, serviceOf, type NodeMetrics, type SimView } from '@modus-bpm/core'
+import type { App, Design, Id, ServiceDef, WfNode, Workflow } from '@modus-bpm/core/model/types'
+import { formatDuration } from '@modus-bpm/core/model/util'
 import { useUi } from '../../store/ui'
 
 export interface Bottleneck {

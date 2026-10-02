@@ -1,6 +1,6 @@
 import { Gauge, type LucideIcon, Plus, Power, Shuffle, Timer, TrendingUp, Users, X } from 'lucide-react'
-import type { ScenarioChange } from '@throughline/core'
-import type { App, Design, Distribution, Id, ServiceDef, WfNode } from '@throughline/core/model/types'
+import type { ScenarioChange } from '@modus-bpm/core'
+import type { App, Design, Distribution, Id, ServiceDef, WfNode } from '@modus-bpm/core/model/types'
 import { DISTRIBUTION } from '../../components/icons'
 import { Button, IconButton, Input, Select } from '../../components/ui'
 import { servicesUsedBy } from './lab'

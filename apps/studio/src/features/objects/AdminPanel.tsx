@@ -14,8 +14,8 @@ import {
   type Result,
   type SimObject,
   type Token,
-} from '@throughline/core'
-import type { App, Group, Outcome, Priority, User, WfNode } from '@throughline/core/model/types'
+} from '@modus-bpm/core'
+import type { App, Group, Outcome, Priority, User, WfNode } from '@modus-bpm/core/model/types'
 import { useSim } from '../../store/sim'
 import { useUi } from '../../store/ui'
 

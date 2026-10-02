@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { Id, Priority } from '@throughline/core/model/types'
+import type { Id, Priority } from '@modus-bpm/core/model/types'
 import { useSim } from '../../store/sim'
 import { useUi } from '../../store/ui'
 
@@ -80,7 +80,7 @@ export const useWorkspace = create<WorkspaceStore>()(
         }),
     }),
     {
-      name: 'throughline-workspace',
+      name: 'modus-workspace',
       version: 1,
       partialize: (s) => ({ page: s.page, sort: s.sort, introDismissed: s.introDismissed }),
     },

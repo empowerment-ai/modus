@@ -18,7 +18,7 @@ import {
 import { Bot, GitFork, GitMerge, Hourglass, Layers, LibraryBig, type LucideIcon, Play, Plus, Square, UserRound } from 'lucide-react'
 import { type DragEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { cx } from '../../components/ui'
-import type { App, WfNodeType, Workflow, XY } from '@throughline/core/model/types'
+import type { App, WfNodeType, Workflow, XY } from '@modus-bpm/core/model/types'
 import { useDesign } from '../../store/design'
 import { useSim, useSimView } from '../../store/sim'
 import { useUi } from '../../store/ui'

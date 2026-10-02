@@ -29,9 +29,9 @@ import {
   Workflow as WorkflowIcon,
 } from 'lucide-react'
 import { cx } from '../../components/ui'
-import type { AuditEntry, AuditKind, SimObject } from '@throughline/core'
-import type { App } from '@throughline/core/model/types'
-import { formatClock } from '@throughline/core/model/util'
+import type { AuditEntry, AuditKind, SimObject } from '@modus-bpm/core'
+import type { App } from '@modus-bpm/core/model/types'
+import { formatClock } from '@modus-bpm/core/model/util'
 
 const KIND: Record<AuditKind, { icon: LucideIcon; tone: string; label: string }> = {
   created: { icon: Sparkles, tone: 'bg-brand-50 text-brand-600', label: 'Created' },

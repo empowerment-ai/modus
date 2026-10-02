@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { SimState } from '@throughline/core'
-import { formatClock } from '@throughline/core/model/util'
+import type { SimState } from '@modus-bpm/core'
+import { formatClock } from '@modus-bpm/core/model/util'
 
 const HEIGHT = 210
 const PAD = { left: 34, right: 12, top: 12, bottom: 24 }

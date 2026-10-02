@@ -4,7 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 import { viteSingleFile } from 'vite-plugin-singlefile'
 
 // `standalone` builds one self-contained HTML file that runs offline (double-click to open).
-// `BASE_PATH` lets CI publish the demo under a sub-path such as /throughline/ on GitHub Pages.
+// `BASE_PATH` lets CI publish the demo under a sub-path such as /modus/ on GitHub Pages.
 export default defineConfig(({ mode }) => ({
   base: process.env.BASE_PATH ?? '/',
   plugins: [react(), tailwindcss(), ...(mode === 'standalone' ? [viteSingleFile()] : [])],

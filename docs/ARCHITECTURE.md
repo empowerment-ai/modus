@@ -1,13 +1,13 @@
 # Architecture
 
-Throughline has one idea at its center: **the model is the system**. The process an
+Modus has one idea at its center: **the model is the system**. The process an
 administrator draws is the thing that runs, the thing that is simulated, and the thing
 that is monitored. There is no second copy that can drift.
 
 ```mermaid
 flowchart LR
   D[("Design<br/>apps · object types · lists<br/>workflows · people & groups<br/>services · templates")]
-  K["@throughline/core<br/>engine (pure TypeScript)"]
+  K["@modus-bpm/core<br/>engine (pure TypeScript)"]
   D --> K
   K --> S["Simulate<br/>in the browser:<br/>simulated people,<br/>arrivals, services"]
   K --> L["Run live<br/>on the server:<br/>real people (API),<br/>real workers (jobs)"]
@@ -149,7 +149,7 @@ flowchart TB
     AN[Analytics<br/>OCEL/XES export · calibration · what-if jobs]
     ID[Identity<br/>OIDC/SAML · SCIM group sync]
   end
-  CORE["@throughline/core engine<br/>(same code as the browser simulator)"]
+  CORE["@modus-bpm/core engine<br/>(same code as the browser simulator)"]
   subgraph Ports
     P1[DesignStore] --- P2[StateStore / projections] --- P3[EventLog] --- P4[Outbox · Timers · JobClaim]
   end
@@ -271,7 +271,7 @@ step is bound to a two-GPU worker pool, and the simulation shows it becoming the
 
 The classic approach — generating a table per object type and altering it whenever a field is
 added — needs runtime DDL, per-type migrations and DBA change control for every design edit.
-EAV (one row per field value) avoids DDL but makes every query a pile of self-joins. Throughline
+EAV (one row per field value) avoids DDL but makes every query a pile of self-joins. Modus
 takes the hybrid that modern databases make cheap:
 
 - **Event log + projections, in one transaction.** Every command appends the item's new events
@@ -319,7 +319,7 @@ Core server tier feasible; see [backend options](research/backend-options.md#3-m
 
 | Layer | Choice | Status |
 | --- | --- | --- |
-| Engine | Own deterministic TypeScript engine (`@throughline/core`), shared by simulator and server | **Done** (prototype) |
+| Engine | Own deterministic TypeScript engine (`@modus-bpm/core`), shared by simulator and server | **Done** (prototype) |
 | Studio + Workspace | React 19, Vite, Tailwind CSS 4, React Flow 12, Zustand | **Done** (prototype) |
 | API edge | Node.js LTS, Fastify 5, zod 4 → OpenAPI 3.1; SSE for live updates | **Skeleton** |
 | Data access | Kysely behind storage ports; contract test suite | Planned (M2) |
@@ -333,7 +333,7 @@ Core server tier feasible; see [backend options](research/backend-options.md#3-m
 
 ## Security model
 
-- **Identity**: OIDC/SAML sign-in; directory groups mapped to Throughline groups through SCIM.
+- **Identity**: OIDC/SAML sign-in; directory groups mapped to Modus groups through SCIM.
   The prototype's persona picker and the server's `x-user-id` header are stand-ins.
 - **Authorization layers**: object-type permissions (create/read/update/delete per group); who
   may act on a work item (holder, delegate, dispatcher, supervisor, administrator); and field

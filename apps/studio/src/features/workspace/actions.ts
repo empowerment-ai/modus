@@ -1,5 +1,5 @@
-import { buildIndex, type Ctx, describeToken, findToken, type SimState, workNext } from '@throughline/core'
-import type { Id } from '@throughline/core/model/types'
+import { buildIndex, type Ctx, describeToken, findToken, type SimState, workNext } from '@modus-bpm/core'
+import type { Id } from '@modus-bpm/core/model/types'
 import { useUi } from '../../store/ui'
 import { perform } from './live'
 import { useWorkspace } from './store'

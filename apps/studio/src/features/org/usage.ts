@@ -1,5 +1,5 @@
-import { activeTokens } from '@throughline/core'
-import type { App, Design, Id, WfNode, Workflow } from '@throughline/core/model/types'
+import { activeTokens } from '@modus-bpm/core'
+import type { App, Design, Id, WfNode, Workflow } from '@modus-bpm/core/model/types'
 import { useSim } from '../../store/sim'
 import { useUi } from '../../store/ui'
 

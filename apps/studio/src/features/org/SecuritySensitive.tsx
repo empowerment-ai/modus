@@ -1,5 +1,5 @@
 import { Shield } from 'lucide-react'
-import type { Group, Id, ObjectType } from '@throughline/core/model/types'
+import type { Group, Id, ObjectType } from '@modus-bpm/core/model/types'
 import { FIELD_ICONS } from '../../components/icons'
 import { Card } from '../../components/ui'
 import { useDesign } from '../../store/design'

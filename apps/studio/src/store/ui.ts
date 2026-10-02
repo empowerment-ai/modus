@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { Id } from '@throughline/core/model/types'
+import type { Id } from '@modus-bpm/core/model/types'
 
 /** Studio is for designers and administrators; Workspace is what the people doing the work see. */
 export type Mode = 'studio' | 'workspace'
@@ -95,7 +95,7 @@ export const useUi = create<UiStore>()(
       dismiss: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
     }),
     {
-      name: 'throughline-ui',
+      name: 'modus-ui',
       version: 1,
       partialize: (s) => ({ mode: s.mode, appId: s.appId, view: s.view, workflowId: s.workflowId, trail: s.trail, typeId: s.typeId, listId: s.listId, actingAs: s.actingAs }),
     },

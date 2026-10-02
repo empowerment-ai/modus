@@ -1,6 +1,6 @@
 import { Lock, Plus, Trash2 } from 'lucide-react'
-import type { FieldLock, Group, Id, ObjectType, Workflow } from '@throughline/core/model/types'
-import { uid } from '@throughline/core/model/util'
+import type { FieldLock, Group, Id, ObjectType, Workflow } from '@modus-bpm/core/model/types'
+import { uid } from '@modus-bpm/core/model/util'
 import { Button, Card, EmptyState, IconButton, Segmented, Select } from '../../components/ui'
 import { useDesign } from '../../store/design'
 import { GroupPicker } from './SecurityShared'

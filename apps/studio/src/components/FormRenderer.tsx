@@ -1,8 +1,8 @@
 import { EyeOff, Lock, Paperclip, Upload, X } from 'lucide-react'
 import { useRef } from 'react'
-import { dependentFields, optionsForField } from '@throughline/core/model/lists'
-import { type AttachmentValue, formatBytes, formatFieldValue } from '@throughline/core/model/format'
-import type { FieldAccess, FieldDef, ListDef, ObjectType, User } from '@throughline/core/model/types'
+import { dependentFields, optionsForField } from '@modus-bpm/core/model/lists'
+import { type AttachmentValue, formatBytes, formatFieldValue } from '@modus-bpm/core/model/format'
+import type { FieldAccess, FieldDef, ListDef, ObjectType, User } from '@modus-bpm/core/model/types'
 import { cx, Input, Select, Textarea, Toggle } from './ui'
 
 // The UI is a by-product of the object type definition: this one component

@@ -1,11 +1,13 @@
-# Throughline
+# Modus
+
+*As in modus operandi: the way your organization gets things done.*
 
 **An open-source process manager where the model is the system.** Draw a process, watch work
 move through it, find the bottleneck, test a fix, and change it — on the same model that runs
 the work.
 
 <p>
-  <a href="https://empowerment-ai.github.io/throughline/"><b>Try the live demo</b></a> ·
+  <a href="https://empowerment-ai.github.io/modus/"><b>Try the live demo</b></a> ·
   <a href="docs/DEMO.md">Demo script</a> ·
   <a href="docs/CONCEPTS.md">Concepts</a> ·
   <a href="docs/ARCHITECTURE.md">Architecture</a> ·
@@ -14,7 +16,7 @@ the work.
 
 ![The studio: an invoice process with live counts, parallel steps and a subflow](docs/images/studio.jpg)
 
-Throughline is for organizations whose work moves through people and systems: approvals,
+Modus is for organizations whose work moves through people and systems: approvals,
 requests, case work — and also processes that aren't "business" at all, like camera signals
 screened by AI, enriched in parallel, and routed to the officer who should look. Business
 people can read and change every step. Administrators see the whole picture: how many items
@@ -81,7 +83,7 @@ they changed something.
 pnpm install
 pnpm dev                                   # studio at http://localhost:5180
 pnpm test                                  # engine and server tests
-pnpm --filter @throughline/server dev      # the API at http://127.0.0.1:8787/api
+pnpm --filter @modus-bpm/server dev      # the API at http://127.0.0.1:8787/api
 pnpm build:standalone                      # one self-contained HTML file (double-click to open)
 ```
 

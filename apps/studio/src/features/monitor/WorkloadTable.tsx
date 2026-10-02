@@ -1,6 +1,6 @@
 import { Avatar, Badge, cx, Meter } from '../../components/ui'
-import { findToken, type SimState, type SimView } from '@throughline/core'
-import type { App, Group, Id, User } from '@throughline/core/model/types'
+import { findToken, type SimState, type SimView } from '@modus-bpm/core'
+import type { App, Group, Id, User } from '@modus-bpm/core/model/types'
 import { useUi } from '../../store/ui'
 
 interface Row {

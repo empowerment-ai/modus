@@ -4,7 +4,7 @@
 
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { Design, Id, SimState } from '@throughline/core'
+import type { Design, Id, SimState } from '@modus-bpm/core'
 import type { DesignStore, EventLog, LoggedEvent, StateStore, Storage } from '../ports'
 
 async function readJson<T>(path: string): Promise<T | undefined> {

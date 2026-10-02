@@ -1,8 +1,8 @@
 import { ArrowLeftRight, CheckCheck, FilePlus, Flag, Hand, type LucideIcon, MoveRight, Activity, TriangleAlert, Undo2, UserPlus } from 'lucide-react'
 import { Avatar, cx, EmptyState } from '../../components/ui'
-import type { AuditKind, FeedEntry } from '@throughline/core'
-import type { Id, User } from '@throughline/core/model/types'
-import { formatClock } from '@throughline/core/model/util'
+import type { AuditKind, FeedEntry } from '@modus-bpm/core'
+import type { Id, User } from '@modus-bpm/core/model/types'
+import { formatClock } from '@modus-bpm/core/model/util'
 import { useUi } from '../../store/ui'
 
 const KIND: Partial<Record<AuditKind, { icon: LucideIcon; tone: string }>> = {

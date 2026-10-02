@@ -1,5 +1,5 @@
 import { Bot, Boxes, Globe, type LucideIcon, Mail, Network } from 'lucide-react'
-import type { ServiceDef, ServiceKind, ServiceOutput, ServiceStatus } from '@throughline/core/model/types'
+import type { ServiceDef, ServiceKind, ServiceOutput, ServiceStatus } from '@modus-bpm/core/model/types'
 
 // Plain-language labels for the service registry.
 

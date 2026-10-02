@@ -2,7 +2,7 @@
 // start triggers and what an automated step does when its call fails.
 
 import { Blocks, CalendarClock, Cpu, FileText, Globe, Hand, Inbox, type LucideIcon, Mail, OctagonPause, Radio, Route, Sparkles, Webhook } from 'lucide-react'
-import type { FailurePolicy, FieldType, ServiceKind, ServiceOutput, ServiceStatus, TriggerKind } from '@throughline/core/model/types'
+import type { FailurePolicy, FieldType, ServiceKind, ServiceOutput, ServiceStatus, TriggerKind } from '@modus-bpm/core/model/types'
 
 export const SERVICE_KIND: Record<ServiceKind, { label: string; group: string; icon: LucideIcon }> = {
   rest: { label: 'REST API', group: 'REST APIs', icon: Globe },

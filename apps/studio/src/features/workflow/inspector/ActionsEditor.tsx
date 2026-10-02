@@ -1,7 +1,7 @@
 import { Mail, PencilLine, Plug, Trash2 } from 'lucide-react'
 import { Button, IconButton, Input, Select } from '../../../components/ui'
-import type { ActionDef, ObjectType, User } from '@throughline/core/model/types'
-import { uid } from '@throughline/core/model/util'
+import type { ActionDef, ObjectType, User } from '@modus-bpm/core/model/types'
+import { uid } from '@modus-bpm/core/model/util'
 import { NumberInput } from './common'
 
 const DATE_TOKENS = [

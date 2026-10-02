@@ -1,9 +1,9 @@
 import { ChevronRight, CornerDownLeft, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { cx } from '../../components/ui'
-import { childrenOf, withoutItemTree } from '@throughline/core/model/lists'
-import type { Id, ListDef, ListItem } from '@throughline/core/model/types'
-import { uid } from '@throughline/core/model/util'
+import { childrenOf, withoutItemTree } from '@modus-bpm/core/model/lists'
+import type { Id, ListDef, ListItem } from '@modus-bpm/core/model/types'
+import { uid } from '@modus-bpm/core/model/util'
 import { useDesign } from '../../store/design'
 import { useUi } from '../../store/ui'
 

@@ -1,5 +1,5 @@
-import { buildIndex, type Ctx, distributorsOf } from '@throughline/core'
-import type { App, Group, Id, User } from '@throughline/core/model/types'
+import { buildIndex, type Ctx, distributorsOf } from '@modus-bpm/core'
+import type { App, Group, Id, User } from '@modus-bpm/core/model/types'
 
 // Who you can work as in an application, and a one-line hint of what each
 // person does there, worked out from the design (steps, dispatch, permissions).

@@ -1,6 +1,6 @@
 # Competitive analysis: BPM, workflow, and orchestration platforms
 
-Research date: 2026-10-01. Prepared for Throughline, an open-source process manager that modernizes the classic model-driven BPM tools of the 2000s.
+Research date: 2026-10-01. Prepared for Modus, an open-source process manager that modernizes the classic model-driven BPM tools of the 2000s.
 
 **How to read this document.** Vendor capabilities come from vendor documentation, release notes, and press releases, and are attributed as vendor claims where they are claims. "Users praise / complain" lines summarize public review sites (G2, Gartner Peer Insights, PeerSpot, Capterra) and are indicative, not statistically representative. Prices are list prices or third-party estimates and change often. Where something could not be verified in public sources, the text says so.
 
@@ -25,7 +25,7 @@ Research date: 2026-10-01. Prepared for Throughline, an open-source process mana
 - Work allocation in the classic BPM sense (load-balanced, queue/fetch, supervisor, direct) is deep in Pega, ServiceNow, and IBM BAW, shallow in Camunda and Power Automate, and absent in Temporal and n8n.
 - Simulation is the weakest link across the market. Bizagi simulates in its modeler before deployment; IBM and Celonis simulate inside process mining products that sit beside the engine; IBM deprecated the simulation feature inside its workflow engine. No product in our seven-product matrix runs what-if analysis directly on the live, deployed model with live data.
 - In-flight instance migration is still painful: Power Automate has none, Temporal relies on code patching or worker versioning, Camunda and Appian have migration tools with limits.
-- Open source is shrinking at the top of the market: Camunda 8 moved to a source-available license in 2024 and ended Camunda 7 Community Edition in October 2025; n8n uses a non-OSI "fair-code" license. Permissively licensed alternatives (Flowable OSS, Temporal, Operaton, Activepieces, Kestra) each cover only part of the feature set Throughline targets.
+- Open source is shrinking at the top of the market: Camunda 8 moved to a source-available license in 2024 and ended Camunda 7 Community Edition in October 2025; n8n uses a non-OSI "fair-code" license. Permissively licensed alternatives (Flowable OSS, Temporal, Operaton, Activepieces, Kestra) each cover only part of the feature set Modus targets.
 - Pricing is moving from per-user to consumption or outcome units (UiPath Platform Units, ServiceNow "assists", Temporal "actions", Pega per-case pricing for AI agents). Buyers complain about opacity across the board.
 - The clearest white space for us: an open-source, model-driven engine where the same model is executed, mined, and simulated; with first-class resource patterns (work baskets and allocation strategies); that also handles high-volume event-driven processes.
 
@@ -180,7 +180,7 @@ Research date: 2026-10-01. Prepared for Throughline, an open-source process mana
 
 Licenses below were checked against each project's repository or license page.
 
-| Project | License | Scope | Gap versus Throughline's needs |
+| Project | License | Scope | Gap versus what Modus needs |
 |---|---|---|---|
 | Camunda 8 | Camunda License 1.0 (source-available; production license required) | Full BPMN/DMN platform | Not open source for production; allocation needs custom code |
 | [Operaton](https://github.com/operaton/operaton), [CIB seven](https://github.com/cibseven/cibseven) (Camunda 7 forks) | Apache 2.0 | Embeddable BPMN/DMN engine, cockpit, tasklist | Inherits Camunda 7 design; no mining or simulation |
@@ -221,7 +221,7 @@ Licenses below were checked against each project's repository or license page.
 
 The Workflow Resource Patterns were defined by Russell, ter Hofstede, Edmond, and van der Aalst ([BETA working paper WP 127, 2004](http://www.workflowpatterns.com/documentation/documents/Resource%20Patterns%20BETA%20TR.pdf); [CAiSE 2005](http://www.workflowpatterns.com/documentation/documents/ResourcePatternsCAiSE.pdf)) and are catalogued at [workflowpatterns.com](http://www.workflowpatterns.com/patterns/resource/). The site uses "Distribution" in some names where the 2005 paper used "Allocation" (for example, WRP-1 "Direct Distribution", also known as Direct Allocation). Use these names in our docs and APIs.
 
-| Group | Patterns | Relevance to Throughline |
+| Group | Patterns | Relevance to Modus |
 |---|---|---|
 | Creation (design time) | WRP-1 Direct Distribution; WRP-2 Role-Based Distribution; WRP-3 Deferred Distribution; WRP-4 Authorization; WRP-5 Separation of Duties; WRP-6 Case Handling; WRP-7 Retain Familiar; WRP-8 Capability-Based Distribution; WRP-9 History-Based Distribution; WRP-10 Organisational Distribution; WRP-11 Automatic Execution | Direct, distribution groups, and devices map here. Retain Familiar ("same person as the previous step") and Separation of Duties ("not the same person") are commonly requested and rarely modeled cleanly. |
 | Push (system initiates) | WRP-12 Distribution by Offer, Single Resource; WRP-13 Distribution by Offer, Multiple Resources; WRP-14 Distribution by Allocation, Single Resource; WRP-15 Random Allocation; WRP-16 Round Robin Allocation; WRP-17 Shortest Queue; WRP-18 Early Distribution; WRP-19 Distribution on Enablement; WRP-20 Late Distribution | "Offer to multiple" is a shared work basket; "allocate to single" is direct or load-balanced. Shortest Queue is classic load balancing. |
@@ -398,7 +398,7 @@ An open-source process manager whose single model is executed, monitored, mined,
 6. **Licensing tightens, forks appear.** Camunda License 1.0 (2024), Camunda 7 CE end of life (October 2025) with Operaton and CIB seven forks, n8n fair-code. Permissive projects (Flowable OSS, Temporal, Kestra, Activepieces) gain attention.
 7. **Durable execution and coding agents.** Temporal's valuation rose from $1.72B (March 2025) to a reported $5B (February 2026), and Temporal ties its growth to production agent workloads. UiPath Maestro Flow and Maestro Case explicitly support coding agents across build, test, and operate.
 8. **Consolidation.** ProcessMaker and Decisions merged (November 2025); UiPath bought WorkFusion (February 2026). Mid-market BPM vendors are combining rules, IDP, and orchestration.
-9. **Object-centric event data.** OCEL 2.0 (2023) and vendor "process graphs" or "digital twins" (Celonis PI Graph) replace single-case-ID event logs. This fits Throughline's object-centric model.
+9. **Object-centric event data.** OCEL 2.0 (2023) and vendor "process graphs" or "digital twins" (Celonis PI Graph) replace single-case-ID event logs. This fits Modus's object-centric model.
 
 ## 9. Standards and references
 

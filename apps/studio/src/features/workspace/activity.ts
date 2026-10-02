@@ -1,6 +1,6 @@
 import { useMemo, useRef } from 'react'
-import type { AuditEntry, SimObject, SimState } from '@throughline/core'
-import type { Id, User } from '@throughline/core/model/types'
+import type { AuditEntry, SimObject, SimState } from '@modus-bpm/core'
+import type { Id, User } from '@modus-bpm/core/model/types'
 
 export interface Activity {
   entry: AuditEntry

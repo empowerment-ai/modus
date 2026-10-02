@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { formatClock } from '@throughline/core/model/util'
+import { formatClock } from '@modus-bpm/core/model/util'
 import { axisLabel, niceMax } from '../monitor/WipChart'
 
 type Series = Array<{ t: number; wip: number }>

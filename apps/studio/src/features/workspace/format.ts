@@ -1,5 +1,5 @@
-import { PRIORITY_RANK, type WorkItem } from '@throughline/core'
-import { formatDuration } from '@throughline/core/model/util'
+import { PRIORITY_RANK, type WorkItem } from '@modus-bpm/core'
+import { formatDuration } from '@modus-bpm/core/model/util'
 import type { BasketSort } from './store'
 
 /** "Due soon" means within the next four simulated hours. */

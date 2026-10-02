@@ -1,6 +1,6 @@
 import { ChevronRight, Plug, Plus, Search } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import type { Id, ServiceKind } from '@throughline/core/model/types'
+import type { Id, ServiceKind } from '@modus-bpm/core/model/types'
 import { Badge, Button, Card, cx, EmptyState, Input } from '../../components/ui'
 import { useApp, useDesign } from '../../store/design'
 import { useSimView } from '../../store/sim'

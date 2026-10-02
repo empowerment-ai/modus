@@ -1,6 +1,6 @@
-# Contributing to Throughline
+# Contributing to Modus
 
-Thanks for helping. Throughline is early: the studio is a working prototype, the server is a
+Thanks for helping. Modus is early: the studio is a working prototype, the server is a
 skeleton, and the [roadmap](docs/ROADMAP.md) lists what comes next.
 
 ## Set up

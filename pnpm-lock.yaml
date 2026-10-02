@@ -10,7 +10,7 @@ importers:
 
   apps/server:
     dependencies:
-      '@throughline/core':
+      '@modus-bpm/core':
         specifier: workspace:*
         version: link:../../packages/core
       fastify:
@@ -35,7 +35,7 @@ importers:
 
   apps/studio:
     dependencies:
-      '@throughline/core':
+      '@modus-bpm/core':
         specifier: workspace:*
         version: link:../../packages/core
       '@xyflow/react':

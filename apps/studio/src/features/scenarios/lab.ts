@@ -2,9 +2,9 @@
 // live bottleneck, judging a run in one sentence, and turning a run back into
 // design edits. No React here.
 
-import { applyChanges, buildIndex, type Ctx, type Index, type ScenarioChange, type ScenarioKpis, type ScenarioResult, serviceOf, type SimView } from '@throughline/core'
-import type { App, Design, Distribution, Id, ServiceDef, WfNode } from '@throughline/core/model/types'
-import { formatDuration } from '@throughline/core/model/util'
+import { applyChanges, buildIndex, type Ctx, type Index, type ScenarioChange, type ScenarioKpis, type ScenarioResult, serviceOf, type SimView } from '@modus-bpm/core'
+import type { App, Design, Distribution, Id, ServiceDef, WfNode } from '@modus-bpm/core/model/types'
+import { formatDuration } from '@modus-bpm/core/model/util'
 import { DISTRIBUTION } from '../../components/icons'
 import { useDesign } from '../../store/design'
 

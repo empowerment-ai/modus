@@ -1,8 +1,8 @@
 {
-  "name": "@throughline/core",
+  "name": "@modus-bpm/core",
   "version": "0.2.0",
   "private": true,
-  "description": "Throughline process model and engine. Pure TypeScript, no UI, no I/O: the same code runs the browser simulator and (next) the server.",
+  "description": "Modus process model and engine. Pure TypeScript, no UI, no I/O: the same code runs the browser simulator and (next) the server.",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {

@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, ChevronsUp } from 'lucide-react'
-import type { Priority } from '@throughline/core/model/types'
+import type { Priority } from '@modus-bpm/core/model/types'
 import { cx } from '../../components/ui'
 
 const STYLE: Record<Priority, { label: string; className: string; icon?: typeof ArrowUp }> = {

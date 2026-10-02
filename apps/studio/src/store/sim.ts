@@ -1,7 +1,7 @@
 import { create } from 'zustand'
-import { advance, burst, newSim, type Ctx, type SimState } from '@throughline/core'
-import { computeView, type SimView } from '@throughline/core/engine/view'
-import type { Id } from '@throughline/core/model/types'
+import { advance, burst, newSim, type Ctx, type SimState } from '@modus-bpm/core'
+import { computeView, type SimView } from '@modus-bpm/core/engine/view'
+import type { Id } from '@modus-bpm/core/model/types'
 import { useDesign } from './design'
 import { useUi } from './ui'
 

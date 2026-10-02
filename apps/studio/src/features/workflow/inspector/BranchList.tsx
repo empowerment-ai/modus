@@ -1,4 +1,4 @@
-import type { App, Id, Workflow } from '@throughline/core/model/types'
+import type { App, Id, Workflow } from '@modus-bpm/core/model/types'
 import { useDesign } from '../../../store/design'
 import { useSim } from '../../../store/sim'
 import { useUi } from '../../../store/ui'
