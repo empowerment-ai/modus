@@ -304,8 +304,8 @@ function SimControls() {
 function Kpi({ label, value, tone }: { label: string; value: ReactNode; tone?: 'green' | 'red' }) {
   return (
     <div className="leading-tight">
-      <div className="text-[10px] font-medium tracking-wide text-slate-400 uppercase">{label}</div>
-      <div className={cx('text-sm font-semibold tabular-nums', tone === 'green' ? 'text-emerald-700' : tone === 'red' ? 'text-rose-600' : 'text-slate-800')}>{value}</div>
+      <div className="text-[10px] font-medium tracking-wide whitespace-nowrap text-slate-400 uppercase">{label}</div>
+      <div className={cx('text-sm font-semibold whitespace-nowrap tabular-nums', tone === 'green' ? 'text-emerald-700' : tone === 'red' ? 'text-rose-600' : 'text-slate-800')}>{value}</div>
     </div>
   )
 }
