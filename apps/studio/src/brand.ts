@@ -1,5 +1,5 @@
-/** Working product name for the prototype. Change it here and it changes everywhere. */
+/** Product name. Change it here and it changes everywhere in the UI. */
 export const PRODUCT = {
-  name: 'Waypoint',
-  tagline: 'BPM Studio',
+  name: 'Throughline',
+  tagline: 'Process manager',
 }
