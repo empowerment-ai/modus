@@ -40,6 +40,9 @@ const PALETTE: Array<{ type: WfNodeType; label: string; hint: string; more?: str
   { type: 'start', label: 'Start', hint: 'Where new items enter', icon: Play, tone: 'bg-emerald-50 text-emerald-600' },
 ]
 
+// Fit the map beside the palette (top left), not under it.
+const FIT_PADDING = { top: '40px', right: '40px', bottom: '56px', left: '216px' } as const
+
 const DND_TYPE = 'application/x-bpm-node'
 
 export function Canvas({ app, wf }: { app: App; wf: Workflow }) {
@@ -72,7 +75,7 @@ function CanvasInner({ app, wf }: { app: App; wf: Workflow }) {
   }, [wf.nodes, wf.id, setNodes])
 
   useEffect(() => {
-    const t = setTimeout(() => fitView({ padding: 0.12, duration: 0 }), 30)
+    const t = setTimeout(() => fitView({ padding: FIT_PADDING, duration: 0 }), 30)
     return () => clearTimeout(t)
   }, [wf.id, fitView])
 
@@ -205,7 +208,7 @@ function CanvasInner({ app, wf }: { app: App; wf: Workflow }) {
         minZoom={0.3}
         maxZoom={1.75}
         fitView
-        fitViewOptions={{ padding: 0.12 }}
+        fitViewOptions={{ padding: FIT_PADDING }}
         proOptions={{ hideAttribution: true }}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#cbd5e1" />
