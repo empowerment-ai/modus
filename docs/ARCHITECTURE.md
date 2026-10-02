@@ -182,6 +182,7 @@ log, the worker job protocol, and storage ports with an in-memory/JSON adapter.
 | Area | Endpoints |
 | --- | --- |
 | Discovery | `GET /api`, `GET /api/health`, `GET /api/apps`, `GET /api/apps/:app/overview` |
+| Process mining | `GET /api/apps/:app/export/ocel` (OCEL 2.0 JSON of the event log) |
 | Items | `POST /api/apps/:app/items`, `GET /api/apps/:app/items/:id` (field-security filtered) |
 | My work | `GET …/my/basket`, `…/my/queues`, `…/my/distribution`, `…/my/requests`, `POST …/my/next` |
 | Work items | `POST …/work/:id/claim · start · save · release · return · delegate · distribute` |
@@ -328,7 +329,7 @@ Core server tier feasible; see [backend options](research/backend-options.md#3-m
 | Event ingest | NATS JetStream (incl. MQTT listener); Kafka connector optional | Planned (M5) |
 | Identity | OIDC (Keycloak, Entra ID, Login.gov), SAML; SCIM 2.0 group sync | Planned (M2–M6) |
 | Observability | OpenTelemetry traces across click → command → job → MCP call; Prometheus metrics; structured logs | Planned |
-| Process mining | OCEL 2.0 and XES (IEEE 1849-2023) export from the event log | Planned (M5) |
+| Process mining | OCEL 2.0 export from the event log (`exportOcel`); XES (IEEE 1849-2023) next | OCEL **done**; XES planned |
 
 ## Security model
 
@@ -361,7 +362,7 @@ customers who need hard separation.
 
 | | Milestone | Exit criteria |
 | --- | --- | --- |
-| **M1** | Kernel hardening | Split the engine's command handlers from the simulation drivers further (`decide/evolve` over typed events); property tests and a "one million simulated items, zero stuck tokens" fuzz run; versioned JSON Schemas for designs. *Partly done: live mode, tokens, split/join, subflows, 44 tests.* |
+| **M1** | Kernel hardening | Split the engine's command handlers from the simulation drivers further (`decide/evolve` over typed events); property tests and a "one million simulated items, zero stuck tokens" fuzz run; versioned JSON Schemas for designs. *Partly done: live mode, tokens, split/join, subflows, OCEL export, 45 tests.* |
 | **M2** | Server on Postgres | Kysely migrations; events + projections + outbox + timers with per-item locking; object types, objects, lists, attachments; OIDC login; single image + Compose. |
 | **M3** | Work service and Workspace on the server | Worklists and all distribution modes with SKIP LOCKED claims; delegation, out of office, SLA timers with business calendars; the studio's Workspace and Monitor wired to the API and the live stream. |
 | **M4** | Automation | Outbox dispatcher; REST/OpenAPI and MCP connectors; worker SDKs (TypeScript, Python, .NET, Java) from OpenAPI; retries, incidents, tracing. |

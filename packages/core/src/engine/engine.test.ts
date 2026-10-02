@@ -17,6 +17,7 @@ import {
   workRelease,
   workSave,
 } from './ops'
+import { exportOcel } from './export'
 import { runScenario } from './scenario'
 import { basketOf, computeView, distributionFor, queuesFor } from './view'
 
@@ -778,6 +779,19 @@ describe('full simulation', () => {
       expect(wrote?.userId).toBe(o.data.e_officer)
     }
     expect(v.bottleneckId).toBe('s_detect')
+  })
+
+  it('exports the event log as OCEL 2.0 for process mining', () => {
+    const ctx = seedCtx()
+    const sim = newSim('app_invoice', 2)
+    advance(sim, ctx, 4 * 60)
+    const log = exportOcel(sim, ctx)
+    expect(log.objects.filter((o) => o.type === 'Invoice')).toHaveLength(sim.created)
+    expect(log.objects.some((o) => o.type === 'Person')).toBe(true)
+    expect(log.events.length).toBe(Object.values(sim.objects).reduce((n, o) => n + o.history.length, 0))
+    expect(log.eventTypes.map((e) => e.name)).toContain('Manager approval · released')
+    const ids = new Set(log.objects.map((o) => o.id))
+    expect(log.events.every((e) => e.relationships.every((r) => ids.has(r.objectId)))).toBe(true)
   })
 
   it('bursts create work at once', () => {

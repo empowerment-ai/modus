@@ -59,7 +59,8 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | Complete audit history per item | Prototype |
 | What-if lab on the live state (staffing, handling time, arrivals, distribution, capacity, outages), apply to design | Prototype |
 | Three-layer field security enforced by the engine; security matrix; "check as a person" | Prototype |
-| Process mining export (OCEL 2.0, XES) and simulation calibrated from history | Planned (M5) |
+| Process mining export: OCEL 2.0 JSON (studio and API) | Prototype |
+| XES export; simulation calibrated from history | Planned (M5) |
 | Predicted SLA breach, AI-assisted routing suggestions | Later |
 
 ## Platform
