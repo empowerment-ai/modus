@@ -2,7 +2,7 @@ import { Scale, TriangleAlert } from 'lucide-react'
 import { useMemo } from 'react'
 import { Avatar, Badge, Button, cx, EmptyState, Meter, Select } from '../../../components/ui'
 import { DISTRIBUTION } from '../../../components/icons'
-import { adminAssign, adminRedistribute, adminReturnToPool, type SimObject } from '@throughline/core/engine/engine'
+import { activeTokens, adminAssign, adminRedistribute, adminReturnToPool, type Token } from '@throughline/core'
 import { objectTitle } from '@throughline/core/model/format'
 import type { App, User, WfNode, Workflow } from '@throughline/core/model/types'
 import { currencyShort, formatDuration } from '@throughline/core/model/util'
@@ -18,6 +18,9 @@ const STATE_BADGE: Record<string, { label: string; tone: 'slate' | 'brand' | 'gr
   assigned: { label: 'In basket', tone: 'brand' },
   working: { label: 'Working', tone: 'green' },
   stuck: { label: 'Stuck', tone: 'red' },
+  queued: { label: 'Queued', tone: 'amber' },
+  joining: { label: 'Joining', tone: 'slate' },
+  waiting: { label: 'Timer', tone: 'slate' },
 }
 
 /** Live work at a user step: who has what, and the administrator's levers to rebalance it. */
@@ -35,10 +38,9 @@ export function WorkPanel({ app, wf, node }: { app: App; wf: Workflow; node: Use
   const amountField = type?.fields.find((f) => f.type === 'currency')
 
   const items = useMemo(() => {
-    if (!sim) return [] as SimObject[]
-    return sim.activeIds
-      .map((id) => sim.objects[id]!)
-      .filter((o) => o && o.nodeId === node.id)
+    if (!sim) return [] as Token[]
+    return activeTokens(sim)
+      .filter((t) => t.nodeId === node.id)
       .sort((a, b) => a.enteredAt - b.enteredAt)
   }, [sim, node.id, view])
 
@@ -53,8 +55,9 @@ export function WorkPanel({ app, wf, node }: { app: App; wf: Workflow; node: Use
     useUi.getState().toast(moved ? `Redistributed ${moved} item${moved === 1 ? '' : 's'} evenly across ${group?.name ?? 'the group'}.` : 'Work is already evenly spread.', moved ? 'success' : 'info')
   }
 
-  const reassign = (o: SimObject, userId: string) => {
-    useSim.getState().act((s, ctx) => (userId ? adminAssign(s, ctx, o.id, userId) : adminReturnToPool(s, ctx, o.id)))
+  const reassign = (t: Token, userId: string) => {
+    const r = useSim.getState().act((s, ctx) => (userId ? adminAssign(s, ctx, t.id, userId) : adminReturnToPool(s, ctx, t.id)))
+    if (!r.ok) useUi.getState().toast(r.error, 'warn')
   }
 
   return (
@@ -120,10 +123,11 @@ export function WorkPanel({ app, wf, node }: { app: App; wf: Workflow; node: Use
           <p className="text-xs text-slate-500">Nothing at this step right now.</p>
         ) : (
           <ul className="-mx-1 divide-y divide-slate-100">
-            {items.slice(0, 80).map((o) => {
-              const b = STATE_BADGE[o.state] ?? { label: o.state, tone: 'slate' as const }
+            {items.slice(0, 80).map((t) => {
+              const o = sim.objects[t.objectId]!
+              const b = STATE_BADGE[t.state] ?? { label: t.state, tone: 'slate' as const }
               return (
-                <li key={o.id} className="flex items-center gap-2 px-1 py-1.5">
+                <li key={t.id} className="flex items-center gap-2 px-1 py-1.5">
                   <button type="button" onClick={() => useUi.getState().openObject(o.id)} className="min-w-0 flex-1 text-left">
                     <div className="flex items-center gap-1.5">
                       <span className="text-xs font-semibold text-brand-700 hover:underline">{o.number}</span>
@@ -131,11 +135,11 @@ export function WorkPanel({ app, wf, node }: { app: App; wf: Workflow; node: Use
                     </div>
                     <div className="truncate text-[11px] text-slate-500">
                       {objectTitle(type, o.data, app.lists, users)}
-                      {amountField && o.data[amountField.id] !== undefined ? ` · ${currencyShort.format(Number(o.data[amountField.id]))}` : ''} · {formatDuration(sim.clock - o.enteredAt)}
+                      {amountField && o.data[amountField.id] !== undefined ? ` · ${currencyShort.format(Number(o.data[amountField.id]))}` : ''} · {formatDuration(sim.clock - t.enteredAt)}
                     </div>
                   </button>
                   <div className="w-[138px] shrink-0">
-                    <Select className="h-7 text-xs" value={o.userId ?? ''} disabled={o.state === 'stuck'} onChange={(e) => reassign(o, e.target.value)} aria-label={`Assignee for ${o.number}`}>
+                    <Select className="h-7 text-xs" value={t.userId ?? ''} disabled={t.state === 'stuck'} onChange={(e) => reassign(t, e.target.value)} aria-label={`Assignee for ${o.number}`}>
                       <option value="">{d.distribution === 'queue' ? '— Queue —' : d.distribution === 'manager' ? '— Supervisor —' : '— Pool —'}</option>
                       <optgroup label={d.distribution === 'direct' ? 'Assignee' : (group?.name ?? 'Group')}>
                         {members.map((u) => (

@@ -2,7 +2,7 @@ import { Search } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
 import { TypeIcon } from '../../components/icons'
 import { Avatar, Badge, cx, EmptyState, Input, Select } from '../../components/ui'
-import type { SimObject, SimState } from '@throughline/core/engine/engine'
+import type { SimObject, SimState } from '@throughline/core'
 import { formatFieldValue, objectTitle } from '@throughline/core/model/format'
 import type { App, Id, ObjectType, User, WfNode } from '@throughline/core/model/types'
 import { formatDuration } from '@throughline/core/model/util'
@@ -15,6 +15,9 @@ const ROW_LIMIT = 200
 
 const STATE_BADGE: Record<string, { label: string; tone: 'slate' | 'brand' | 'green' | 'amber' | 'red' | 'sky' | 'violet' }> = {
   unassigned: { label: 'Waiting', tone: 'amber' },
+  queued: { label: 'Queued', tone: 'amber' },
+  joining: { label: 'Joining', tone: 'slate' },
+  waiting: { label: 'Timer', tone: 'slate' },
   assigned: { label: 'Assigned', tone: 'sky' },
   working: { label: 'Working', tone: 'brand' },
   stuck: { label: 'Stuck', tone: 'red' },
@@ -25,7 +28,7 @@ const STATE_BADGE: Record<string, { label: string; tone: 'slate' | 'brand' | 'gr
 }
 
 function stateKey(o: SimObject): string {
-  return o.status === 'active' ? o.state : o.status
+  return o.status === 'active' ? (o.tokens[0]?.state ?? 'auto') : o.status
 }
 
 export function ObjectExplorer({ app, users, sim, version }: { app: App; users: User[]; sim: SimState | undefined; version: number }) {
@@ -78,8 +81,8 @@ export function ObjectExplorer({ app, users, sim, version }: { app: App; users: 
     for (const o of all) {
       if (status !== 'all' && (status === 'rejected' ? o.status !== 'rejected' && o.status !== 'cancelled' : o.status !== status)) continue
       if (typeId && o.typeId !== typeId) continue
-      if (nodeId && o.nodeId !== nodeId) continue
-      if (assignee && o.userId !== assignee) continue
+      if (nodeId && !o.tokens.some((t) => t.nodeId === nodeId || t.calls.some((c) => c.nodeId === nodeId))) continue
+      if (assignee && !o.tokens.some((t) => t.userId === assignee)) continue
       if (q && !searchText(o).includes(q)) continue
       matched.push(o)
     }
@@ -171,9 +174,12 @@ export function ObjectExplorer({ app, users, sim, version }: { app: App; users: 
             <tbody>
               {rows.map((o) => {
                 const type = typesById.get(o.typeId)
-                const node = nodesById.get(o.nodeId)
-                const user = o.userId ? usersById.get(o.userId) : undefined
-                const badge = STATE_BADGE[stateKey(o)] ?? { label: o.state, tone: 'slate' as const }
+                const tok = o.tokens[0]
+                const node = nodesById.get(tok?.nodeId ?? o.endNodeId ?? '')
+                const holder = o.tokens.find((t) => t.userId)
+                const user = holder?.userId ? usersById.get(holder.userId) : undefined
+                const badge = STATE_BADGE[stateKey(o)] ?? { label: stateKey(o), tone: 'slate' as const }
+                const more = o.tokens.length > 1 ? o.tokens.length - 1 : 0
                 const age = (o.completedAt ?? clock) - o.createdAt
                 return (
                   <tr key={o.id} onClick={() => openObject(o.id)} className="cursor-pointer border-b border-slate-100 tabular-nums last:border-0 hover:bg-slate-50">
@@ -189,7 +195,10 @@ export function ObjectExplorer({ app, users, sim, version }: { app: App; users: 
                         {formatFieldValue(f, o.data[f.id], app.lists, users) || <span className="text-slate-300">—</span>}
                       </td>
                     ))}
-                    <td className="px-2 py-1.5 text-slate-700">{node?.data.label ?? <span className="text-slate-400">Removed step</span>}</td>
+                    <td className="px-2 py-1.5 text-slate-700">
+                      {node?.data.label ?? <span className="text-slate-400">{o.status === 'active' ? 'Removed step' : '—'}</span>}
+                      {more > 0 && <span className="ml-1 rounded bg-indigo-50 px-1 text-[10px] font-semibold text-indigo-700" title="Parallel branches">+{more}</span>}
+                    </td>
                     <td className="px-2 py-1.5">
                       {user ? (
                         <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-slate-700">
@@ -197,7 +206,7 @@ export function ObjectExplorer({ app, users, sim, version }: { app: App; users: 
                           {user.name}
                         </span>
                       ) : (
-                        <span className="text-slate-400">{o.status === 'active' && o.state === 'unassigned' ? 'Unassigned' : '—'}</span>
+                        <span className="text-slate-400">{o.status === 'active' && tok?.state === 'unassigned' ? 'Unassigned' : '—'}</span>
                       )}
                     </td>
                     <td className="px-2 py-1.5">

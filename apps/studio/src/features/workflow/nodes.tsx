@@ -3,7 +3,7 @@ import { Ban, Bot, CircleCheck, CircleX, GitFork, Play, TriangleAlert, UserRound
 import { memo } from 'react'
 import { cx } from '../../components/ui'
 import { DISTRIBUTION } from '../../components/icons'
-import type { NodeMetrics } from '@throughline/core/engine/engine'
+import type { NodeMetrics } from '@throughline/core'
 import type { Group, User, WfNode } from '@throughline/core/model/types'
 import { formatDuration } from '@throughline/core/model/util'
 import { useApp, useDesign } from '../../store/design'

@@ -1,5 +1,5 @@
 import { Avatar, Badge, cx, Meter } from '../../components/ui'
-import type { SimState, SimView } from '@throughline/core/engine/engine'
+import { findToken, type SimState, type SimView } from '@throughline/core'
 import type { App, Group, Id, User } from '@throughline/core/model/types'
 import { useUi } from '../../store/ui'
 
@@ -38,15 +38,15 @@ export function WorkloadTable({ app, users, groups, view, sim }: { app: App; use
 
   const rows: Row[] = appPeople(app, users, groups).map(({ user, groups: gs }) => {
     const v = view?.users[user.id]
-    const cur = v?.currentId ? sim?.objects[v.currentId] : undefined
+    const cur = v?.currentId && sim ? findToken(sim, v.currentId)?.tok : undefined
     const working = cur && cur.state === 'working' && cur.userId === user.id ? cur : undefined
     const busy = (v?.busyMinutes ?? 0) + (working?.startedAt !== undefined ? clock - working.startedAt : 0)
     return {
       user,
       groups: gs,
       open: v?.open ?? 0,
-      currentId: working?.id,
-      currentNumber: working?.number,
+      currentId: working?.objectId,
+      currentNumber: working ? sim?.objects[working.objectId]?.number : undefined,
       completed: v?.completed ?? 0,
       utilization: clock > 0 ? Math.min(1, busy / clock) : null,
     }

@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import { advance, burst, computeView, newSim, type Ctx, type SimState, type SimView } from '@throughline/core/engine/engine'
+import { advance, burst, newSim, type Ctx, type SimState } from '@throughline/core'
+import { computeView, type SimView } from '@throughline/core/engine/view'
 import type { Id } from '@throughline/core/model/types'
 import { useDesign } from './design'
 import { useUi } from './ui'
@@ -48,7 +49,10 @@ interface SimStore {
 export function ctxFor(appId: Id): Ctx | undefined {
   const d = useDesign.getState().design
   const app = d.apps.find((a) => a.id === appId)
-  return app ? { app, users: d.users, groups: d.groups } : undefined
+  const ui = useUi.getState()
+  // In the Workspace, the person you are working as is driven by you, not the simulation.
+  const manualUserIds = ui.mode === 'workspace' ? [ui.actingAs] : []
+  return app ? { app, users: d.users, groups: d.groups, services: d.services, manualUserIds } : undefined
 }
 
 function currentAppId(): Id {
@@ -170,6 +174,8 @@ useDesign.subscribe(() => useSim.getState().refresh())
 useUi.subscribe((s, prev) => {
   if (s.appId !== prev.appId) {
     useSim.setState({ flights: [] })
+    useSim.getState().refresh()
+  } else if (s.mode !== prev.mode || s.actingAs !== prev.actingAs) {
     useSim.getState().refresh()
   }
 })

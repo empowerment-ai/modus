@@ -1,3 +1,4 @@
+import { activeTokens } from '@throughline/core'
 import type { App, Design, Id, WfNode, Workflow } from '@throughline/core/model/types'
 import { useSim } from '../../store/sim'
 import { useUi } from '../../store/ui'
@@ -32,9 +33,8 @@ export function goToStep(appId: Id, workflowId: Id, nodeId: Id) {
 export function openWorkFor(userId: Id): number {
   let n = 0
   for (const sim of Object.values(useSim.getState().sims)) {
-    for (const id of sim.activeIds) {
-      const o = sim.objects[id]
-      if (o && o.userId === userId && (o.state === 'assigned' || o.state === 'working')) n++
+    for (const t of activeTokens(sim)) {
+      if (t.userId === userId && (t.state === 'assigned' || t.state === 'working')) n++
     }
   }
   return n

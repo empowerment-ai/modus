@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react'
 import { FormRenderer } from '../../components/FormRenderer'
 import { TypeIcon } from '../../components/icons'
 import { Button, Field, Modal, Select } from '../../components/ui'
-import { createObject, nextNumber } from '@throughline/core/engine/engine'
+import { createObject, nextNumber } from '@throughline/core'
 import { generateData } from '@throughline/core/engine/generate'
 import { validateRequired } from '@throughline/core/model/format'
 import type { App, Group, ObjectType, User, Workflow } from '@throughline/core/model/types'
@@ -61,8 +61,11 @@ function CreateForm({ app, wf, type }: { app: App; wf: Workflow; type: ObjectTyp
       ui.toast(`Could not create the ${type.name.toLowerCase()} — check the workflow.`, 'warn')
       return
     }
-    const at = wf.nodes.find((n) => n.id === obj.nodeId)?.data.label ?? 'the workflow'
-    if (obj.state === 'stuck') ui.toast(`${obj.number} created but is stuck at “${at}”: ${obj.stuckReason}`, 'warn')
+    const app = useDesign.getState().design.apps.find((a) => a.id === ui.appId)
+    const label = (id: string) => app?.workflows.flatMap((w) => w.nodes).find((n) => n.id === id)?.data.label ?? 'the workflow'
+    const stuck = obj.tokens.find((t) => t.state === 'stuck')
+    const at = obj.tokens.map((t) => label(t.nodeId)).join(' + ') || (obj.endNodeId ? label(obj.endNodeId) : 'the end')
+    if (stuck) ui.toast(`${obj.number} created but is stuck at “${label(stuck.nodeId)}”: ${stuck.stuckReason}`, 'warn')
     else ui.toast(`${obj.number} created → now at “${at}”`, 'success')
     close()
     if (andOpen) ui.openObject(obj.id)

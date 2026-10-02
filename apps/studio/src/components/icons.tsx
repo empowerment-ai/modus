@@ -2,6 +2,7 @@ import {
   AlignLeft,
   Briefcase,
   Calendar,
+  Camera,
   Car,
   CheckSquare,
   ClipboardList,
@@ -21,6 +22,7 @@ import {
   User,
   UserCheck,
   UserCog,
+  UserPen,
   Users,
   Wrench,
 } from 'lucide-react'
@@ -29,6 +31,7 @@ import type { Distribution, FieldType } from '@throughline/core/model/types'
 export const TYPE_ICONS: Record<string, LucideIcon> = {
   receipt: Receipt,
   car: Car,
+  camera: Camera,
   file: FileText,
   briefcase: Briefcase,
   package: Package,
@@ -70,15 +73,21 @@ export const DISTRIBUTION: Record<Distribution, { label: string; short: string; 
     help: 'Items wait in a shared group queue. Members fetch the oldest item into their basket when they are ready for more.',
   },
   manager: {
-    label: 'Supervisor distribution',
-    short: 'Supervisor',
+    label: 'Distribution group',
+    short: 'Dispatched',
     icon: UserCog,
-    help: 'Items wait for the supervisor, who hands each one to whichever member they choose.',
+    help: 'Items wait for a dispatcher (a member of the distribution group, or the supervisor), who hands each one to the group member of their choice.',
   },
   direct: {
     label: 'Direct assignment',
     short: 'Direct',
     icon: UserCheck,
     help: 'Every item goes to one named person.',
+  },
+  field: {
+    label: 'Person on the item',
+    short: 'From field',
+    icon: UserPen,
+    help: 'The person named in a field of the item gets it: the requester, the officer who responded, the manager on record. If the field is empty, it is load balanced across the group.',
   },
 }

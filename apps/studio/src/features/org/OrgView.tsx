@@ -5,8 +5,9 @@ import { useUi } from '../../store/ui'
 import { GroupsTab } from './GroupsTab'
 import { PeopleTab } from './PeopleTab'
 import { PermissionsTab } from './PermissionsTab'
+import { SecurityTab } from './SecurityTab'
 
-type Tab = 'people' | 'groups' | 'permissions'
+type Tab = 'people' | 'groups' | 'permissions' | 'security'
 
 export function OrgView() {
   const [tab, setTab] = useState<Tab>('people')
@@ -23,6 +24,8 @@ export function OrgView() {
           <p className="text-xs text-slate-500">
             {tab === 'permissions'
               ? `Object type permissions for ${app?.name ?? 'this application'}.`
+              : tab === 'security'
+                ? `Field-level security for ${app?.name ?? 'this application'}: what each step can edit, read or not see.`
               : 'The organization is shared by every application: who can do the work, and who supervises it.'}
           </p>
         </div>
@@ -34,6 +37,7 @@ export function OrgView() {
             { value: 'people', label: `People (${userCount})` },
             { value: 'groups', label: `Groups (${groupCount})` },
             { value: 'permissions', label: 'Permissions' },
+            { value: 'security', label: 'Field security' },
           ]}
         />
       </div>
@@ -41,6 +45,7 @@ export function OrgView() {
         {tab === 'people' && <PeopleTab />}
         {tab === 'groups' && <GroupsTab />}
         {tab === 'permissions' && <PermissionsTab />}
+        {tab === 'security' && <SecurityTab />}
       </div>
     </div>
   )
