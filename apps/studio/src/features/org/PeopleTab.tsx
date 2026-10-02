@@ -1,7 +1,7 @@
 import { ArrowRightLeft, Search, Trash2, UserPlus } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Avatar, Badge, Button, cx, IconButton, Input, Toggle } from '../../components/ui'
-import { adminRedistribute, adminReturnToPool } from '@throughline/core/engine/engine'
+import { activeTokens, adminRedistribute, adminReturnToPool } from '@throughline/core'
 import type { Id, User } from '@throughline/core/model/types'
 import { uid } from '@throughline/core/model/util'
 import { useDesign } from '../../store/design'
@@ -23,11 +23,10 @@ export function reassignWork(user: User): { returned: number; steps: number } {
   return useSim.getState().act((sim, ctx) => {
     const nodes = new Set<Id>()
     let returned = 0
-    for (const id of [...sim.activeIds]) {
-      const o = sim.objects[id]
-      if (o && o.userId === user.id && o.state === 'assigned' && adminReturnToPool(sim, ctx, o.id)) {
+    for (const t of activeTokens(sim)) {
+      if (t.userId === user.id && t.state === 'assigned' && adminReturnToPool(sim, ctx, t.id).ok) {
         returned++
-        nodes.add(o.nodeId)
+        nodes.add(t.nodeId)
       }
     }
     for (const nodeId of nodes) adminRedistribute(sim, ctx, nodeId)

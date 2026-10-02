@@ -12,6 +12,14 @@ export function newNode(type: WfNodeType, position: XY, groups: Group[]): WfNode
       return { id, type, position, data: { label: 'Done', result: 'completed' } }
     case 'decision':
       return { id, type, position, data: { label: 'New decision' } }
+    case 'split':
+      return { id, type, position, data: { label: 'Parallel split', mode: 'all' } }
+    case 'join':
+      return { id, type, position, data: { label: 'Join', mode: 'all' } }
+    case 'subflow':
+      return { id, type, position, data: { label: 'New subflow step' } }
+    case 'wait':
+      return { id, type, position, data: { label: 'Wait', minutes: 60 } }
     case 'auto':
       return { id, type, position, data: { label: 'New automated step', avgMinutes: 2, actions: [] } }
     case 'user':

@@ -1,10 +1,15 @@
 import {
   ArrowRightLeft,
+  ArrowUpCircle,
+  Ban,
   CircleCheck,
   CirclePlay,
   Cog,
   Flag,
   GitFork,
+  GitMerge,
+  Hand,
+  Hourglass,
   Inbox,
   LogIn,
   type LucideIcon,
@@ -12,14 +17,20 @@ import {
   MoveRight,
   PencilLine,
   Plug,
+  Send,
+  ShieldAlert,
+  Siren,
   Sparkles,
+  Split,
   TriangleAlert,
   Undo2,
   UserPlus,
+  Users,
+  Workflow as WorkflowIcon,
 } from 'lucide-react'
 import { cx } from '../../components/ui'
-import type { AuditEntry, AuditKind, SimObject } from '@throughline/core/engine/engine'
-import type { Workflow } from '@throughline/core/model/types'
+import type { AuditEntry, AuditKind, SimObject } from '@throughline/core'
+import type { App } from '@throughline/core/model/types'
 import { formatClock } from '@throughline/core/model/util'
 
 const KIND: Record<AuditKind, { icon: LucideIcon; tone: string; label: string }> = {
@@ -39,12 +50,32 @@ const KIND: Record<AuditKind, { icon: LucideIcon; tone: string; label: string }>
   field: { icon: PencilLine, tone: 'bg-slate-100 text-slate-500', label: 'Field change' },
   completed: { icon: Flag, tone: 'bg-emerald-50 text-emerald-600', label: 'Finished' },
   stuck: { icon: TriangleAlert, tone: 'bg-rose-50 text-rose-600', label: 'Stuck' },
+  service: { icon: Plug, tone: 'bg-violet-50 text-violet-600', label: 'Service call' },
+  distributed: { icon: Send, tone: 'bg-sky-50 text-sky-600', label: 'Handed out' },
+  claimed: { icon: Hand, tone: 'bg-sky-50 text-sky-600', label: 'Claimed' },
+  delegated: { icon: Users, tone: 'bg-amber-50 text-amber-600', label: 'Delegated' },
+  split: { icon: Split, tone: 'bg-indigo-50 text-indigo-600', label: 'Parallel split' },
+  joined: { icon: GitMerge, tone: 'bg-indigo-50 text-indigo-600', label: 'Join' },
+  subflow: { icon: WorkflowIcon, tone: 'bg-teal-50 text-teal-700', label: 'Subflow' },
+  waiting: { icon: Hourglass, tone: 'bg-slate-100 text-slate-500', label: 'Timer' },
+  escalated: { icon: Siren, tone: 'bg-rose-50 text-rose-600', label: 'Escalated' },
+  manual: { icon: Hand, tone: 'bg-amber-50 text-amber-700', label: 'Manual takeover' },
+  withdrawn: { icon: Ban, tone: 'bg-slate-100 text-slate-500', label: 'Withdrawn' },
+  priority: { icon: ArrowUpCircle, tone: 'bg-amber-50 text-amber-700', label: 'Priority' },
+  security: { icon: ShieldAlert, tone: 'bg-rose-50 text-rose-600', label: 'Security' },
 }
 
 /** The audit trail: every routing decision, assignment, release and field change, newest first. */
-export function ObjectHistory({ obj, wf }: { obj: SimObject; wf?: Workflow }) {
+export function ObjectHistory({ obj, app }: { obj: SimObject; app: App }) {
   const entries = [...obj.history].reverse()
-  const stepLabel = (id?: string) => (id ? wf?.nodes.find((n) => n.id === id)?.data.label : undefined)
+  const stepLabel = (id?: string) => {
+    if (!id) return undefined
+    for (const wf of app.workflows) {
+      const n = wf.nodes.find((x) => x.id === id)
+      if (n) return wf.id === obj.workflowId ? n.data.label : `${wf.name} › ${n.data.label}`
+    }
+    return undefined
+  }
   return (
     <ol className="relative">
       {entries.map((e, i) => (

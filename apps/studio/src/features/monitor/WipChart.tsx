@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { SimState } from '@throughline/core/engine/engine'
+import type { SimState } from '@throughline/core'
 import { formatClock } from '@throughline/core/model/util'
 
 const HEIGHT = 210

@@ -6,10 +6,15 @@ import {
   Download,
   FastForward,
   FileStack,
+  FlaskConical,
   GitBranch,
+  Inbox,
+  LayoutTemplate,
   ListTree,
   Pause,
+  PencilRuler,
   Play,
+  Plug,
   Plus,
   RotateCcw,
   Settings2,
@@ -23,7 +28,7 @@ import type { Design } from '@throughline/core/model/types'
 import { formatClock, formatDuration } from '@throughline/core/model/util'
 import { useApp, useDesign } from '../store/design'
 import { SPEEDS, useSim, useSimView } from '../store/sim'
-import { useUi, type View } from '../store/ui'
+import { type Mode, useUi, type View } from '../store/ui'
 import { Button, cx, Field, Input, Modal, Segmented, Textarea, Toggle } from './ui'
 
 const NAV: Array<{ view: View; label: string; icon: typeof GitBranch }> = [
@@ -31,16 +36,21 @@ const NAV: Array<{ view: View; label: string; icon: typeof GitBranch }> = [
   { view: 'types', label: 'Object Types', icon: FileStack },
   { view: 'lists', label: 'Lists', icon: ListTree },
   { view: 'org', label: 'People & Security', icon: ShieldCheck },
+  { view: 'integrations', label: 'Integrations', icon: Plug },
+  { view: 'templates', label: 'Templates', icon: LayoutTemplate },
   { view: 'monitor', label: 'Monitor', icon: Activity },
+  { view: 'scenarios', label: 'What-if', icon: FlaskConical },
 ]
 
 export function Shell({ children }: { children: ReactNode }) {
   const view = useUi((s) => s.view)
+  const mode = useUi((s) => s.mode)
   const setView = useUi((s) => s.setView)
   return (
     <div className="flex h-full flex-col">
       <TopBar />
       <div className="flex min-h-0 flex-1">
+        {mode === 'studio' && (
         <nav className="flex w-[76px] shrink-0 flex-col items-center gap-1 border-r border-slate-200 bg-white py-3" aria-label="Designer sections">
           {NAV.map(({ view: v, label, icon: Icon }) => (
             <button
@@ -60,6 +70,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <div className="flex-1" />
           <SettingsMenu />
         </nav>
+        )}
         <main className="relative min-w-0 flex-1">{children}</main>
       </div>
     </div>
@@ -79,10 +90,42 @@ function TopBar() {
         <div className="text-[10.5px] font-medium tracking-wide text-slate-400 uppercase">{PRODUCT.tagline}</div>
       </div>
       <div className="mx-2 h-6 w-px bg-slate-200" />
+      <ModeSwitch />
       <AppSwitcher />
       <div className="flex-1" />
       <SimControls />
     </header>
+  )
+}
+
+/** Studio (design and administer) vs Workspace (do the work). */
+function ModeSwitch() {
+  const mode = useUi((s) => s.mode)
+  const setMode = useUi((s) => s.setMode)
+  const options: Array<{ value: Mode; label: string; icon: typeof Inbox }> = [
+    { value: 'studio', label: 'Studio', icon: PencilRuler },
+    { value: 'workspace', label: 'Workspace', icon: Inbox },
+  ]
+  return (
+    <div className="flex h-9 items-center rounded-lg bg-slate-100 p-0.5" role="tablist" aria-label="Mode">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="tab"
+          aria-selected={mode === o.value}
+          onClick={() => setMode(o.value)}
+          title={o.value === 'studio' ? 'Design processes and administer the work' : 'Do the work: your basket, queues and requests'}
+          className={cx(
+            'flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium transition-colors',
+            mode === o.value ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800',
+          )}
+        >
+          <o.icon size={14} />
+          {o.label}
+        </button>
+      ))}
+    </div>
   )
 }
 
