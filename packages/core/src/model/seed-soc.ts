@@ -92,7 +92,8 @@ export function socApp(): App {
     kind: 'process',
     objectTypeId: 't_event',
     arrivalsPerHour: 120,
-    targetHours: 0.5,
+    // Within a shift, including any incident report; the 30-minute response target is the dispatch step's SLA.
+    targetHours: 8,
     fieldLocks: [{ id: 'lk_conf', fieldId: 'e_conf', access: 'read', when: 'always' }],
     nodes: [
       { id: 's_start', type: 'start', position: { x: 0, y: 246 }, data: { label: 'Camera event', trigger: 'event', source: 'mqtt: cameras/+/events' } },
