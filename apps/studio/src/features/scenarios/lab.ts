@@ -241,11 +241,13 @@ export function verdict(result: ScenarioResult, changes: ScenarioChange[], ctx: 
     count(dDone > 0, 2)
   }
   const dCycle = s.avgCycle - b.avgCycle
-  if (b.avgCycle > 0 && s.avgCycle > 0 && Math.abs(dCycle) >= Math.max(5, b.avgCycle * 0.05)) {
-    facts.push(`average cycle time ${dCycle < 0 ? 'down' : 'up'} ${hoursText(dCycle)}`)
-    count(dCycle < 0, 2)
-  }
   const dWip = s.wip - b.wip
+  if (b.avgCycle > 0 && s.avgCycle > 0 && Math.abs(dCycle) >= Math.max(5, b.avgCycle * 0.05)) {
+    // Clearing a backlog finishes its oldest items during the run, which lifts the average: not a slowdown.
+    const drained = dCycle > 0 && dDone > 0 && dWip < 0
+    facts.push(`average cycle time ${dCycle < 0 ? 'down' : 'up'} ${hoursText(dCycle)}${drained ? ' (the backlog’s older items finished)' : ''}`)
+    if (!drained) count(dCycle < 0, 2)
+  }
   if (Math.abs(dWip) >= Math.max(2, b.wip * 0.1)) {
     facts.push(`${Math.abs(dWip).toLocaleString()} ${dWip < 0 ? 'fewer' : 'more'} in flight at the end`)
     count(dWip < 0)
