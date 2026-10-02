@@ -36,7 +36,11 @@ function CreateForm({ app, wf, type }: { app: App; wf: Workflow; type: ObjectTyp
 
   const permitted = useMemo(() => users.filter((u) => createRights(type, groups, u.id).allowed), [users, groups, type])
   const others = useMemo(() => users.filter((u) => !permitted.includes(u)), [users, permitted])
-  const [createAs, setCreateAs] = useState<string>(permitted[0]?.id ?? users[0]?.id ?? '')
+  // In the Workspace you create as the person you are working as.
+  const inWorkspace = useUi((s) => s.mode === 'workspace')
+  const actingAs = useUi((s) => s.actingAs)
+  const [chosen, setCreateAs] = useState<string>(permitted[0]?.id ?? users[0]?.id ?? '')
+  const createAs = inWorkspace ? actingAs : chosen
   const [values, setValues] = useState<Record<string, unknown>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
 
@@ -104,9 +108,15 @@ function CreateForm({ app, wf, type }: { app: App; wf: Workflow; type: ObjectTyp
         <Field
           label="Create as"
           className="min-w-0 flex-1"
-          hint={allowedGroups.length ? `Groups allowed to create ${type.pluralName}: ${allowedGroups.map((g) => g.name).join(', ')}` : `No group may create ${type.pluralName} yet — set it in People & Security.`}
+          hint={
+            inWorkspace
+              ? 'You’re creating it as the person you are working as. Switch with “Working as”.'
+              : allowedGroups.length
+                ? `Groups allowed to create ${type.pluralName}: ${allowedGroups.map((g) => g.name).join(', ')}`
+                : `No group may create ${type.pluralName} yet — set it in People & Security.`
+          }
         >
-          <Select value={createAs} onChange={(e) => setCreateAs(e.target.value)}>
+          <Select value={createAs} onChange={(e) => setCreateAs(e.target.value)} disabled={inWorkspace}>
             {permitted.length > 0 && (
               <optgroup label={`Can create ${type.pluralName}`}>
                 {permitted.map((u) => (
