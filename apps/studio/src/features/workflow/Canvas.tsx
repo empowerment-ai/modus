@@ -209,7 +209,6 @@ function CanvasInner({ app, wf }: { app: App; wf: Workflow }) {
         maxZoom={1.75}
         fitView
         fitViewOptions={{ padding: FIT_PADDING }}
-        proOptions={{ hideAttribution: true }}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#cbd5e1" />
         <Controls position="bottom-left" showInteractive={false} />
