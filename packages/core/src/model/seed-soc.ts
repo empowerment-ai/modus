@@ -148,7 +148,7 @@ export function socApp(): App {
           distributorGroupId: 'g_watch',
           autoDistribute: true,
           distributeEveryMinutes: 5,
-          avgMinutes: 22,
+          avgMinutes: 14,
           slaHours: 0.5,
           escalateAfterHours: 0.25,
           escalation: { raisePriority: true, toDistributors: true, notify: 'Watch Commander' },
