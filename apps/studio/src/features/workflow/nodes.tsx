@@ -396,7 +396,7 @@ export const AutoNode = memo(function AutoNode({ id, data, selected }: NodeProps
   return (
     <div className={cx('relative w-[228px] rounded-xl border bg-white shadow-sm', selected ? 'border-brand-500 ring-2 ring-brand-200' : 'border-slate-200', !selected && HEAT_RING[m?.heat ?? 0])}>
       <Bottleneck id={id} />
-      <div className="flex items-start gap-2.5 p-2.5">
+      <div className="flex items-start gap-2.5 px-2.5 py-2">
         <span
           className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-violet-50 text-violet-600"
           title={svc ? `${SERVICE_KIND[svc.kind].label} · ${SERVICE_STATUS[svc.status].label}` : 'Built-in actions'}
@@ -410,7 +410,7 @@ export const AutoNode = memo(function AutoNode({ id, data, selected }: NodeProps
             {svc ? `${svc.name} · ${op?.name ?? 'pick an operation'}` : `Automated · ${d.actions.length} action${d.actions.length === 1 ? '' : 's'} · ~${d.avgMinutes}m`}
           </div>
           {started ? (
-            <div className="mt-1 flex items-center gap-2 text-[10.5px] text-slate-500 tabular-nums">
+            <div className="mt-0.5 flex items-center gap-2 text-[10.5px] text-slate-500 tabular-nums">
               <Live value={m?.automated ?? 0} label={svc ? 'calling' : 'running'} />
               {svc && <Live value={m?.queued ?? 0} label="queued" tone="amber" title={m?.queued ? 'Waiting for a free slot on the service' : undefined} />}
               {(m?.manual ?? 0) > 0 && (
@@ -422,7 +422,7 @@ export const AutoNode = memo(function AutoNode({ id, data, selected }: NodeProps
             </div>
           ) : (
             svc && (
-              <div className="mt-1 flex items-center gap-1 text-[10px] text-slate-500">
+              <div className="mt-0.5 flex items-center gap-1 text-[10px] text-slate-500">
                 {retries > 0 && (
                   <span className="inline-flex items-center gap-0.5 rounded bg-slate-100 px-1 py-px" title={`Retries ${retries} time${retries === 1 ? '' : 's'} before it counts as failed`}>
                     <RotateCw size={9} /> {retries}
