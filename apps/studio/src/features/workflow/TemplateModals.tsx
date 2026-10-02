@@ -2,11 +2,11 @@ import { ArrowLeft, ArrowRight, Layers, Search } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { FIELD_ICONS } from '../../components/icons'
 import { Badge, Button, Field, Input, Modal, Select, Textarea } from '../../components/ui'
-import { ADMIN } from '@throughline/core'
-import { FIELD_TYPE_LABEL } from '@throughline/core/model/format'
-import { compatible, type FieldBinding, instantiateTemplate, suggestBinding, templateFromWorkflow } from '@throughline/core/model/templates'
-import type { App, Id, Template, WfNode, Workflow, XY } from '@throughline/core/model/types'
-import { uid } from '@throughline/core/model/util'
+import { ADMIN } from '@modus-bpm/core'
+import { FIELD_TYPE_LABEL } from '@modus-bpm/core/model/format'
+import { compatible, type FieldBinding, instantiateTemplate, suggestBinding, templateFromWorkflow } from '@modus-bpm/core/model/templates'
+import type { App, Id, Template, WfNode, Workflow, XY } from '@modus-bpm/core/model/types'
+import { uid } from '@modus-bpm/core/model/util'
 import { useDesign } from '../../store/design'
 import { useUi } from '../../store/ui'
 
@@ -282,8 +282,8 @@ export function SaveTemplateModal({ app, wf, onClose }: { app: App; wf: Workflow
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Category">
-            <Input list="throughline-template-categories" value={category} onChange={(e) => setCategory(e.target.value)} />
-            <datalist id="throughline-template-categories">
+            <Input list="modus-template-categories" value={category} onChange={(e) => setCategory(e.target.value)} />
+            <datalist id="modus-template-categories">
               {categories.map((c) => (
                 <option key={c} value={c} />
               ))}

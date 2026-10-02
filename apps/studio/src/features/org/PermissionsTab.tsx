@@ -1,7 +1,7 @@
 import { ArrowUpRight, ShieldCheck } from 'lucide-react'
 import { DISTRIBUTION, TypeIcon } from '../../components/icons'
 import { Badge, Card, cx, EmptyState, SectionTitle } from '../../components/ui'
-import type { Id, TypePermission } from '@throughline/core/model/types'
+import type { Id, TypePermission } from '@modus-bpm/core/model/types'
 import { useApp, useDesign } from '../../store/design'
 import { useUi } from '../../store/ui'
 import { goToStep } from './usage'

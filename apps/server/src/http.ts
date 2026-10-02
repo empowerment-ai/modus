@@ -6,7 +6,7 @@
 //
 // Identity is a prototype stand-in: the caller names themselves in the
 // `x-user-id` header. Production replaces it with OIDC (bearer tokens) and maps
-// directory groups onto Throughline groups via SCIM; see docs/ARCHITECTURE.md.
+// directory groups onto Modus groups via SCIM; see docs/ARCHITECTURE.md.
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
 import { z } from 'zod'
@@ -40,8 +40,8 @@ import {
   workReturn,
   workSave,
   workStart,
-} from '@throughline/core'
-import { objectTitle } from '@throughline/core/model/format'
+} from '@modus-bpm/core'
+import { objectTitle } from '@modus-bpm/core/model/format'
 import { NotFound, type Runtime } from './runtime'
 
 // ---------- DTOs: what goes over the wire ----------
@@ -131,7 +131,7 @@ export function buildServer(rt: Runtime): FastifyInstance {
   app.get('/api/health', async () => ({ ok: true, apps: rt.design.apps.length }))
 
   app.get('/api', async () => ({
-    name: 'Throughline API (prototype)',
+    name: 'Modus API (prototype)',
     identity: 'x-user-id header (prototype); OIDC bearer tokens in production',
     routes: app.printRoutes({ commonPrefix: false }).split('\n').filter(Boolean),
   }))

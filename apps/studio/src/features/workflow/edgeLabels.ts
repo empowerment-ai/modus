@@ -1,7 +1,7 @@
-import { describeCondition } from '@throughline/core/model/conditions'
-import { subflowOutcomes } from '@throughline/core/model/templates'
-import { AUTO_FAILURE, AUTO_SUCCESS } from '@throughline/core/model/types'
-import type { App, User, WfEdge, Workflow } from '@throughline/core/model/types'
+import { describeCondition } from '@modus-bpm/core/model/conditions'
+import { subflowOutcomes } from '@modus-bpm/core/model/templates'
+import { AUTO_FAILURE, AUTO_SUCCESS } from '@modus-bpm/core/model/types'
+import type { App, User, WfEdge, Workflow } from '@modus-bpm/core/model/types'
 import { isRuled } from './model'
 
 export type EdgeTone = 'outcome-ok' | 'outcome-bad' | 'outcome' | 'rule' | 'default' | 'warn' | 'plain'

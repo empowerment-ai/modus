@@ -1,8 +1,8 @@
 import { ArrowRight, Lock } from 'lucide-react'
 import { TypeIcon } from '../../components/icons'
 import { Card, EmptyState } from '../../components/ui'
-import { canCreate, type Ctx } from '@throughline/core'
-import type { App, Group, ObjectType, User, Workflow } from '@throughline/core/model/types'
+import { canCreate, type Ctx } from '@modus-bpm/core'
+import type { App, Group, ObjectType, User, Workflow } from '@modus-bpm/core/model/types'
 import { useUi } from '../../store/ui'
 import { PageHeader } from './parts'
 

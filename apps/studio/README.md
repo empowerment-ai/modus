@@ -1,8 +1,8 @@
-# @throughline/studio
+# @modus-bpm/studio
 
 The browser app: **Studio** (design, administer, monitor, what-if) and **Workspace** (do the
 work as any person in the sample organization). Runs entirely in the browser on the
-`@throughline/core` engine with a simulated organization; designs are saved in the browser.
+`@modus-bpm/core` engine with a simulated organization; designs are saved in the browser.
 
 ```bash
 pnpm dev                  # from the repo root: http://localhost:5180

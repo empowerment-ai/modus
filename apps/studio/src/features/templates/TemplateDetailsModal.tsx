@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { Template } from '@throughline/core/model/types'
+import type { Template } from '@modus-bpm/core/model/types'
 import { Button, Field, Input, Modal, Textarea } from '../../components/ui'
 import { useDesign } from '../../store/design'
 import { useUi } from '../../store/ui'

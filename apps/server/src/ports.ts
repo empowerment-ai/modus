@@ -2,7 +2,7 @@
 // The in-memory adapter (adapters/memory.ts) ships today; Postgres comes next and
 // SQL Server / Oracle follow behind the same contract (see docs/ARCHITECTURE.md).
 
-import type { AuditEntry, Design, Id, SimState } from '@throughline/core'
+import type { AuditEntry, Design, Id, SimState } from '@modus-bpm/core'
 
 /** The published design: applications, object types, workflows, people, services, templates. */
 export interface DesignStore {

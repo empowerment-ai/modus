@@ -1,9 +1,9 @@
 import { Plus, Trash2 } from 'lucide-react'
 import { Button, IconButton, Input, Segmented, Select } from '../../../components/ui'
-import { OPERATOR_LABEL, operatorNeedsValue, operatorsFor } from '@throughline/core/model/conditions'
-import { itemDepth } from '@throughline/core/model/lists'
-import type { Condition, FieldDef, ListDef, ObjectType, Rule, User } from '@throughline/core/model/types'
-import { uid } from '@throughline/core/model/util'
+import { OPERATOR_LABEL, operatorNeedsValue, operatorsFor } from '@modus-bpm/core/model/conditions'
+import { itemDepth } from '@modus-bpm/core/model/lists'
+import type { Condition, FieldDef, ListDef, ObjectType, Rule, User } from '@modus-bpm/core/model/types'
+import { uid } from '@modus-bpm/core/model/util'
 
 /** Rule builder for a decision branch: "Amount > 1000 and Department is Facilities". */
 export function ConditionEditor({

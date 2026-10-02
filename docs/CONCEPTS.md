@@ -1,10 +1,10 @@
 # Concepts and terminology
 
-Throughline uses plain words in the product and keeps the standard terms close by, so
+Modus uses plain words in the product and keeps the standard terms close by, so
 business users, administrators and engineers can talk about the same thing. Teams coming from
 earlier-generation BPM tools will recognize most of these under older names.
 
-| Throughline | What it means | Older name you may know | Standard term (BPMN 2.0 / Workflow Patterns) |
+| Modus | What it means | Older name you may know | Standard term (BPMN 2.0 / Workflow Patterns) |
 | --- | --- | --- | --- |
 | **Parallel split** | Run several paths at the same time. *All paths*, or *every path whose rule matches*. | Broadcast | Parallel gateway (AND-split) · inclusive gateway (OR-split) · WCP-2, WCP-6 |
 | **Join** | Wait for parallel branches to come back together: *all of them*, *the first one*, or *N of M*; optionally withdraw the rest. | Rendezvous | Parallel/inclusive join · discriminator · partial join · WCP-3, WCP-7, WCP-9, WCP-30–32 |

@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import type { Id, ServiceDef, ServiceKind } from '@throughline/core/model/types'
-import { uid } from '@throughline/core/model/util'
+import type { Id, ServiceDef, ServiceKind } from '@modus-bpm/core/model/types'
+import { uid } from '@modus-bpm/core/model/util'
 import { Button, cx, Field, Input, Modal } from '../../components/ui'
 import { useDesign } from '../../store/design'
 import { useUi } from '../../store/ui'

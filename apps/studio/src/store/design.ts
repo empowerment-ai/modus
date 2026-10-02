@@ -1,8 +1,8 @@
 import { produce } from 'immer'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { seedDesign } from '@throughline/core/model/seed'
-import type { App, Design, Id, ObjectType, ServiceDef, Template, Workflow } from '@throughline/core/model/types'
+import { seedDesign } from '@modus-bpm/core/model/seed'
+import type { App, Design, Id, ObjectType, ServiceDef, Template, Workflow } from '@modus-bpm/core/model/types'
 
 interface DesignStore {
   design: Design
@@ -71,7 +71,7 @@ export const useDesign = create<DesignStore>()(
       reset: () => set({ design: seedDesign() }),
     }),
     {
-      name: 'throughline-design',
+      name: 'modus-design',
       version: 1,
       merge: (persisted, current) => {
         const p = persisted as { design?: Design } | undefined

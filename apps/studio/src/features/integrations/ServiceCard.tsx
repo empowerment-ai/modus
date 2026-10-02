@@ -1,6 +1,6 @@
-import type { ServiceMetrics } from '@throughline/core'
-import type { ServiceDef } from '@throughline/core/model/types'
-import { plural } from '@throughline/core/model/util'
+import type { ServiceMetrics } from '@modus-bpm/core'
+import type { ServiceDef } from '@modus-bpm/core/model/types'
+import { plural } from '@modus-bpm/core/model/util'
 import { cx, Meter } from '../../components/ui'
 import { KINDS, pct, STATUS } from './kinds'
 

@@ -1,6 +1,6 @@
 import { CircleAlert, CircleCheck, CircleMinus } from 'lucide-react'
-import type { SimView } from '@throughline/core'
-import type { App, Id, ServiceDef } from '@throughline/core/model/types'
+import type { SimView } from '@modus-bpm/core'
+import type { App, Id, ServiceDef } from '@modus-bpm/core/model/types'
 import { Badge, cx, Meter } from '../../components/ui'
 import { useUi } from '../../store/ui'
 

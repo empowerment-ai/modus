@@ -1,5 +1,5 @@
 import { type LucideIcon, UserCog, Users } from 'lucide-react'
-import type { GroupKind } from '@throughline/core/model/types'
+import type { GroupKind } from '@modus-bpm/core/model/types'
 import { cx } from '../../components/ui'
 
 export const GROUP_KINDS: Record<GroupKind, { label: string; icon: LucideIcon; tile: string; help: string; placeholder: string }> = {

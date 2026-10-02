@@ -1,13 +1,13 @@
-# @throughline/server (skeleton)
+# @modus-bpm/server (skeleton)
 
 The core engine running **live**: the same code the studio simulates with, behind a REST API.
 No simulated people or arrivals here — people act through the API, and automated steps
 become jobs that registered workers poll and complete.
 
 ```bash
-pnpm --filter @throughline/server dev            # http://127.0.0.1:8787/api
-PORT=8787 DATA_DIR=./data TIME_SCALE=1 pnpm --filter @throughline/server start
-pnpm --filter @throughline/server test           # one invoice, end to end through the API
+pnpm --filter @modus-bpm/server dev            # http://127.0.0.1:8787/api
+PORT=8787 DATA_DIR=./data TIME_SCALE=1 pnpm --filter @modus-bpm/server start
+pnpm --filter @modus-bpm/server test           # one invoice, end to end through the API
 ```
 
 | Concern | Where |
@@ -37,7 +37,7 @@ curl -X POST 'localhost:8787/api/jobs/app_invoice:o1~1/complete' -H 'content-typ
   -d '{"outputs":{"matched":true}}'
 
 # Or run the example worker, which polls, works and completes jobs for one service
-SERVICE=svc_erp pnpm --filter @throughline/server worker
+SERVICE=svc_erp pnpm --filter @modus-bpm/server worker
 
 # The clerk it was load balanced to sees it, and releases it
 curl localhost:8787/api/apps/app_invoice/my/basket -H 'x-user-id: u_jordan'

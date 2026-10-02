@@ -1,8 +1,8 @@
 {
-  "name": "@throughline/server",
+  "name": "@modus-bpm/server",
   "private": true,
   "version": "0.2.0",
-  "description": "Throughline server skeleton: the core engine in live mode behind a REST API, a worker job protocol and a live event stream.",
+  "description": "Modus server skeleton: the core engine in live mode behind a REST API, a worker job protocol and a live event stream.",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -13,7 +13,7 @@
     "worker": "tsx examples/worker.ts"
   },
   "dependencies": {
-    "@throughline/core": "workspace:*",
+    "@modus-bpm/core": "workspace:*",
     "fastify": "^5.12.0",
     "zod": "^4.6.0"
   },

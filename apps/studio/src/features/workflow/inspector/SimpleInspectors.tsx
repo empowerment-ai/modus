@@ -1,6 +1,6 @@
 import { Ban, CircleCheck, CircleX, GitFork, Layers, Play, Plus, Zap } from 'lucide-react'
 import { Button, Field, Input, Select, Toggle } from '../../../components/ui'
-import type { App, TriggerKind, WfNode, Workflow } from '@throughline/core/model/types'
+import type { App, TriggerKind, WfNode, Workflow } from '@modus-bpm/core/model/types'
 import { useDesign } from '../../../store/design'
 import { useSim, useSimView } from '../../../store/sim'
 import { useUi } from '../../../store/ui'

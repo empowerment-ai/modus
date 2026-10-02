@@ -1,5 +1,5 @@
 {
-  "name": "@throughline/studio",
+  "name": "@modus-bpm/studio",
   "private": true,
   "version": "0.2.0",
   "license": "Apache-2.0",
@@ -13,7 +13,7 @@
     "test": "echo 'studio: no unit tests (engine tests live in packages/core)'"
   },
   "dependencies": {
-    "@throughline/core": "workspace:*",
+    "@modus-bpm/core": "workspace:*",
     "@xyflow/react": "^12.12.0",
     "immer": "^11.1.18",
     "lucide-react": "^1.49.0",

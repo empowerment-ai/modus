@@ -1,6 +1,6 @@
-// Start the Throughline server: load the design, start the engine clock, serve the API.
+// Start the Modus server: load the design, start the engine clock, serve the API.
 //
-//   PORT=8787 DATA_DIR=./data TIME_SCALE=1 pnpm --filter @throughline/server dev
+//   PORT=8787 DATA_DIR=./data TIME_SCALE=1 pnpm --filter @modus-bpm/server dev
 
 import { memoryStorage } from './adapters/memory'
 import { buildServer } from './http'

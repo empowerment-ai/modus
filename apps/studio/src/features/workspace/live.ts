@@ -11,8 +11,8 @@ import {
   type Result,
   type SimState,
   type WorkItem,
-} from '@throughline/core'
-import type { Id } from '@throughline/core/model/types'
+} from '@modus-bpm/core'
+import type { Id } from '@modus-bpm/core/model/types'
 import { useDesign } from '../../store/design'
 import { ctxFor, useSim } from '../../store/sim'
 import { useUi } from '../../store/ui'

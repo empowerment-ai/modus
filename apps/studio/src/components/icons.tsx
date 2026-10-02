@@ -26,7 +26,7 @@ import {
   Users,
   Wrench,
 } from 'lucide-react'
-import type { Distribution, FieldType } from '@throughline/core/model/types'
+import type { Distribution, FieldType } from '@modus-bpm/core/model/types'
 
 export const TYPE_ICONS: Record<string, LucideIcon> = {
   receipt: Receipt,

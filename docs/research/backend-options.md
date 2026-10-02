@@ -1,4 +1,4 @@
-# Throughline: backend architecture research
+# Modus: backend architecture research
 
 Facts as of 2026-10-01. Versions and license claims were checked against GitHub, npm and vendor docs on that date and are linked inline. The prototype being discussed is the engine in `packages/core/src/engine/` (pure TypeScript, a seeded RNG in `rng.ts`, conditions in `model/conditions.ts`). When this research was done it was a single ~1,000-line `engine.ts`; since then it has gained tokens, parallel split/join, subflows, a service registry and workspace operations (see [ARCHITECTURE.md](../ARCHITECTURE.md)).
 
@@ -174,7 +174,7 @@ A dispatcher claims rows with SKIP LOCKED/READPAST, executes them with an idempo
 
 ### 4.3 Process mining exports
 
-- **OCEL 2.0** is the right primary format because Throughline is object-centric: business objects, linked objects, subflows, work items and users. The spec was released in 2023, with SQLite, XML and JSON exchange formats ([ocel-standard.org](https://www.ocel-standard.org/), [spec](https://arxiv.org/abs/2403.01975)). Mapping: each `case_event` becomes an OCEL event whose activity is the step plus the event type. Object references (case object, work item, user, linked objects) are qualified by role. `FieldsUpdated` events become OCEL object attribute changes.
+- **OCEL 2.0** is the right primary format because Modus is object-centric: business objects, linked objects, subflows, work items and users. The spec was released in 2023, with SQLite, XML and JSON exchange formats ([ocel-standard.org](https://www.ocel-standard.org/), [spec](https://arxiv.org/abs/2403.01975)). Mapping: each `case_event` becomes an OCEL event whose activity is the step plus the event type. Object references (case object, work item, user, linked objects) are qualified by role. `FieldsUpdated` events become OCEL object attribute changes.
 - **XES, IEEE 1849-2023** (published Aug 2023, superseding 1849-2016) is for classic case-centric tools ([xes-standard.org](https://xes-standard.org/), [IEEE](https://standards.ieee.org/ieee/1849/10907/)). Mapping: trace = case; `concept:name` = step; `lifecycle:transition` = assign/start/complete; `org:resource` = user; `time:timestamp`.
 - **Simulation from the log.** Three uses:
   1. *Deterministic replay* of a case through the kernel, for debugging and for engine-upgrade regression tests.
@@ -277,7 +277,7 @@ Start as a **modular monolith**: one codebase and one image, with roles enabled 
 - No phone-home: telemetry is off by default. Fonts and assets are bundled, and license files work offline.
 - Supply chain: SBOM (CycloneDX/SPDX), signed images (cosign), and hardened bases (UBI, Chainguard, or Iron Bank submission). Air-gap bundles use [Zarf](https://zarf.dev).
 - FIPS 140-3 crypto: Node on a base image whose OpenSSL 3 FIPS provider is validated, with TLS terminated at FIPS-validated ingress.
-- **FedRAMP covers cloud services, not self-hosted software.** A self-hosted Throughline install inherits the agency's ATO, so ship NIST 800-53 control mappings and STIG-style hardening guides. If we later offer SaaS, FedRAMP 20x is the route: the Phase 2 Moderate pilot granted first authorizations in March 2026, and the Consolidated Rules for 2026 (CR26) published 2026-06-25 replace Low/Moderate/High with classes A–D ([FedRAMP 20x Phase 2](https://fedramp.gov/20x/phases/2/), [roadmap](https://secureframe.com/blog/fedramp-20x-roadmap)).
+- **FedRAMP covers cloud services, not self-hosted software.** A self-hosted Modus install inherits the agency's ATO, so ship NIST 800-53 control mappings and STIG-style hardening guides. If we later offer SaaS, FedRAMP 20x is the route: the Phase 2 Moderate pilot granted first authorizations in March 2026, and the Consolidated Rules for 2026 (CR26) published 2026-06-25 replace Low/Moderate/High with classes A–D ([FedRAMP 20x Phase 2](https://fedramp.gov/20x/phases/2/), [roadmap](https://secureframe.com/blog/fedramp-20x-roadmap)).
 
 **Multi-tenancy**
 

@@ -25,7 +25,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @throughline/studio build
+      - run: pnpm --filter @modus-bpm/studio build
         env:
           BASE_PATH: /${{ github.event.repository.name }}/
       - uses: actions/upload-pages-artifact@v3

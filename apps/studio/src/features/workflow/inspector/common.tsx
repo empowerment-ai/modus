@@ -1,7 +1,7 @@
 import { Trash2, X } from 'lucide-react'
 import { type ReactNode, useCallback } from 'react'
 import { cx, IconButton } from '../../../components/ui'
-import type { Id, WfNode, Workflow } from '@throughline/core/model/types'
+import type { Id, WfNode, Workflow } from '@modus-bpm/core/model/types'
 import { useDesign } from '../../../store/design'
 import { useSim } from '../../../store/sim'
 import { useUi } from '../../../store/ui'

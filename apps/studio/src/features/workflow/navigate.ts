@@ -1,4 +1,4 @@
-import type { Id } from '@throughline/core/model/types'
+import type { Id } from '@modus-bpm/core/model/types'
 import { useUi } from '../../store/ui'
 
 /** Open a workflow (going back up the subflow trail when it is on it) and select one of its steps. */

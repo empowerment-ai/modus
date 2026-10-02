@@ -1,6 +1,6 @@
 import { X } from 'lucide-react'
 import { type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes, useEffect } from 'react'
-import { initials } from '@throughline/core/model/util'
+import { initials } from '@modus-bpm/core/model/util'
 
 export function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ')

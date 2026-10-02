@@ -1,9 +1,9 @@
 // Workflow-designer helpers: new node defaults, connection rules, and validation.
 
-import { subflowOutcomes } from '@throughline/core/model/templates'
-import { AUTO_FAILURE, AUTO_SUCCESS } from '@throughline/core/model/types'
-import type { App, Group, Id, NodeOf, ObjectType, ServiceDef, User, WfEdge, WfNode, WfNodeType, Workflow, XY } from '@throughline/core/model/types'
-import { uid } from '@throughline/core/model/util'
+import { subflowOutcomes } from '@modus-bpm/core/model/templates'
+import { AUTO_FAILURE, AUTO_SUCCESS } from '@modus-bpm/core/model/types'
+import type { App, Group, Id, NodeOf, ObjectType, ServiceDef, User, WfEdge, WfNode, WfNodeType, Workflow, XY } from '@modus-bpm/core/model/types'
+import { uid } from '@modus-bpm/core/model/util'
 
 export function newNode(type: WfNodeType, position: XY, groups: Group[]): WfNode {
   const id = uid('n')

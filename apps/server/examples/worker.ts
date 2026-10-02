@@ -2,12 +2,12 @@
 // jobs of one service, does the work, and completes (or fails) each job. Any
 // language can do this; it is three HTTP calls.
 //
-//   pnpm --filter @throughline/server dev                      # in one terminal
-//   SERVICE=svc_vision pnpm --filter @throughline/server worker # in another
+//   pnpm --filter @modus-bpm/server dev                      # in one terminal
+//   SERVICE=svc_vision pnpm --filter @modus-bpm/server worker # in another
 //
 // Then create a camera event (see apps/server/README.md) and watch it move.
 
-const base = process.env.THROUGHLINE_URL ?? 'http://127.0.0.1:8787'
+const base = process.env.MODUS_URL ?? 'http://127.0.0.1:8787'
 const serviceId = process.env.SERVICE ?? 'svc_vision'
 const workerId = `${serviceId}-${process.pid}`
 

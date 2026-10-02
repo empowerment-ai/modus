@@ -1,4 +1,4 @@
-// @throughline/core — the process model and engine, shared by the studio's
+// @modus-bpm/core — the process model and engine, shared by the studio's
 // simulator and (next) the server. No UI code and no I/O live here.
 
 export * from './model/types'

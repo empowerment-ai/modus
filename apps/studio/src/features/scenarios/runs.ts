@@ -1,6 +1,6 @@
 import { create } from 'zustand'
-import type { ScenarioChange, ScenarioResult } from '@throughline/core'
-import type { Id } from '@throughline/core/model/types'
+import type { ScenarioChange, ScenarioResult } from '@modus-bpm/core'
+import type { Id } from '@modus-bpm/core/model/types'
 import type { Verdict } from './lab'
 
 // The lab's working state lives outside the view so a draft and recent runs

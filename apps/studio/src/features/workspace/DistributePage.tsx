@@ -1,10 +1,10 @@
 import { GripVertical, Scale, Send, UserX } from 'lucide-react'
 import { type DragEvent, useState } from 'react'
 import { Avatar, Badge, Button, Card, cx, EmptyState, Meter, Select } from '../../components/ui'
-import { type DistributionSummary, type WorkItem, workDistribute, workDistributeEvenly } from '@throughline/core'
-import { objectTitle } from '@throughline/core/model/format'
-import type { App, Group, Id, User } from '@throughline/core/model/types'
-import { formatDuration } from '@throughline/core/model/util'
+import { type DistributionSummary, type WorkItem, workDistribute, workDistributeEvenly } from '@modus-bpm/core'
+import { objectTitle } from '@modus-bpm/core/model/format'
+import type { App, Group, Id, User } from '@modus-bpm/core/model/types'
+import { formatDuration } from '@modus-bpm/core/model/util'
 import { useSim } from '../../store/sim'
 import { useUi } from '../../store/ui'
 import { PriorityBadge } from '../objects/PriorityBadge'
@@ -12,7 +12,7 @@ import { sortItems } from './format'
 import { perform, type WorkData } from './live'
 import { Count, DueLabel, PageHeader } from './parts'
 
-const DRAG_TYPE = 'application/x-throughline-token'
+const DRAG_TYPE = 'application/x-modus-token'
 
 interface Props {
   me: User

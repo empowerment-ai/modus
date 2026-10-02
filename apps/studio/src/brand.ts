@@ -1,5 +1,5 @@
 /** Product name. Change it here and it changes everywhere in the UI. */
 export const PRODUCT = {
-  name: 'Throughline',
+  name: 'Modus',
   tagline: 'Process manager',
 }

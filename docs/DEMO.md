@@ -1,6 +1,6 @@
 # A twenty-minute demo
 
-Open the [live demo](https://empowerment-ai.github.io/throughline/) (or `pnpm dev`). Everything
+Open the [live demo](https://empowerment-ai.github.io/modus/) (or `pnpm dev`). Everything
 runs in the browser: a simulated organization of about 50 people works three sample
 applications. **Settings › Restore sample data** resets everything.
 
@@ -85,6 +85,6 @@ applications. **Settings › Restore sample data** resets everything.
 ## 7. For the engineers
 
 - `packages/core` is the engine; `pnpm test` runs it through all three applications.
-- `pnpm --filter @throughline/server dev` runs the same engine live: create an item over REST,
+- `pnpm --filter @modus-bpm/server dev` runs the same engine live: create an item over REST,
   poll a job as a worker, complete it, and watch the item route — see `apps/server/README.md`.
 - **Monitor** › *Export event log* writes OCEL 2.0 for process-mining tools.

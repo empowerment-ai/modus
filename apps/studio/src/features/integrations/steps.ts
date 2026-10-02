@@ -1,4 +1,4 @@
-import type { App, Design, Id, NodeOf, Workflow, WfNodeType } from '@throughline/core/model/types'
+import type { App, Design, Id, NodeOf, Workflow, WfNodeType } from '@modus-bpm/core/model/types'
 import { useDesign } from '../../store/design'
 import { useUi } from '../../store/ui'
 
