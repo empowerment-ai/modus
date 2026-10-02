@@ -480,7 +480,9 @@ function exceptionSubflow(allRead: Record<string, 'read'>): Workflow {
         position: { x: 620, y: 330 },
         data: {
           label: 'Correct invoice data',
+          description: 'Four eyes: whoever triaged the exception may not also correct the data.',
           distribution: 'queue',
+          separateFrom: ['x_triage'],
           groupId: 'g_exceptions',
           autoDistribute: true,
           distributeEveryMinutes: 30,

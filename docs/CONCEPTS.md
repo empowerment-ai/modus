@@ -23,6 +23,7 @@ earlier-generation BPM tools will recognize most of these under older names.
 | **Direct** | Every item goes to one named person. | Direct | Direct distribution · WRP-1 |
 | **Person on the item** | The person named in a field gets it: the requester, the officer who responded. | — | Retain familiar · WRP-7; organizational distribution · WRP-10 |
 | **Reassign / delegate / return** | Move work between people (administrators: anyone or same group; workers: a colleague in the same group). | Reassign / redistribute | Detour patterns: delegation, reallocation, deallocation · WRP-27–31 |
+| **Separation of duties** | Four eyes: nobody who released a given earlier step on this item may work this step. | — | WRP-5 Separation of Duties |
 | **Escalation** | After N hours at a step: raise priority, notify, and/or send it back to the dispatchers. | — | Escalation · WRP-28 · SLA deadline |
 | **Field security** | Who can edit, read or not see each field — by sensitive-data group, by workflow lock, by step. The strictest wins. | Field security per step | Attribute- and step-level access control |
 | **Field lock** | A workflow rule: a field becomes read-only or hidden everywhere, or once the item passed a step (exempt groups allowed). | — | — |
