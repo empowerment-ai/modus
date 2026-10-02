@@ -18,6 +18,7 @@ export function WorkflowView() {
   const app = useApp(appId)
   const workflowId = useUi((s) => s.workflowId)
   const setWorkflow = useUi((s) => s.setWorkflow)
+  const trail = useUi((s) => s.trail)
   const [creating, setCreating] = useState(false)
   const [saving, setSaving] = useState(false)
   const wf = app?.workflows.find((w) => w.id === workflowId) ?? app?.workflows.find((w) => w.kind !== 'subflow') ?? app?.workflows[0]
@@ -96,7 +97,7 @@ export function WorkflowView() {
           </>
         )}
       </div>
-      {wf && isSubflow && <SubflowBar app={app} wf={wf} />}
+      {wf && (isSubflow || trail.length > 0) && <SubflowBar app={app} wf={wf} />}
       {wf ? (
         <div className="flex min-h-0 flex-1">
           <div className="relative min-w-0 flex-1">
@@ -144,28 +145,30 @@ function SubflowBar({ app, wf }: { app: App; wf: Workflow }) {
           </Fragment>
         ))}
         <span className="flex min-w-0 items-center gap-1 font-semibold text-slate-800">
-          <Layers size={13} className="shrink-0 text-teal-600" />
+          {wf.kind === 'subflow' && <Layers size={13} className="shrink-0 text-teal-600" />}
           <span className="truncate">{wf.name}</span>
         </span>
       </nav>
-      <span className="ml-auto flex min-w-0 items-center gap-1.5 text-slate-500">
-        <span className="shrink-0">Runs inside:</span>
-        {callers.length === 0 ? (
-          <span className="font-medium text-amber-700">no step yet</span>
-        ) : (
-          callers.map((c) => (
-            <button
-              key={c.node.id}
-              type="button"
-              onClick={() => showStep(c.wf.id, c.node.id)}
-              className="min-w-0 truncate rounded-md border border-teal-200 bg-white px-1.5 py-0.5 font-medium text-slate-700 hover:border-teal-300 hover:text-slate-900"
-              title={`Go to “${c.node.data.label}” in ${c.wf.name}`}
-            >
-              {c.node.data.label} <span className="font-normal text-slate-400">· {c.wf.name}</span>
-            </button>
-          ))
-        )}
-      </span>
+      {wf.kind === 'subflow' && (
+        <span className="ml-auto flex min-w-0 items-center gap-1.5 text-slate-500">
+          <span className="shrink-0">Runs inside:</span>
+          {callers.length === 0 ? (
+            <span className="font-medium text-amber-700">no step yet</span>
+          ) : (
+            callers.map((c) => (
+              <button
+                key={c.node.id}
+                type="button"
+                onClick={() => showStep(c.wf.id, c.node.id)}
+                className="min-w-0 truncate rounded-md border border-teal-200 bg-white px-1.5 py-0.5 font-medium text-slate-700 hover:border-teal-300 hover:text-slate-900"
+                title={`Go to “${c.node.data.label}” in ${c.wf.name}`}
+              >
+                {c.node.data.label} <span className="font-normal text-slate-400">· {c.wf.name}</span>
+              </button>
+            ))
+          )}
+        </span>
+      )}
     </div>
   )
 }
