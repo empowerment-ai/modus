@@ -13,7 +13,7 @@ import { Section } from './common'
 
 type UserStep = Extract<WfNode, { type: 'user' }>
 
-const STATE_BADGE: Record<string, { label: string; tone: 'slate' | 'brand' | 'green' | 'amber' | 'red' }> = {
+export const STATE_BADGE: Record<string, { label: string; tone: 'slate' | 'brand' | 'green' | 'amber' | 'red' }> = {
   unassigned: { label: 'Waiting', tone: 'amber' },
   assigned: { label: 'In basket', tone: 'brand' },
   working: { label: 'Working', tone: 'green' },
@@ -172,10 +172,15 @@ export function WorkPanel({ app, wf, node }: { app: App; wf: Workflow; node: Use
   )
 }
 
-function Stat({ label, value, tone }: { label: string; value: React.ReactNode; tone?: 'amber' | 'green' | 'red' }) {
+export function Stat({ label, value, tone }: { label: string; value: React.ReactNode; tone?: 'amber' | 'green' | 'red' }) {
   return (
     <div className="rounded-lg bg-slate-50 px-1 py-2">
-      <div className={cx('text-lg leading-none font-semibold tabular-nums', tone === 'amber' ? 'text-amber-600' : tone === 'green' ? 'text-emerald-600' : tone === 'red' ? 'text-rose-600' : 'text-slate-800')}>
+      <div
+        className={cx(
+          'text-lg leading-none font-semibold tabular-nums',
+          tone === 'amber' ? 'text-amber-600' : tone === 'green' ? 'text-emerald-600' : tone === 'red' ? 'text-rose-600' : 'text-slate-800',
+        )}
+      >
         {value}
       </div>
       <div className="mt-1 text-[10px] font-medium tracking-wide text-slate-500 uppercase">{label}</div>

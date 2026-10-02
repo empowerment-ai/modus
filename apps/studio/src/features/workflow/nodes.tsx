@@ -1,24 +1,27 @@
 import { Handle, type NodeProps, Position } from '@xyflow/react'
-import { Ban, Bot, CircleCheck, CircleX, GitFork, Play, TriangleAlert, UserRound } from 'lucide-react'
+import { AlarmClock, Ban, Bot, ChevronRight, CircleCheck, CircleX, Filter, GitFork, GitMerge, Hand, Hourglass, Layers, Play, Plus, RotateCw, TriangleAlert, UserRound } from 'lucide-react'
 import { memo } from 'react'
 import { cx } from '../../components/ui'
 import { DISTRIBUTION } from '../../components/icons'
 import type { NodeMetrics } from '@throughline/core'
-import type { Group, User, WfNode } from '@throughline/core/model/types'
+import { subflowOutcomes } from '@throughline/core/model/templates'
+import type { Group, Id, User, WfNode, Workflow } from '@throughline/core/model/types'
 import { formatDuration } from '@throughline/core/model/util'
 import { useApp, useDesign } from '../../store/design'
 import { useSim, useSimView } from '../../store/sim'
 import { useUi } from '../../store/ui'
+import { FAILURE, SERVICE_KIND, SERVICE_STATUS, TRIGGER } from './kinds'
 
 export type FlowNodeData = { node: WfNode; workflowId: string }
 
 const HEAT_RING = ['', '', 'ring-2 ring-amber-300', 'ring-2 ring-rose-400']
-const HEAT_BADGE = [
-  'bg-slate-100 text-slate-400',
-  'bg-brand-600 text-white',
-  'bg-amber-500 text-white',
-  'bg-rose-600 text-white',
-]
+const HEAT_BADGE = ['bg-slate-100 text-slate-400', 'bg-brand-600 text-white', 'bg-amber-500 text-white', 'bg-rose-600 text-white']
+
+const RESULT_CHIP: Record<string, string> = {
+  completed: 'bg-emerald-50 text-emerald-700',
+  rejected: 'bg-rose-50 text-rose-700',
+  cancelled: 'bg-slate-100 text-slate-600',
+}
 
 function Handles() {
   return (
@@ -33,6 +36,17 @@ function Handles() {
 
 function useMetrics(id: string): NodeMetrics | undefined {
   return useSimView()?.nodes[id]
+}
+
+/** True once the open app's simulation has run at all (nodes switch from design hints to live numbers). */
+function useStarted(): boolean {
+  const appId = useUi((s) => s.appId)
+  return useSim((s) => (s.views[appId]?.clock ?? 0) > 0)
+}
+
+function useWorkflow(id?: Id): Workflow | undefined {
+  const app = useApp(useUi((s) => s.appId))
+  return id ? app?.workflows.find((w) => w.id === id) : undefined
 }
 
 function CountBadge({ value, heat, title, className }: { value: number; heat: number; title?: string; className?: string }) {
@@ -61,6 +75,16 @@ function Bottleneck({ id }: { id: string }) {
   )
 }
 
+/** "3 waiting" in a live footer line; the number is bold and tinted when it matters. */
+function Live({ value, label, tone, title }: { value: number; label: string; tone?: 'amber' | 'red'; title?: string }) {
+  const tint = value > 0 && tone === 'amber' ? 'text-amber-600' : value > 0 && tone === 'red' ? 'text-rose-600' : 'text-slate-700'
+  return (
+    <span title={title} className={cx(value > 0 && tone && tint)}>
+      <b className={cx('font-semibold', tint)}>{value}</b> {label}
+    </span>
+  )
+}
+
 // ---------- Start ----------
 
 export const StartNode = memo(function StartNode({ id, data, selected }: NodeProps & { data: FlowNodeData }) {
@@ -69,17 +93,25 @@ export const StartNode = memo(function StartNode({ id, data, selected }: NodePro
   const wf = app?.workflows.find((w) => w.id === data.workflowId)
   const type = app?.objectTypes.find((t) => t.id === wf?.objectTypeId)
   const m = useMetrics(id)
+  const node = data.node
+  if (node.type !== 'start') return null
+  const trigger = TRIGGER[node.data.trigger ?? 'form']
+  const TriggerIcon = wf?.kind === 'subflow' ? Layers : trigger.icon
+  const subtitle = wf?.kind === 'subflow' ? 'Starts inside a step' : `${trigger.short} · ${node.data.source?.trim() || type?.name || '—'}`
   return (
     <div className={cx('flex w-[184px] items-center gap-2.5 rounded-full border bg-white py-2 pr-2 pl-2 shadow-sm', selected ? 'border-brand-500 ring-2 ring-brand-200' : 'border-emerald-300')}>
       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white">
         <Play size={14} fill="currentColor" />
       </span>
       <div className="min-w-0 flex-1 leading-tight">
-        <div className="line-clamp-2 text-[12.5px] font-semibold text-slate-900">{data.node.data.label}</div>
-        <div className="truncate text-[10.5px] text-slate-500">On create · {type?.name ?? '—'}</div>
+        <div className="line-clamp-2 text-[12.5px] font-semibold text-slate-900">{node.data.label}</div>
+        <div className="flex items-center gap-1 text-[10.5px] text-slate-500" title={subtitle}>
+          <TriggerIcon size={10} className="shrink-0" />
+          <span className="truncate">{subtitle}</span>
+        </div>
       </div>
       {(m?.entered ?? 0) > 0 && (
-        <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700 tabular-nums" title="Created so far">
+        <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700 tabular-nums" title={wf?.kind === 'subflow' ? 'Started so far' : 'Created so far'}>
           {m!.entered}
         </span>
       )}
@@ -93,11 +125,13 @@ export const StartNode = memo(function StartNode({ id, data, selected }: NodePro
 export const EndNode = memo(function EndNode({ id, data, selected }: NodeProps & { data: FlowNodeData }) {
   const node = data.node
   const m = useMetrics(id)
+  const wf = useWorkflow(data.workflowId)
   if (node.type !== 'end') return null
   const result = node.data.result
   const Icon = result === 'completed' ? CircleCheck : result === 'rejected' ? CircleX : Ban
   const tone = result === 'completed' ? 'bg-emerald-600' : result === 'rejected' ? 'bg-rose-600' : 'bg-slate-500'
   const border = result === 'completed' ? 'border-emerald-300' : result === 'rejected' ? 'border-rose-300' : 'border-slate-300'
+  const outcome = wf?.kind === 'subflow' ? node.data.outcome?.trim() : undefined
   return (
     <div className={cx('flex w-[156px] items-center gap-2.5 rounded-full border bg-white py-2 pr-2 pl-2 shadow-sm', selected ? 'border-brand-500 ring-2 ring-brand-200' : border)}>
       <span className={cx('flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-white', tone)}>
@@ -105,7 +139,13 @@ export const EndNode = memo(function EndNode({ id, data, selected }: NodeProps &
       </span>
       <div className="min-w-0 flex-1 leading-tight">
         <div className="line-clamp-2 text-[12.5px] font-semibold text-slate-900">{node.data.label}</div>
-        <div className="text-[10.5px] text-slate-500 capitalize">{result}</div>
+        {outcome ? (
+          <div className="truncate text-[10.5px] font-medium text-slate-600" title={`The step running this subflow continues on its “${outcome}” path`}>
+            → {outcome}
+          </div>
+        ) : (
+          <div className="text-[10.5px] text-slate-500 capitalize">{result}</div>
+        )}
       </div>
       <span key={m?.entered ?? 0} className="count-pop rounded-full bg-slate-100 px-1.5 py-0.5 text-[11px] font-semibold text-slate-700 tabular-nums" title="Finished here">
         {m?.entered ?? 0}
@@ -138,26 +178,265 @@ export const DecisionNode = memo(function DecisionNode({ id, data, selected }: N
   )
 })
 
+// ---------- Parallel split / join ----------
+
+/**
+ * A small diamond with a glyph. The name sits outside, below and to the right,
+ * where paths leaving the four corners don't run.
+ */
+function Gateway({
+  selected,
+  alert,
+  glyph,
+  label,
+  sub,
+  title,
+  badge,
+}: {
+  selected: boolean
+  alert: boolean
+  glyph: React.ReactNode
+  label: string
+  sub: string
+  title: string
+  badge?: React.ReactNode
+}) {
+  return (
+    <div className="relative h-[84px] w-[84px]" title={title}>
+      <div
+        className={cx(
+          'absolute inset-[13px] rotate-45 rounded-[9px] border-2 bg-indigo-50 shadow-sm',
+          selected ? 'border-brand-500 ring-2 ring-brand-200' : alert ? 'border-rose-500' : 'border-indigo-400',
+        )}
+      />
+      <div className="absolute inset-0 flex items-center justify-center text-indigo-600">{glyph}</div>
+      <div className="absolute top-[calc(100%-12px)] left-[calc(50%+14px)] w-max max-w-[150px] rounded bg-white/85 px-1 py-px leading-tight">
+        <div className="truncate text-[11px] font-semibold text-slate-800">{label}</div>
+        <div className="truncate text-[10px] text-slate-500">{sub}</div>
+      </div>
+      {badge}
+      <Handles />
+    </div>
+  )
+}
+
+export const SplitNode = memo(function SplitNode({ id, data, selected }: NodeProps & { data: FlowNodeData }) {
+  const node = data.node
+  const m = useMetrics(id)
+  if (node.type !== 'split') return null
+  const inclusive = node.data.mode === 'inclusive'
+  const stuck = m?.stuck ?? 0
+  return (
+    <Gateway
+      selected={!!selected}
+      alert={stuck > 0}
+      glyph={inclusive ? <Filter size={18} strokeWidth={2.5} /> : <Plus size={24} strokeWidth={3} />}
+      label={node.data.label}
+      sub={inclusive ? 'Every path that matches' : 'All paths at once'}
+      title={inclusive ? 'Inclusive split: runs every path whose rule matches, at the same time' : 'Parallel split: runs every path at the same time'}
+      badge={stuck > 0 && <CountBadge value={stuck} heat={3} title={`${stuck} stuck: no path applies`} className="absolute -top-2 -right-2" />}
+    />
+  )
+})
+
+export const JoinNode = memo(function JoinNode({ id, data, selected }: NodeProps & { data: FlowNodeData }) {
+  const node = data.node
+  const m = useMetrics(id)
+  const wf = useWorkflow(data.workflowId)
+  if (node.type !== 'join') return null
+  const d = node.data
+  const incoming = wf?.edges.filter((e) => e.target === id).length ?? 0
+  const sub = d.mode === 'any' ? 'First one wins' : d.mode === 'count' ? `${d.count ?? 1} of ${incoming}` : 'Wait for all'
+  const joining = m?.joining ?? 0
+  const stuck = m?.stuck ?? 0
+  return (
+    <Gateway
+      selected={!!selected}
+      alert={stuck > 0}
+      glyph={<GitMerge size={20} strokeWidth={2.25} />}
+      label={d.label}
+      sub={sub}
+      title={
+        d.mode === 'all'
+          ? 'Join: waits until every branch has arrived'
+          : d.mode === 'any'
+            ? 'Join: continues with the first branch to arrive'
+            : `Join: continues once ${d.count ?? 1} branches have arrived`
+      }
+      badge={
+        (joining > 0 || stuck > 0) && (
+          <CountBadge
+            value={stuck || joining}
+            heat={stuck ? 3 : 1}
+            title={stuck ? `${stuck} stuck` : `${joining} branch${joining === 1 ? '' : 'es'} waiting for the others`}
+            className="absolute -top-2 -right-2"
+          />
+        )
+      }
+    />
+  )
+})
+
+// ---------- Timer ----------
+
+export const WaitNode = memo(function WaitNode({ id, data, selected }: NodeProps & { data: FlowNodeData }) {
+  const node = data.node
+  const m = useMetrics(id)
+  if (node.type !== 'wait') return null
+  const waiting = m?.waiting ?? 0
+  return (
+    <div className={cx('flex w-[156px] items-center gap-2 rounded-full border bg-white py-1.5 pr-1.5 pl-1.5 shadow-sm', selected ? 'border-brand-500 ring-2 ring-brand-200' : 'border-orange-300')}>
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-orange-50 text-orange-600">
+        <Hourglass size={15} />
+      </span>
+      <div className="min-w-0 flex-1 leading-tight">
+        <div className="truncate text-[12.5px] font-semibold text-slate-900">{node.data.label}</div>
+        <div className="text-[10.5px] text-slate-500">Wait {formatDuration(node.data.minutes)}</div>
+      </div>
+      {waiting > 0 && <CountBadge value={waiting} heat={1} title={`${waiting} on the timer`} />}
+      <Handles />
+    </div>
+  )
+})
+
+// ---------- Subflow step ----------
+
+export const SubflowNode = memo(function SubflowNode({ id, data, selected }: NodeProps & { data: FlowNodeData }) {
+  const node = data.node
+  const m = useMetrics(id)
+  const started = useStarted()
+  const child = useWorkflow(node.type === 'subflow' ? node.data.workflowId : undefined)
+  if (node.type !== 'subflow') return null
+  const endings = subflowOutcomes(child)
+  const inside = m?.inside ?? 0
+  const total = m?.total ?? 0
+
+  return (
+    <div className="relative w-[258px]">
+      {/* A second card peeking out from behind: this step holds a whole process. */}
+      <div className="absolute inset-0 translate-x-[5px] translate-y-[5px] rounded-xl border border-teal-200 bg-teal-50" />
+      <div className={cx('relative rounded-xl border bg-white shadow-sm', selected ? 'border-brand-500 ring-2 ring-brand-200' : 'border-teal-300', !selected && HEAT_RING[m?.heat ?? 0])}>
+        <div className="flex items-start gap-2.5 p-2.5 pb-2">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-600">
+            <Layers size={17} />
+          </span>
+          <div className="min-w-0 flex-1 leading-tight">
+            <div className="line-clamp-2 text-[12.5px] font-semibold text-slate-900">{node.data.label}</div>
+            {child ? (
+              <div className="mt-0.5 truncate text-[10.5px] text-slate-500" title={`Runs the “${child.name}” subflow`}>
+                Subflow · {child.name}
+              </div>
+            ) : (
+              <div className="mt-0.5 flex items-center gap-1 text-[10.5px] font-medium text-amber-700">
+                <TriangleAlert size={11} /> Choose a subflow
+              </div>
+            )}
+          </div>
+          <CountBadge value={total} heat={m?.heat ?? 0} title={`${inside} running inside${total > inside ? `, ${total - inside} stuck here` : ''}`} />
+        </div>
+        <div className="flex items-center gap-2 border-t border-slate-100 px-2.5 pt-1.5 pb-2">
+          <div className="min-w-0 flex-1">
+            {started ? (
+              <div className="flex items-center gap-2 text-[10.5px] text-slate-500 tabular-nums">
+                <Live value={inside} label="inside" />
+                {(m?.avgTime ?? 0) > 0 && <span>avg {formatDuration(m!.avgTime)}</span>}
+                {(m?.stuck ?? 0) > 0 && <Live value={m!.stuck} label="stuck" tone="red" />}
+              </div>
+            ) : endings.length ? (
+              <div className="flex flex-wrap gap-1">
+                {endings.map((o) => (
+                  <span key={o.key} className={cx('rounded px-1.5 py-0.5 text-[10.5px] font-medium', RESULT_CHIP[o.result])}>
+                    {o.key}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <span className="text-[10.5px] text-slate-400">{child ? 'No endings yet' : 'Not set up'}</span>
+            )}
+          </div>
+          {child && (
+            <button
+              type="button"
+              className="nodrag nopan inline-flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[10.5px] font-semibold text-teal-700 hover:bg-teal-50"
+              title={`Open “${child.name}” (or double-click the step)`}
+              onClick={(e) => {
+                e.stopPropagation()
+                useUi.getState().drillInto(child.id)
+              }}
+            >
+              Open <ChevronRight size={11} />
+            </button>
+          )}
+        </div>
+      </div>
+      <Handles />
+    </div>
+  )
+})
+
 // ---------- Automated step ----------
 
 export const AutoNode = memo(function AutoNode({ id, data, selected }: NodeProps & { data: FlowNodeData }) {
   const node = data.node
   const m = useMetrics(id)
+  const started = useStarted()
+  const services = useDesign((s) => s.design.services)
+  const groups = useDesign((s) => s.design.groups)
   if (node.type !== 'auto') return null
+  const d = node.data
+  const svc = services.find((s) => s.id === d.serviceId)
+  const op = svc ? (svc.operations.find((o) => o.id === d.operationId) ?? svc.operations[0]) : undefined
+  const KindIcon = svc ? SERVICE_KIND[svc.kind].icon : Bot
   const total = m?.total ?? 0
+  const policy = FAILURE[d.onFailure ?? 'route']
+  const PolicyIcon = policy.icon
+  const fallback = groups.find((g) => g.id === d.fallbackGroupId)
+  const retries = d.retries ?? 0
+
   return (
-    <div className={cx('relative w-[228px] rounded-xl border bg-white shadow-sm', selected ? 'border-brand-500 ring-2 ring-brand-200' : 'border-slate-200', HEAT_RING[m?.heat ?? 0])}>
-      <div className="flex items-center gap-2.5 p-2.5">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-violet-50 text-violet-600">
-          <Bot size={17} />
+    <div className={cx('relative w-[228px] rounded-xl border bg-white shadow-sm', selected ? 'border-brand-500 ring-2 ring-brand-200' : 'border-slate-200', !selected && HEAT_RING[m?.heat ?? 0])}>
+      <Bottleneck id={id} />
+      <div className="flex items-start gap-2.5 p-2.5">
+        <span
+          className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-violet-50 text-violet-600"
+          title={svc ? `${SERVICE_KIND[svc.kind].label} · ${SERVICE_STATUS[svc.status].label}` : 'Built-in actions'}
+        >
+          <KindIcon size={17} />
+          {svc && svc.status !== 'online' && <span className={cx('absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-white', SERVICE_STATUS[svc.status].dot)} />}
         </span>
         <div className="min-w-0 flex-1 leading-tight">
-          <div className="line-clamp-2 text-[12.5px] font-semibold text-slate-900">{node.data.label}</div>
-          <div className="truncate text-[10.5px] text-slate-500">
-            Automated · {node.data.actions.length} action{node.data.actions.length === 1 ? '' : 's'} · ~{node.data.avgMinutes}m
+          <div className="line-clamp-2 text-[12.5px] font-semibold text-slate-900">{d.label}</div>
+          <div className="mt-0.5 truncate text-[10.5px] text-slate-500" title={svc ? `${svc.name} · ${op?.name ?? 'no operation'}` : undefined}>
+            {svc ? `${svc.name} · ${op?.name ?? 'pick an operation'}` : `Automated · ${d.actions.length} action${d.actions.length === 1 ? '' : 's'} · ~${d.avgMinutes}m`}
           </div>
+          {started ? (
+            <div className="mt-1 flex items-center gap-2 text-[10.5px] text-slate-500 tabular-nums">
+              <Live value={m?.automated ?? 0} label={svc ? 'calling' : 'running'} />
+              {svc && <Live value={m?.queued ?? 0} label="queued" tone="amber" title={m?.queued ? 'Waiting for a free slot on the service' : undefined} />}
+              {(m?.manual ?? 0) > 0 && (
+                <span className="inline-flex items-center gap-0.5 rounded bg-amber-50 px-1 font-medium text-amber-800" title="Being done by hand">
+                  <Hand size={10} /> {m!.manual} by hand
+                </span>
+              )}
+              {(m?.stuck ?? 0) > 0 && <Live value={m!.stuck} label="stuck" tone="red" />}
+            </div>
+          ) : (
+            svc && (
+              <div className="mt-1 flex items-center gap-1 text-[10px] text-slate-500">
+                {retries > 0 && (
+                  <span className="inline-flex items-center gap-0.5 rounded bg-slate-100 px-1 py-px" title={`Retries ${retries} time${retries === 1 ? '' : 's'} before it counts as failed`}>
+                    <RotateCw size={9} /> {retries}
+                  </span>
+                )}
+                <span className="inline-flex min-w-0 items-center gap-0.5 rounded bg-slate-100 px-1 py-px" title={`If it fails: ${policy.label.toLowerCase()}`}>
+                  <PolicyIcon size={9} className="shrink-0" />
+                  <span className="truncate">{d.onFailure === 'manual' && fallback ? fallback.name : policy.short}</span>
+                </span>
+              </div>
+            )
+          )}
         </div>
-        <CountBadge value={total} heat={m?.stuck ? 3 : 1} title={`${total} being processed`} />
+        <CountBadge value={total} heat={m?.heat ?? 0} title={`${total} at this step`} />
       </div>
       <Handles />
     </div>
@@ -171,13 +450,25 @@ export const UserNode = memo(function UserNode({ id, data, selected }: NodeProps
   const m = useMetrics(id)
   const groups = useDesign((s) => s.design.groups)
   const users = useDesign((s) => s.design.users)
-  const started = useSim((s) => (s.views[useUi.getState().appId]?.clock ?? 0) > 0)
+  const app = useApp(useUi((s) => s.appId))
+  const started = useStarted()
   if (node.type !== 'user') return null
   const d = node.data
   const dist = DISTRIBUTION[d.distribution]
   const DistIcon = dist.icon
   const group = groups.find((g) => g.id === d.groupId)
-  const who = d.distribution === 'direct' ? (users.find((u) => u.id === d.userId)?.name ?? 'No one') : group ? `${group.name} (${group.memberIds.length})` : 'No group'
+  const groupText = group ? `${group.name} (${group.memberIds.length})` : 'No group'
+  let who: string
+  if (d.distribution === 'direct') who = users.find((u) => u.id === d.userId)?.name ?? 'No one'
+  else if (d.distribution === 'field') {
+    const wf = app?.workflows.find((w) => w.id === data.workflowId)
+    const field = app?.objectTypes.find((t) => t.id === wf?.objectTypeId)?.fields.find((f) => f.id === d.assigneeFieldId)
+    who = field?.label ?? 'Pick a field'
+  } else if (d.distribution === 'manager') {
+    const dispatchers = groups.find((g) => g.id === d.distributorGroupId)?.name ?? users.find((u) => u.id === (d.supervisorId ?? group?.supervisorId))?.name ?? 'no one'
+    who = `by ${dispatchers} → ${groupText}`
+  } else who = groupText
+  const subtitle = `${dist.short}${d.distribution === 'manager' ? ' ' : ' · '}${who}`
   const total = m?.total ?? 0
 
   return (
@@ -189,11 +480,16 @@ export const UserNode = memo(function UserNode({ id, data, selected }: NodeProps
         </span>
         <div className="min-w-0 flex-1 leading-tight">
           <div className="line-clamp-2 text-[12.5px] font-semibold text-slate-900">{d.label}</div>
-          <div className="mt-0.5 flex items-center gap-1 truncate text-[10.5px] text-slate-500">
+          <div className="mt-0.5 flex items-center gap-1 text-[10.5px] text-slate-500">
             <DistIcon size={11} className="shrink-0" />
-            <span className="truncate">
-              {dist.short} · {who}
+            <span className="truncate" title={subtitle}>
+              {subtitle}
             </span>
+            {d.escalateAfterHours ? (
+              <span title={`Escalates after ${d.escalateAfterHours} h at this step`} className="ml-auto shrink-0 text-amber-600">
+                <AlarmClock size={11} />
+              </span>
+            ) : null}
           </div>
         </div>
         <CountBadge value={total} heat={m?.heat ?? 0} title={`${total} at this step`} />
@@ -203,7 +499,7 @@ export const UserNode = memo(function UserNode({ id, data, selected }: NodeProps
           <>
             <WorkloadStrip node={node} metrics={m} group={group} users={users} />
             <div className="mt-1 flex items-center gap-2 text-[10.5px] text-slate-500 tabular-nums">
-              <span title={d.distribution === 'manager' ? 'Awaiting supervisor' : d.distribution === 'queue' ? 'Waiting in queue' : 'Unassigned'}>
+              <span title={d.distribution === 'manager' ? 'Awaiting a dispatcher' : d.distribution === 'queue' ? 'Waiting in queue' : 'Unassigned'}>
                 <b className="font-semibold text-slate-700">{m?.unassigned ?? 0}</b> {d.distribution === 'manager' ? 'to hand out' : 'waiting'}
               </span>
               <span>
@@ -268,6 +564,10 @@ export const nodeTypes = {
   start: StartNode,
   end: EndNode,
   decision: DecisionNode,
+  split: SplitNode,
+  join: JoinNode,
+  wait: WaitNode,
+  subflow: SubflowNode,
   auto: AutoNode,
   user: UserNode,
 }
