@@ -129,28 +129,23 @@ export function TemplatesView() {
               </EmptyState>
             </Card>
           ) : (
-            byCategory.map(({ category, list }) => (
-              <section key={category} aria-labelledby={`cat-${category}`}>
-                <h2 id={`cat-${category}`} className="mb-2.5 flex items-center gap-2 text-sm font-semibold text-slate-900">
-                  {category}
-                  <span className="text-xs font-normal text-slate-400 tabular-nums">{list.length}</span>
-                </h2>
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-                  {list.map((t) => (
-                    <TemplateCard
-                      key={t.id}
-                      t={t}
-                      activeTag={tag}
-                      onTag={setTag}
-                      onUse={() => setUsing(t.id)}
-                      onDuplicate={() => duplicate(t)}
-                      onEdit={() => setEditing(t.id)}
-                      onDelete={() => remove(t)}
-                    />
-                  ))}
-                </div>
-              </section>
-            ))
+            // One grid, ordered by category: each card names its category, so a small library doesn't read as a sparse list.
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {byCategory
+                .flatMap(({ list }) => list)
+                .map((t) => (
+                  <TemplateCard
+                    key={t.id}
+                    t={t}
+                    activeTag={tag}
+                    onTag={setTag}
+                    onUse={() => setUsing(t.id)}
+                    onDuplicate={() => duplicate(t)}
+                    onEdit={() => setEditing(t.id)}
+                    onDelete={() => remove(t)}
+                  />
+                ))}
+            </div>
           )}
         </div>
       </div>
