@@ -3,7 +3,7 @@ import { optionsForField } from '../model/lists'
 import { seedDesign } from '../model/seed'
 import { expandToSubflow, instantiateTemplate, suggestBinding } from '../model/templates'
 import type { App, Distribution, Group, ServiceDef, User, WfEdge, WfNode, Workflow } from '../model/types'
-import { activeTokens, advance, burst, createObject, type Ctx, newSim, openLoads, sstat } from './engine'
+import { activeTokens, advance, burst, completeJob, createObject, type Ctx, failJob, newSim, openLoads, pollJobs, sstat } from './engine'
 import {
   adminAssign,
   adminMove,
@@ -670,6 +670,52 @@ describe('what-if scenarios', () => {
     const r = runScenario(sim, ctx, [{ kind: 'capacity', serviceId: 'svc_vision', concurrency: 4 }], 2)
     expect(r.scenario.view.nodes.s_detect!.queued).toBeLessThan(r.baseline.view.nodes.s_detect!.queued)
     expect(r.scenario.completed).toBeGreaterThan(r.baseline.completed)
+  })
+})
+
+// ---------- Live mode (the server): real workers, real people ----------
+
+describe('live mode', () => {
+  function liveInvoice(): Ctx {
+    const d = seedDesign()
+    return { app: d.apps[0]!, users: d.users, groups: d.groups, services: d.services, live: true }
+  }
+
+  it('turns service calls into jobs that workers poll, lease and complete', () => {
+    const ctx = liveInvoice()
+    const sim = newSim('app_invoice')
+    const o = createObject(sim, ctx, 'w_invoice', { f_invno: 'A-77', f_amount: 420, f_po: 'PO-9' }, 'u_maya')!
+    advance(sim, ctx, 30)
+    expect(o.tokens[0]!.nodeId).toBe('n_capture') // nothing happens until a worker shows up
+    const [job] = pollJobs(sim, ctx, 'svc_erp', 'erp-worker-1')
+    expect(job).toMatchObject({ itemNumber: o.number, operation: 'POST /purchase-orders/match', inputs: { invoiceNumber: 'A-77', amount: 420, po: 'PO-9' } })
+    expect(pollJobs(sim, ctx, 'svc_erp', 'erp-worker-2')).toHaveLength(0) // leased to worker 1
+    expect(completeJob(sim, ctx, job!.id, { matched: true })).toBe(true)
+    expect(o.data.f_pomatch).toBe(true)
+    const t = o.tokens[0]!
+    expect(t.nodeId).toBe('n_clerk')
+    expect(t.state).toBe('assigned') // load balanced to a clerk...
+    advance(sim, ctx, 600)
+    expect(t.state).toBe('assigned') // ...who works it through the API, not the simulation
+    expect(sim.created).toBe(1) // and no simulated arrivals
+  })
+
+  it('a lease that runs out puts the job back up for grabs; failures retry, then fall back to people', () => {
+    const ctx = liveInvoice()
+    const sim = newSim('app_invoice')
+    const o = createObject(sim, ctx, 'w_invoice', { f_amount: 420 }, 'u_maya')!
+    advance(sim, ctx, 1)
+    const [first] = pollJobs(sim, ctx, 'svc_erp', 'w1', 1, 5)
+    advance(sim, ctx, 6)
+    const [again] = pollJobs(sim, ctx, 'svc_erp', 'w2')
+    expect(again!.id).toBe(first!.id)
+    expect(failJob(sim, ctx, again!.id, 'timed out')).toBe(true) // retries: 1
+    const [retry] = pollJobs(sim, ctx, 'svc_erp', 'w2')
+    expect(retry!.attempt).toBe(2)
+    failJob(sim, ctx, retry!.id, 'timed out')
+    const t = o.tokens[0]!
+    expect(t.manual).toBe(true) // onFailure: manual → AP Exceptions
+    expect(t.state).toBe('assigned')
   })
 })
 

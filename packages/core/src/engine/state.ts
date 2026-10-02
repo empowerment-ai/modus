@@ -58,6 +58,9 @@ export interface Token {
   calls: CallFrame[]
   /** Service whose slot an in-flight automated call holds. */
   serviceId?: Id
+  /** Live mode: the worker that claimed this job, and until when (sim minute). */
+  workerId?: string
+  leaseUntil?: number
   /** Automated step: which attempt is running (retries). */
   attempt?: number
   /** Automated step being done by a person (automation failed or an administrator reassigned it). */
@@ -237,6 +240,12 @@ export interface Ctx {
    * their baskets fill as usual, but nothing is started or released for them.
    */
   manualUserIds?: Id[]
+  /**
+   * Live mode (the server): no simulated arrivals or people, nobody is worked or
+   * dispatched automatically, and service-bound automated steps become jobs that
+   * external workers poll and complete (pollJobs / completeJob / failJob).
+   */
+  live?: boolean
 }
 
 export const ADMIN = 'Administrator'
