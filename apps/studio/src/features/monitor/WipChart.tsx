@@ -14,7 +14,7 @@ interface Point {
 }
 
 /** "Day 2 14:00"-style label for a sim minute (clock starts Monday 08:00). */
-function axisLabel(t: number, spanMinutes: number): string {
+export function axisLabel(t: number, spanMinutes: number): string {
   const total = Math.floor(t) + 8 * 60
   const day = Math.floor(total / 1440) + 1
   const h = Math.floor((total % 1440) / 60)
@@ -24,7 +24,7 @@ function axisLabel(t: number, spanMinutes: number): string {
   return spanMinutes > 20 * 60 ? `D${day} ${hh}` : hh
 }
 
-function niceMax(v: number): number {
+export function niceMax(v: number): number {
   if (v <= 4) return 4
   const pow = 10 ** Math.floor(Math.log10(v))
   for (const step of [1, 2, 2.5, 5, 10]) if (step * pow >= v) return step * pow

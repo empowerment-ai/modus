@@ -1,4 +1,4 @@
-import { Activity, FastForward, Play } from 'lucide-react'
+import { Activity, ArrowRight, FastForward, FlaskConical, Play, TriangleAlert } from 'lucide-react'
 import { type ReactNode, useMemo } from 'react'
 import { Button, Card, cx, EmptyState } from '../../components/ui'
 import { formatClock, formatDuration } from '@throughline/core/model/util'
@@ -6,7 +6,9 @@ import { useApp, useDesign } from '../../store/design'
 import { useSim, useSimState, useSimView } from '../../store/sim'
 import { useUi } from '../../store/ui'
 import { ActivityFeed } from './ActivityFeed'
+import { describeBottleneck, openStep } from './bottleneck'
 import { ObjectExplorer } from './ObjectExplorer'
+import { ServicesPanel } from './ServicesPanel'
 import { StepsTable } from './StepsTable'
 import { WipChart } from './WipChart'
 import { WorkloadTable } from './WorkloadTable'
@@ -19,6 +21,7 @@ export function MonitorView() {
   const app = useApp(appId)
   const users = useDesign((s) => s.design.users)
   const groups = useDesign((s) => s.design.groups)
+  const services = useDesign((s) => s.design.services)
   const view = useSimView()
   const sim = useSimState()
   const version = useSim((s) => s.version)
@@ -29,6 +32,8 @@ export function MonitorView() {
 
   const slaBreaches = view ? Object.values(view.nodes).reduce((sum, m) => sum + m.slaBreaches, 0) : 0
   const hasWork = (sim?.created ?? 0) > 0
+  const bottleneck = describeBottleneck(view, app, { users, groups, services })
+  const usesServices = app.workflows.some((w) => w.nodes.some((n) => n.type === 'auto' && n.data.serviceId))
 
   return (
     <div className="h-full overflow-y-auto">
@@ -46,14 +51,16 @@ export function MonitorView() {
           </span>
         </header>
 
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9">
           <Kpi label="Created" value={(view?.created ?? 0).toLocaleString()} />
           <Kpi label="In flight" value={(view?.active ?? 0).toLocaleString()} />
           <Kpi label="Completed" value={(view?.completed ?? 0).toLocaleString()} tone="green" />
           <Kpi label="Rejected" value={(view?.rejected ?? 0).toLocaleString()} />
           <Kpi label="Avg cycle time" value={formatDuration(view?.avgCycle ?? 0)} hint="Created to finished" />
           <Kpi label="SLA breaches" value={slaBreaches.toLocaleString()} tone={slaBreaches > 0 ? 'amber' : undefined} hint="Items past their step's SLA" />
+          <Kpi label="Overdue" value={(view?.overdue ?? 0).toLocaleString()} tone={(view?.overdue ?? 0) > 0 ? 'amber' : undefined} hint="Open items past their workflow's target time" />
           <Kpi label="Stuck" value={(view?.stuck ?? 0).toLocaleString()} tone={(view?.stuck ?? 0) > 0 ? 'red' : undefined} hint="No path in the map" />
+          <Kpi label="Parallel branches" value={(view?.branches ?? 0).toLocaleString()} hint="Branches running side by side inside items that split into parallel paths" />
         </div>
 
         {!hasWork ? (
@@ -72,20 +79,39 @@ export function MonitorView() {
           </Card>
         ) : (
           <>
+            {bottleneck && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-rose-200 bg-rose-50/60 px-4 py-2.5">
+                <TriangleAlert size={16} className="shrink-0 text-rose-600" />
+                <p className="min-w-0 flex-1 text-xs text-rose-950">
+                  <span className="font-semibold">Bottleneck: {bottleneck.node.data.label}</span>
+                  {app.workflows.length > 1 && <span className="text-rose-800"> in {bottleneck.wf.name}</span>}
+                  <span className="text-rose-800"> · {bottleneck.why}</span>
+                </p>
+                <Button size="sm" variant="ghost" onClick={() => openStep(app, bottleneck.wf.id, bottleneck.node.id)}>
+                  Open step
+                </Button>
+                <Button size="sm" variant="primary" icon={<FlaskConical size={13} />} onClick={() => useUi.getState().setView('scenarios')}>
+                  Test a fix in What-if <ArrowRight size={13} />
+                </Button>
+              </div>
+            )}
+
             <div className="grid gap-4 xl:grid-cols-5">
-              <Section title="Work in flight over time" className="xl:col-span-2">
+              <Section title="Work in flight over time" className={usesServices ? 'xl:col-span-3' : 'xl:col-span-5'}>
                 <div className="px-4 pt-3 pb-3">
                   <WipChart series={sim!.series} />
                 </div>
               </Section>
-              <Section
-                title="Steps"
-                subtitle="Click a step to open it in the designer. The shuffle button evens out its work."
-                className="xl:col-span-3"
-              >
-                <StepsTable app={app} view={view} />
-              </Section>
+              {usesServices && (
+                <Section title="Services" subtitle="Load against capacity, queue and failures." className="xl:col-span-2">
+                  <ServicesPanel app={app} services={services} view={view} />
+                </Section>
+              )}
             </div>
+
+            <Section title="Steps" subtitle="Click a step to open it in the designer. The shuffle button evens out its work.">
+              <StepsTable app={app} view={view} services={services} />
+            </Section>
 
             <div className="grid gap-4 xl:grid-cols-5">
               <Section title="Workload by person" subtitle="Open items are assigned or in progress." className="xl:col-span-3">
@@ -124,7 +150,9 @@ function Kpi({ label, value, hint, tone }: { label: string; value: ReactNode; hi
       <div className="text-[10.5px] font-medium tracking-wide text-slate-500 uppercase" title={hint}>
         {label}
       </div>
-      <div className={cx('mt-0.5 text-xl font-semibold tabular-nums', tone === 'green' ? 'text-emerald-700' : tone === 'red' ? 'text-rose-600' : tone === 'amber' ? 'text-amber-700' : 'text-slate-900')}>
+      <div
+        className={cx('mt-0.5 text-xl font-semibold tabular-nums', tone === 'green' ? 'text-emerald-700' : tone === 'red' ? 'text-rose-600' : tone === 'amber' ? 'text-amber-700' : 'text-slate-900')}
+      >
         {value}
       </div>
     </Card>
