@@ -15,6 +15,7 @@ export function fieldsUsedBy(wf: Pick<Workflow, 'nodes' | 'edges'> & { fieldLock
   for (const n of wf.nodes) {
     if (n.type === 'user') {
       for (const [fid, a] of Object.entries(n.data.fieldAccess)) if (a === 'edit') used.add(fid)
+      if (n.data.assigneeFieldId) used.add(n.data.assigneeFieldId)
       for (const o of n.data.outcomes) for (const a of o.actions) actionFields(a, used)
     }
     if (n.type === 'auto') {
@@ -167,6 +168,7 @@ export function instantiateTemplate(
       d.distributorGroupId = group(d.distributorGroupId)
       d.supervisorId = user(d.supervisorId)
       d.userId = user(d.userId)
+      d.assigneeFieldId = d.assigneeFieldId && fid(d.assigneeFieldId)
       d.fieldAccess = Object.fromEntries(Object.entries(d.fieldAccess).map(([k, v]) => [fid(k), v]))
       d.outcomes = d.outcomes.map((o) => {
         const nid = uid('o')

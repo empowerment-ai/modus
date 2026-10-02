@@ -671,6 +671,11 @@ describe('templates', () => {
     const b = instantiateTemplate(app, tpl, { objectTypeId: 't_invoice', binding, groups: d.groups, users: d.users })
     expect(a.newFields).toHaveLength(0)
     expect(a.workflow.nodes.map((n) => n.id)).not.toEqual(b.workflow.nodes.map((n) => n.id))
+    // "Person on the item" steps keep pointing at the mapped person field.
+    const incident = d.templates.find((t) => t.id === 'tpl_incident')!
+    const inc = instantiateTemplate(app, incident, { objectTypeId: 't_invoice', binding: suggestBinding(incident, app.objectTypes[0]!.fields), groups: d.groups, users: d.users })
+    const write = inc.workflow.nodes.find((n) => n.type === 'user' && n.data.distribution === 'field')
+    expect(write?.type === 'user' && inc.newFields.some((f) => f.id === write.data.assigneeFieldId)).toBe(true)
     const rule = a.workflow.edges.find((e) => e.data.condition)!.data.condition!.rules[0]!
     expect(rule.fieldId).toBe('f_amount')
     // Every outcome path points at an outcome that exists on its step.

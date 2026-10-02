@@ -113,6 +113,7 @@ export function computeView(sim: SimState, ctx: Ctx): SimView {
   let branches = 0
   let overdue = 0
   const queuedBySvc = new Map<Id, number>()
+  const insideSeen = new Set<string>()
   for (const obj of activeObjects(sim)) {
     if (obj.dueBy !== undefined && sim.clock > obj.dueBy) overdue++
     if (obj.tokens.length > 1) branches += obj.tokens.length
@@ -122,8 +123,11 @@ export function computeView(sim: SimState, ctx: Ctx): SimView {
       m.oldestAge = Math.max(m.oldestAge, sim.clock - t.enteredAt)
       const node = idx.node.get(t.nodeId)?.node
       if (node?.type === 'user' && node.data.slaHours && sim.clock - t.enteredAt > node.data.slaHours * 60) m.slaBreaches++
-      // Subflow steps count everything running inside them, at every level.
+      // Subflow steps count the items running inside them, at every level (once per item, however many branches).
       for (const c of t.calls) {
+        const key = `${c.nodeId}|${obj.id}`
+        if (insideSeen.has(key)) continue
+        insideSeen.add(key)
         const sm = (nodes[c.nodeId] ??= blank())
         sm.inside++
         sm.total++
