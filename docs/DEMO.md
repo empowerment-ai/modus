@@ -21,8 +21,10 @@ applications. **Settings › Restore sample data** resets everything.
 
 ## 2. Fix the bottleneck — safely (What-if)
 
-1. **What-if** (left rail). The current bottleneck is suggested: *Add 2 people to Finance
-   Leadership*. Run 8 hours.
+1. **What-if** (left rail), or **Monitor › Test a fix in What-if**. Fixes for the current
+   bottleneck are suggested: *Add 2 people to Finance Leadership* (Controller approval goes to
+   one named person, so the suggestion also switches it to load balanced), *Cut handling time
+   by 25%*, *Switch to load balanced*. Add one and run 8 hours.
 2. Both futures start from the same live state with the same random numbers, so the difference
    is the change: more invoices finished, cycle time down, the bottleneck moves.
 3. Try *Arrivals +50%* to stress the process, or take the ERP offline for the run.

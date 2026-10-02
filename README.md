@@ -12,7 +12,7 @@ the work.
   <a href="docs/ROADMAP.md">Roadmap</a>
 </p>
 
-![The studio: an invoice process with live counts, parallel steps and a subflow](docs/images/studio.png)
+![The studio: an invoice process with live counts, parallel steps and a subflow](docs/images/studio.jpg)
 
 Throughline is for organizations whose work moves through people and systems: approvals,
 requests, case work — and also processes that aren't "business" at all, like camera signals
@@ -57,6 +57,15 @@ they changed something.
 - **Field security** in three layers (sensitive fields, workflow locks, step access), enforced
   by the engine, with a security matrix and "check as a person".
 - A complete **audit history** for every item, exportable as **OCEL 2.0** for process mining.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/workspace.jpg" alt="The Workspace: a watch commander's basket and the work form, with field security applied"><br><sub><b>Workspace.</b> What people doing the work see: their basket by priority and due date, and the form with exactly what they may change at this step.</sub></td>
+    <td width="50%"><img src="docs/images/what-if.jpg" alt="What-if: raising GPU capacity clears the AI detection backlog"><br><sub><b>What-if.</b> Double the GPU pool behind AI detection: 231 more camera events handled in 8 hours, and the bottleneck moves to dispatch.</sub></td>
+  </tr>
+</table>
+
+![Camera events: AI detection on a GPU worker pool, four enrichment checks in parallel, dispatch, and an incident-report subflow](docs/images/camera-triage.png)
 
 ## Three sample applications
 
