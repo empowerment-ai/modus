@@ -291,6 +291,11 @@ function InputsEditor({ d, type, onChange }: { d: AutoStepData; type?: ObjectTyp
   const entries = Object.entries(d.inputs ?? {})
   const set = (i: number, key: string, value: string) => onChange(Object.fromEntries(entries.map((e, j) => (j === i ? [key, value] : e))))
   const fieldLabel = (id: string) => type?.fields.find((f) => f.id === id)?.label ?? 'removed field'
+  const freshKey = () => {
+    let i = entries.length + 1
+    while (d.inputs?.[`param${i}`] !== undefined) i++
+    return `param${i}`
+  }
   const preview = (v: string) => v.replace(/\{field:([^}]+)\}/g, (_, id: string) => `‹${fieldLabel(id)}›`).replace(/\{number\}/g, '‹Item number›')
 
   return (
@@ -298,7 +303,7 @@ function InputsEditor({ d, type, onChange }: { d: AutoStepData; type?: ObjectTyp
       title="Send"
       hint="Parameters sent with each call. Insert a field to send that item’s value."
       action={
-        <Button size="sm" variant="ghost" icon={<Plus size={13} />} onClick={() => onChange({ ...Object.fromEntries(entries), [`param${entries.length + 1}`]: '' })}>
+        <Button size="sm" variant="ghost" icon={<Plus size={13} />} onClick={() => onChange({ ...Object.fromEntries(entries), [freshKey()]: '' })}>
           Add
         </Button>
       }
