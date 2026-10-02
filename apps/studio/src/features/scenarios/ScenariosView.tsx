@@ -1,12 +1,13 @@
 import { Activity, FastForward, FlaskConical, Loader2, Play, Plus, Trash2, TriangleAlert } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { buildIndex, type Ctx, runScenario, serviceOf } from '@throughline/core'
+import { buildIndex, type Ctx, runScenario } from '@throughline/core'
 import type { App } from '@throughline/core/model/types'
 import { formatClock, formatDuration } from '@throughline/core/model/util'
 import { Badge, Button, Card, cx, EmptyState, Segmented } from '../../components/ui'
 import { useApp, useDesign } from '../../store/design'
 import { ctxFor, useSim, useSimView } from '../../store/sim'
 import { useUi } from '../../store/ui'
+import { describeBottleneck } from '../monitor/bottleneck'
 import { ChangeBuilder, defaultChange } from './ChangeBuilder'
 import { describeChange, type Suggestion, suggestions, type Tone, verdict } from './lab'
 import { Results } from './Results'
@@ -151,18 +152,7 @@ function LiveState({ app }: { app: App }) {
     )
   }
 
-  const idx = buildIndex({ app, users: design.users, groups: design.groups, services: design.services })
-  const found = view?.bottleneckId ? idx.node.get(view.bottleneckId) : undefined
-  const m = found ? view!.nodes[found.node.id] : undefined
-  let why = ''
-  if (found && m) {
-    if (found.node.type === 'auto') {
-      const { svc } = serviceOf(idx, found.node.data)
-      why = `${m.queued} waiting for ${svc?.name ?? 'its service'}${svc?.concurrency ? ` (${svc.concurrency} at a time)` : ''}, oldest ${formatDuration(m.oldestAge)}`
-    } else {
-      why = `${m.total} in step with ${m.availableMembers} ${m.availableMembers === 1 ? 'person' : 'people'} available, oldest ${formatDuration(m.oldestAge)}`
-    }
-  }
+  const found = describeBottleneck(view, app, design)
 
   return (
     <Card className="grid grid-cols-1 divide-y divide-slate-100 sm:grid-cols-[auto_auto_1fr] sm:divide-x sm:divide-y-0">
@@ -177,7 +167,7 @@ function LiveState({ app }: { app: App }) {
                 <TriangleAlert size={14} className="text-rose-600" />
                 {found.node.data.label}
               </span>
-              <span className="text-xs text-slate-500">{why}</span>
+              <span className="text-xs text-slate-500">{found.why}</span>
             </div>
           ) : (
             <div className="text-sm font-medium text-emerald-700">None right now: work is flowing.</div>

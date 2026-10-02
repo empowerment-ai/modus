@@ -272,19 +272,21 @@ export function verdict(result: ScenarioResult, changes: ScenarioChange[], ctx: 
 
   const tone: Tone = !pos && !neg ? 'neutral' : pos >= neg * 3 ? 'good' : neg >= pos * 3 ? 'bad' : 'mixed'
   const helped = pos > neg
+  // "These 3 changes clear…", but "Adding 2 people clears…".
+  const verb = (one: string) => (changes.length > 2 ? one.replace(/s$/, '') : one)
   let effect = ''
   if (bn && s.bottleneckId !== bn && after < before && helped) {
-    effect = `clears the ${nodeLabel(idx, bn)} backlog${s.bottleneckId ? ` (the bottleneck moves to ${nodeLabel(idx, s.bottleneckId)})` : ''}`
+    effect = `${verb('clears')} the ${nodeLabel(idx, bn)} backlog${s.bottleneckId ? ` (the bottleneck moves to ${nodeLabel(idx, s.bottleneckId)})` : ''}`
   } else if (bn && after <= before * 0.7 && helped) {
-    effect = `shrinks the ${nodeLabel(idx, bn)} backlog from ${before} to ${after}`
+    effect = `${verb('shrinks')} the ${nodeLabel(idx, bn)} backlog from ${before} to ${after}`
   } else if (worse) {
-    effect = `makes the ${nodeLabel(idx, bn)} backlog worse (${before} → ${after})`
+    effect = `${verb('makes')} the ${nodeLabel(idx, bn)} backlog worse (${before} → ${after})`
   } else if (s.bottleneckId && s.bottleneckId !== bn) {
-    effect = `${bn ? 'moves the bottleneck to' : 'creates a bottleneck at'} ${nodeLabel(idx, s.bottleneckId)}`
+    effect = `${bn ? `${verb('moves')} the bottleneck to` : `${verb('creates')} a bottleneck at`} ${nodeLabel(idx, s.bottleneckId)}`
   }
 
   const who = subject(idx, changes)
-  if (!facts.length && !effect) return { tone: 'neutral', text: `${who} makes no meaningful difference over ${hours} simulated hours.` }
+  if (!facts.length && !effect) return { tone: 'neutral', text: `${who} ${verb('makes')} no meaningful difference over ${hours} simulated hours.` }
   if (!effect) return { tone, text: `${who}: ${facts.join(', ')}.` }
   return { tone, text: `${who} ${effect}${facts.length ? `: ${facts.join(', ')}` : ''}.` }
 }
