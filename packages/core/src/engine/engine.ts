@@ -60,6 +60,7 @@ export interface Index {
   group: Map<Id, Group>
   service: Map<Id, ServiceDef>
   manual: Set<Id>
+  live: boolean
 }
 
 export function buildIndex(ctx: Ctx): Index {
@@ -73,6 +74,7 @@ export function buildIndex(ctx: Ctx): Index {
     group: new Map(ctx.groups.map((g) => [g.id, g])),
     service: new Map((ctx.services ?? []).map((s) => [s.id, s])),
     manual: new Set(ctx.manualUserIds ?? []),
+    live: !!ctx.live,
   }
   for (const wf of ctx.app.workflows) {
     idx.wf.set(wf.id, wf)
@@ -680,14 +682,15 @@ function startAutomated(sim: SimState, idx: Index, tok: Token, node: NodeOf<'aut
   const { svc, op } = serviceOf(idx, node.data)
   if (!svc || !op) {
     tok.state = 'auto'
-    tok.dueAt = sim.clock + workDuration(sim, node.data.avgMinutes)
+    // Built-in actions only: live, they run on the next tick; simulated, they take a while.
+    tok.dueAt = sim.clock + (idx.live ? 0 : workDuration(sim, node.data.avgMinutes))
     return
   }
-  tryDispatch(sim, tok, svc, op)
+  tryDispatch(sim, tok, svc, op, idx.live)
 }
 
 /** Start the call if the service has room; otherwise the token waits in the service's queue. */
-function tryDispatch(sim: SimState, tok: Token, svc: ServiceDef, op: ServiceOperation): boolean {
+function tryDispatch(sim: SimState, tok: Token, svc: ServiceDef, op: ServiceOperation, live = false): boolean {
   const st = sstat(sim, svc.id)
   if (svc.status === 'offline') {
     tok.state = 'queued'
@@ -706,7 +709,10 @@ function tryDispatch(sim: SimState, tok: Token, svc: ServiceDef, op: ServiceOper
   tok.serviceId = svc.id
   tok.startedAt = sim.clock
   tok.attempt = (tok.attempt ?? 0) + 1
-  tok.dueAt = sim.clock + workDuration(sim, op.avgMinutes * (svc.status === 'degraded' ? 3 : 1))
+  tok.workerId = undefined
+  tok.leaseUntil = undefined
+  // Live, the call is a job a worker claims and completes; simulated, it finishes after a while.
+  tok.dueAt = live ? undefined : sim.clock + workDuration(sim, op.avgMinutes * (svc.status === 'degraded' ? 3 : 1))
   if (tok.attempt === 1) {
     const s = stat(sim, tok.nodeId)
     s.waitTotal += sim.clock - tok.enteredAt
@@ -723,6 +729,8 @@ export function releaseServiceSlot(sim: SimState, tok: Token) {
   st.busyMinutes += sim.clock - (tok.startedAt ?? sim.clock)
   tok.serviceId = undefined
   tok.startedAt = undefined
+  tok.workerId = undefined
+  tok.leaseUntil = undefined
 }
 
 function simulatedOutput(sim: SimState, o: ServiceOperation['outputs'][number]): unknown {
@@ -754,6 +762,36 @@ function storeOutput(idx: Index, obj: SimObject, fieldId: Id, value: unknown) {
   } else obj.data[f.id] = String(value)
 }
 
+/** A service call returned: store its outputs, run the step's actions, take the success path. */
+function completeCall(sim: SimState, idx: Index, obj: SimObject, tok: Token, node: NodeOf<'auto'>, svc: ServiceDef, op: ServiceOperation, values: Record<string, unknown>) {
+  releaseServiceSlot(sim, tok)
+  sstat(sim, svc.id).ok++
+  const shown: string[] = []
+  for (const out of node.data.outputs ?? []) {
+    if (!(out.key in values)) continue
+    const v = values[out.key]
+    storeOutput(idx, obj, out.fieldId, v)
+    const label = op.outputs.find((x) => x.key === out.key)?.label ?? out.key
+    shown.push(`${label} ${typeof v === 'boolean' ? (v ? 'yes' : 'no') : String(v)}`)
+  }
+  audit(sim, obj, { kind: 'service', nodeId: node.id, tokenId: tok.id, text: `${svc.name} · ${op.name}: OK${shown.length ? ` (${shown.join(', ')})` : ''}` })
+  applyActions(sim, idx, obj, node.data.actions, undefined, node.id)
+  advanceFrom(sim, idx, obj, tok, AUTO_SUCCESS, 0)
+}
+
+/** A service call failed: retry while attempts remain, then apply the step's failure policy. */
+function failCall(sim: SimState, idx: Index, obj: SimObject, tok: Token, node: NodeOf<'auto'>, svc: ServiceDef, op: ServiceOperation, error: string) {
+  releaseServiceSlot(sim, tok)
+  sstat(sim, svc.id).failed++
+  const retries = node.data.retries ?? 0
+  if ((tok.attempt ?? 1) <= retries) {
+    audit(sim, obj, { kind: 'service', nodeId: node.id, tokenId: tok.id, text: `${svc.name} · ${op.name}: ${error}, retrying (attempt ${(tok.attempt ?? 1) + 1} of ${retries + 1})` })
+    tryDispatch(sim, tok, svc, op, idx.live)
+  } else {
+    automationFailed(sim, idx, obj, tok, node, `${svc.name} · ${op.name} ${error}${retries ? ` after ${retries + 1} attempts` : ''}`)
+  }
+}
+
 function finishAutomated(sim: SimState, idx: Index) {
   for (const obj of activeObjects(sim)) {
     for (const tok of [...obj.tokens]) {
@@ -771,36 +809,13 @@ function finishAutomated(sim: SimState, idx: Index) {
         advanceFrom(sim, idx, obj, tok, AUTO_SUCCESS, 0)
         continue
       }
-      releaseServiceSlot(sim, tok)
-      const st = sstat(sim, svc.id)
       const ok = rand(sim) < op.successRate * (svc.status === 'degraded' ? 0.75 : 1)
       if (ok) {
-        st.ok++
-        const shown: string[] = []
-        for (const out of node.data.outputs ?? []) {
-          const spec = op.outputs.find((x) => x.key === out.key)
-          if (!spec) continue
-          const v = simulatedOutput(sim, spec)
-          storeOutput(idx, obj, out.fieldId, v)
-          shown.push(`${spec.label} ${typeof v === 'boolean' ? (v ? 'yes' : 'no') : v}`)
-        }
-        audit(sim, obj, {
-          kind: 'service',
-          nodeId: node.id,
-          tokenId: tok.id,
-          text: `${svc.name} · ${op.name}: OK${shown.length ? ` (${shown.join(', ')})` : ''}`,
-        })
-        applyActions(sim, idx, obj, node.data.actions, undefined, node.id)
-        advanceFrom(sim, idx, obj, tok, AUTO_SUCCESS, 0)
+        const values: Record<string, unknown> = {}
+        for (const spec of op.outputs) values[spec.key] = simulatedOutput(sim, spec)
+        completeCall(sim, idx, obj, tok, node, svc, op, values)
       } else {
-        st.failed++
-        const retries = node.data.retries ?? 0
-        if ((tok.attempt ?? 1) <= retries) {
-          audit(sim, obj, { kind: 'service', nodeId: node.id, tokenId: tok.id, text: `${svc.name} · ${op.name}: failed, retrying (attempt ${(tok.attempt ?? 1) + 1} of ${retries + 1})` })
-          tryDispatch(sim, tok, svc, op)
-        } else {
-          automationFailed(sim, idx, obj, tok, node, `${svc.name} · ${op.name} failed${retries ? ` after ${retries + 1} attempts` : ''}`)
-        }
+        failCall(sim, idx, obj, tok, node, svc, op, 'failed')
       }
     }
   }
@@ -821,7 +836,7 @@ function dispatchQueued(sim: SimState, idx: Index) {
       startAutomated(sim, idx, tok, node)
       continue
     }
-    tryDispatch(sim, tok, svc, op)
+    tryDispatch(sim, tok, svc, op, idx.live)
   }
 }
 
@@ -1021,13 +1036,14 @@ export function advance(sim: SimState, ctx: Ctx, minutes: number) {
   const end = sim.clock + minutes
   while (sim.clock < end - 1e-9) {
     sim.clock = Math.min(end, sim.clock + 1)
-    arrivals(sim, idx)
+    // Live (server) mode drives only the engine; the simulation adds arrivals and people.
+    if (!idx.live) arrivals(sim, idx)
     timers(sim, idx)
     finishAutomated(sim, idx)
-    finishWork(sim, idx)
+    if (!idx.live) finishWork(sim, idx)
     retryStuck(sim, idx)
     supervise(sim, idx)
-    pullWork(sim, idx)
+    if (!idx.live) pullWork(sim, idx)
     const last = sim.series[sim.series.length - 1]
     if (!last || sim.clock - last.t >= 15) {
       sim.series.push({ t: Math.floor(sim.clock), wip: sim.activeIds.length, done: sim.completed + sim.rejected })
@@ -1258,7 +1274,7 @@ function supervise(sim: SimState, idx: Index) {
       }
     } else if (ws.distribution === 'direct') {
       if (ws.userId) for (const t of pending) assign(sim, sim.objects[t.objectId]!, t, ws.userId, 'assigned', `Assigned directly to ${userName(idx, ws.userId)}`)
-    } else if (ws.distribution === 'manager' && ws.autoDistribute) {
+    } else if (ws.distribution === 'manager' && ws.autoDistribute && !idx.live) {
       const last = sim.lastDistribution[nodeId]
       if (last === undefined) {
         sim.lastDistribution[nodeId] = sim.clock
@@ -1420,4 +1436,71 @@ export function applyActions(sim: SimState, idx: Index, obj: SimObject, actions:
 }
 
 // Internal hooks for the operations module (admin + workbasket).
+// ---------- Live mode: external workers (the "device" protocol) ----------
+
+export interface Job {
+  /** The token id; stable for the life of the call. */
+  id: Id
+  itemId: Id
+  itemNumber: string
+  serviceId: Id
+  operation: string
+  attempt: number
+  /** Request parameters with {field:<id>} and {number} placeholders resolved. */
+  inputs: Record<string, unknown>
+}
+
+function resolveInputs(obj: SimObject, inputs: Record<string, string> | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, raw] of Object.entries(inputs ?? {})) {
+    const whole = /^\{field:([^}]+)\}$/.exec(raw.trim())
+    out[k] = whole ? obj.data[whole[1]!] : raw.replace(/\{field:([^}]+)\}/g, (_, f: string) => String(obj.data[f] ?? '')).replace(/\{number\}/g, obj.number)
+  }
+  return out
+}
+
+/** Claim up to `max` jobs for a service. A claimed job is leased to the worker until it completes, fails or the lease runs out. */
+export function pollJobs(sim: SimState, ctx: Ctx, serviceId: Id, workerId: string, max = 1, leaseMinutes = 5): Job[] {
+  const idx = buildIndex(ctx)
+  const jobs: Job[] = []
+  const waiting = activeTokens(sim)
+    .filter((t) => t.state === 'auto' && !t.manual && t.serviceId === serviceId && (t.leaseUntil === undefined || t.leaseUntil <= sim.clock))
+    .sort(byUrgency((t) => t.startedAt ?? t.enteredAt, objectOf(sim)))
+  for (const tok of waiting.slice(0, max)) {
+    const obj = sim.objects[tok.objectId]!
+    const node = idx.node.get(tok.nodeId)?.node
+    if (node?.type !== 'auto') continue
+    const { op } = serviceOf(idx, node.data)
+    tok.workerId = workerId
+    tok.leaseUntil = sim.clock + leaseMinutes
+    jobs.push({ id: tok.id, itemId: obj.id, itemNumber: obj.number, serviceId, operation: op?.name ?? '', attempt: tok.attempt ?? 1, inputs: resolveInputs(obj, node.data.inputs) })
+  }
+  return jobs
+}
+
+function jobAt(sim: SimState, ctx: Ctx, jobId: Id) {
+  const idx = buildIndex(ctx)
+  const found = findToken(sim, jobId)
+  const node = found && idx.node.get(found.tok.nodeId)?.node
+  if (!found || found.obj.status !== 'active' || node?.type !== 'auto' || !found.tok.serviceId || found.tok.manual) return undefined
+  const { svc, op } = serviceOf(idx, node.data)
+  return svc && op ? { idx, ...found, node, svc, op } : undefined
+}
+
+/** A worker finished a job: outputs are stored on the item and the process continues. */
+export function completeJob(sim: SimState, ctx: Ctx, jobId: Id, outputs: Record<string, unknown> = {}): boolean {
+  const j = jobAt(sim, ctx, jobId)
+  if (!j) return false
+  completeCall(sim, j.idx, j.obj, j.tok, j.node, j.svc, j.op, outputs)
+  return true
+}
+
+/** A worker gave up on a job: it is retried or handled by the step's failure policy. */
+export function failJob(sim: SimState, ctx: Ctx, jobId: Id, error = 'failed'): boolean {
+  const j = jobAt(sim, ctx, jobId)
+  if (!j) return false
+  failCall(sim, j.idx, j.obj, j.tok, j.node, j.svc, j.op, error)
+  return true
+}
+
 export const internals = { toManual, tryDispatch, withdraw, evaluateJoin, dropToken, finishScope }
