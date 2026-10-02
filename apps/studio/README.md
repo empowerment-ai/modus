@@ -1,19 +1,13 @@
-# BPM Builder Prototype — source
+# @throughline/studio
 
-See `../README.md` for what this is, the demo script, and next steps.
+The browser app: **Studio** (design, administer, monitor, what-if) and **Workspace** (do the
+work as any person in the sample organization). Runs entirely in the browser on the
+`@throughline/core` engine with a simulated organization; designs are saved in the browser.
 
 ```bash
-pnpm install            # node_modules here is only links into pnpm's global store (OneDrive-safe)
-pnpm dev                # http://localhost:5180
-pnpm test               # engine unit tests
-pnpm typecheck
-pnpm build:standalone   # single self-contained HTML in dist-standalone/index.html
+pnpm dev                  # from the repo root: http://localhost:5180
+pnpm build:standalone     # one self-contained HTML file in apps/studio/dist-standalone/
 ```
 
-Layout:
-
-- `src/model` — design-time types, rules evaluation, linked-list helpers, sample apps
-- `src/engine` — simulated process engine (routing, distribution, actions, admin ops, read model) + tests
-- `src/store` — Zustand stores: design (persisted), UI, simulation loop
-- `src/components` — UI kit, generated form renderer, app shell
-- `src/features/*` — screens: workflow designer, object types, lists, people & security, monitor, object drawer
+`src/features/*` holds one folder per screen; `src/store` holds the design, UI and simulation
+stores; `src/components` the UI kit and the form renderer generated from object types.
