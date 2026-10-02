@@ -34,7 +34,7 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | Reassign within group, delegate, return, redistribute evenly, move, release on behalf, cancel | Prototype |
 | End-user Workspace: home, basket, queues, dispatch board, my requests, new request, work form | Prototype |
 | Out of office (availability) and "reassign their work" | Prototype |
-| Separation of duties ("not the same person as step X") | Planned |
+| Separation of duties ("not the same person as step X"), enforced in allocation, claims, delegation and dispatch | Prototype (engine) |
 | Capability / skills-based allocation, shifts and business calendars | Planned |
 | Mobile Workspace (PWA) for field users such as officers | Planned |
 

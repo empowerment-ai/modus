@@ -275,6 +275,11 @@ export interface UserStepData {
   escalation?: Escalation
   /** Workers may hand an item to someone else in the same group. */
   allowDelegate?: boolean
+  /**
+   * Separation of duties (four eyes): nobody who released any of these steps on
+   * this item may work this one.
+   */
+  separateFrom?: Id[]
   outcomes: Outcome[]
   fieldAccess: Record<Id, FieldAccess>
 }

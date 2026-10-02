@@ -17,6 +17,7 @@ import {
   displayValue,
   distributorsOf,
   enterNode,
+  excludedFor,
   findToken,
   freeWorker,
   type Index,
@@ -76,6 +77,7 @@ export function adminAssign(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id, ac
   if (!ws) return fail('Only work at a people step (or an automated step) can be assigned.')
   if (tok.userId === userId && (tok.state === 'assigned' || tok.state === 'working')) return fail(`Already with ${userName(idx, userId)}.`)
   if (opts.sameGroupOnly && ws.groupId && !isMember(idx, ws.groupId, userId)) return fail(`${userName(idx, userId)} is not in ${idx.group.get(ws.groupId)?.name ?? 'the step’s group'}.`)
+  if (opts.sameGroupOnly && excludedFor(obj, ws).has(userId)) return fail(separation(idx, ws, userId))
   const prev = tok.userId
   const text = prev ? `Reassigned from ${userName(idx, prev)} to ${userName(idx, userId)} by ${actor}` : `Assigned to ${userName(idx, userId)} by ${actor}`
   assign(sim, obj, tok, userId, 'reassigned', text, actor)
@@ -238,6 +240,7 @@ export function workClaim(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id): Res
   if (!ws || tok.state !== 'unassigned') return fail('It is not waiting to be claimed.')
   if (!isMember(idx, ws.groupId, userId)) return fail(`You are not in ${idx.group.get(ws.groupId ?? '')?.name ?? 'the group'} that works “${ws.label}”.`)
   if (ws.distribution === 'manager') return fail('This step’s work is handed out by its dispatchers.')
+  if (excludedFor(obj, ws).has(userId)) return fail(separation(idx, ws, userId))
   assign(sim, obj, tok, userId, 'claimed', `${userName(idx, userId)} claimed it from the queue`, userName(idx, userId))
   return ok(true)
 }
@@ -246,7 +249,11 @@ export function workClaim(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id): Res
 export function workNext(sim: SimState, ctx: Ctx, userId: Id): Result<Id> {
   const idx = buildIndex(ctx)
   const steps = new Set(queueStepsByUser(idx).get(userId) ?? [])
-  const candidates = activeTokens(sim).filter((t) => t.state === 'unassigned' && steps.has(t.nodeId))
+  const candidates = activeTokens(sim).filter((t) => {
+    if (t.state !== 'unassigned' || !steps.has(t.nodeId)) return false
+    const ws = workStepOf(idx, t)
+    return !ws || !excludedFor(sim.objects[t.objectId]!, ws).has(userId)
+  })
   if (!candidates.length) return fail('Your queues are empty. Nice work.')
   candidates.sort(byUrgency((t) => t.enteredAt, (t) => sim.objects[t.objectId]))
   const tok = candidates[0]!
@@ -368,6 +375,7 @@ export function workDelegate(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id, t
   if (!ws.allowDelegate) return fail(`Delegation is turned off for “${ws.label}”.`)
   if (toUserId === userId) return fail('Pick someone else.')
   if (!isMember(idx, ws.groupId, toUserId)) return fail(`${userName(idx, toUserId)} is not in ${idx.group.get(ws.groupId ?? '')?.name ?? 'your group'}.`)
+  if (excludedFor(found.obj, ws).has(toUserId)) return fail(separation(idx, ws, toUserId))
   assign(sim, found.obj, found.tok, toUserId, 'delegated', `${userName(idx, userId)} delegated it to ${userName(idx, toUserId)}`, userName(idx, userId))
   if (comment.trim()) found.obj.history[found.obj.history.length - 1]!.comment = comment.trim()
   return ok(true)
@@ -383,6 +391,7 @@ export function workDistribute(sim: SimState, ctx: Ctx, tokenId: Id, dispatcherI
   if (!distributorsOf(idx, ws).includes(dispatcherId)) return fail(`You don’t distribute work for “${ws.label}”.`)
   if (!isMember(idx, ws.groupId, toUserId)) return fail(`${userName(idx, toUserId)} is not in ${idx.group.get(ws.groupId ?? '')?.name ?? 'the group'}.`)
   if (found.tok.userId === toUserId) return fail(`Already with ${userName(idx, toUserId)}.`)
+  if (excludedFor(found.obj, ws).has(toUserId)) return fail(separation(idx, ws, toUserId))
   const prev = found.tok.userId
   const by = userName(idx, dispatcherId)
   assign(sim, found.obj, found.tok, toUserId, 'distributed', prev ? `${by} moved it from ${userName(idx, prev)} to ${userName(idx, toUserId)}` : `${by} assigned it to ${userName(idx, toUserId)}`, by)
@@ -401,6 +410,11 @@ export function workDistributeEvenly(sim: SimState, ctx: Ctx, nodeId: Id, dispat
   let n = 0
   for (const t of waiting) if (loadBalanceToken(sim, idx, sim.objects[t.objectId]!, t, ws, loads, userName(idx, dispatcherId))) n++
   return ok(n)
+}
+
+function separation(idx: Index, ws: { separateFrom: Id[]; label: string }, userId: Id): string {
+  const steps = ws.separateFrom.map((id) => nodeLabel(idx, id)).join(' or ')
+  return `Separation of duties: ${userName(idx, userId)} already did “${steps}” on this item, so someone else must do “${ws.label}”.`
 }
 
 /** Can this person create items of this workflow's type? */

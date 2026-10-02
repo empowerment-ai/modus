@@ -886,6 +886,7 @@ export interface WorkStep {
   slaHours?: number
   outcomes: Outcome[]
   allowDelegate: boolean
+  separateFrom: Id[]
 }
 
 export const MANUAL_OUTCOMES: Outcome[] = [
@@ -913,6 +914,7 @@ export function workStepOf(idx: Index, tok: Token): WorkStep | undefined {
       slaHours: d.slaHours,
       outcomes: d.outcomes,
       allowDelegate: d.allowDelegate ?? true,
+      separateFrom: d.separateFrom ?? [],
     }
   }
   if (node?.type === 'auto' && tok.manual) {
@@ -927,6 +929,7 @@ export function workStepOf(idx: Index, tok: Token): WorkStep | undefined {
       avgMinutes: Math.max(8, Math.round((op?.avgMinutes ?? node.data.avgMinutes) * 6)),
       outcomes: MANUAL_OUTCOMES,
       allowDelegate: true,
+      separateFrom: [],
     }
   }
   return undefined
@@ -940,10 +943,18 @@ export function distributorsOf(idx: Index, ws: Pick<WorkStep, 'distributorGroupI
   return sup ? [sup] : []
 }
 
-function availableMembers(idx: Index, ws: Pick<WorkStep, 'groupId'>): User[] {
+function availableMembers(idx: Index, ws: Pick<WorkStep, 'groupId'>, exclude?: Set<Id>): User[] {
   const g = ws.groupId ? idx.group.get(ws.groupId) : undefined
   if (!g) return []
-  return g.memberIds.map((id) => idx.user.get(id)).filter((u): u is User => !!u && u.available)
+  return g.memberIds.map((id) => idx.user.get(id)).filter((u): u is User => !!u && u.available && !exclude?.has(u.id))
+}
+
+/** Separation of duties: people who released one of the step's "separate from" steps on this item. */
+export function excludedFor(obj: SimObject, ws: Pick<WorkStep, 'separateFrom'>): Set<Id> {
+  const out = new Set<Id>()
+  if (!ws.separateFrom.length) return out
+  for (const h of obj.history) if (h.kind === 'released' && h.userId && h.nodeId && ws.separateFrom.includes(h.nodeId)) out.add(h.userId)
+  return out
 }
 
 export function openLoads(sim: SimState): Map<Id, number> {
@@ -966,7 +977,7 @@ export function assign(sim: SimState, obj: SimObject, tok: Token, userId: Id, ki
 
 /** Give the token to the available group member with the fewest open items (round-robin on ties). */
 function loadBalance(sim: SimState, idx: Index, obj: SimObject, tok: Token, ws: WorkStep, loads: Map<Id, number>, actor?: string): boolean {
-  const members = availableMembers(idx, ws)
+  const members = availableMembers(idx, ws, excludedFor(obj, ws))
   if (members.length === 0) return false
   const n = members.length
   const cursor = (sim.rrCursor[ws.node.id] ?? 0) % n
@@ -996,7 +1007,7 @@ export { loadBalance as loadBalanceToken }
 function assignFromField(sim: SimState, idx: Index, obj: SimObject, tok: Token, ws: WorkStep): boolean {
   const f = ws.assigneeFieldId ? idx.type.get(obj.typeId)?.fields.find((x) => x.id === ws.assigneeFieldId) : undefined
   const who = f ? obj.data[f.id] : undefined
-  if (typeof who !== 'string' || !idx.user.has(who)) return false
+  if (typeof who !== 'string' || !idx.user.has(who) || excludedFor(obj, ws).has(who)) return false
   assign(sim, obj, tok, who, 'assigned', `Assigned to ${userName(idx, who)} (the ${f!.label.toLowerCase()})`)
   return true
 }
@@ -1006,7 +1017,8 @@ function distributeOnArrival(sim: SimState, idx: Index, obj: SimObject, tok: Tok
   tok.state = 'unassigned'
   switch (node.data.distribution) {
     case 'direct':
-      if (node.data.userId) assign(sim, obj, tok, node.data.userId, 'assigned', `Assigned directly to ${userName(idx, node.data.userId)}`)
+      if (node.data.userId && !excludedFor(obj, ws).has(node.data.userId)) assign(sim, obj, tok, node.data.userId, 'assigned', `Assigned directly to ${userName(idx, node.data.userId)}`)
+      else if (node.data.userId) tok.waitReason = `Separation of duties: ${userName(idx, node.data.userId)} already worked this item; an administrator must reassign it`
       return
     case 'load-balance':
       loadBalance(sim, idx, obj, tok, ws, openLoads(sim))
@@ -1273,7 +1285,10 @@ function supervise(sim: SimState, idx: Index) {
         if (!loadBalance(sim, idx, o, t, ws, loads)) break
       }
     } else if (ws.distribution === 'direct') {
-      if (ws.userId) for (const t of pending) assign(sim, sim.objects[t.objectId]!, t, ws.userId, 'assigned', `Assigned directly to ${userName(idx, ws.userId)}`)
+      for (const t of pending) {
+        const o = sim.objects[t.objectId]!
+        if (ws.userId && !excludedFor(o, ws).has(ws.userId)) assign(sim, o, t, ws.userId, 'assigned', `Assigned directly to ${userName(idx, ws.userId)}`)
+      }
     } else if (ws.distribution === 'manager' && ws.autoDistribute && !idx.live) {
       const last = sim.lastDistribution[nodeId]
       if (last === undefined) {
@@ -1287,10 +1302,14 @@ function supervise(sim: SimState, idx: Index) {
       const dispatchers = distributorsOf(idx, ws).filter((id) => !idx.manual.has(id))
       if (!members.length || !dispatchers.length) continue
       for (const t of pending) {
+        const o = sim.objects[t.objectId]!
+        const ex = excludedFor(o, ws)
+        const eligible = ex.size ? members.filter((m) => !ex.has(m.id)) : members
+        if (!eligible.length) continue
         const by = userName(idx, pick(sim, dispatchers))
         // A dispatcher's judgment, not an algorithm: favors faster people, so loads end up uneven.
-        const u = weightedPick(sim, members, (m) => 1 / (m.speed * m.speed))!
-        assign(sim, sim.objects[t.objectId]!, t, u.id, 'distributed', `${by} assigned it to ${u.name}`, by)
+        const u = weightedPick(sim, eligible, (m) => 1 / (m.speed * m.speed))!
+        assign(sim, o, t, u.id, 'distributed', `${by} assigned it to ${u.name}`, by)
       }
     }
   }
@@ -1351,12 +1370,14 @@ function pullWork(sim: SimState, idx: Index) {
     let next = baskets.get(u.id)?.shift()
     if (!next) {
       // Fetch: take the most urgent, oldest item from any queue this user can work.
-      let bestQ: Token[] | undefined
+      let best: { q: Token[]; at: number } | undefined
       for (const nodeId of queueNodesByUser.get(u.id) ?? []) {
         const q = queues.get(nodeId)
-        if (q?.length && (!bestQ || byUrgency((t) => t.enteredAt, objOf)(q[0]!, bestQ[0]!) < 0)) bestQ = q
+        // The first item this person may take (separation of duties can rule some out).
+        const at = q ? q.findIndex((t) => { const ws = workStepOf(idx, t); return !ws || !excludedFor(sim.objects[t.objectId]!, ws).has(u.id) }) : -1
+        if (q && at >= 0 && (!best || byUrgency((t) => t.enteredAt, objOf)(q[at]!, best.q[best.at]!) < 0)) best = { q, at }
       }
-      const fetched = bestQ?.shift()
+      const fetched = best ? best.q.splice(best.at, 1)[0] : undefined
       if (fetched) {
         assign(sim, sim.objects[fetched.objectId]!, fetched, u.id, 'fetched', `${u.name} fetched it from the queue`)
         next = fetched

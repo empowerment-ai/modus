@@ -252,6 +252,38 @@ describe('work distribution', () => {
     expect(blank.tokens[0]!.userId).toMatch(/^u\d$/)
   })
 
+  it('separation of duties: the second step always goes to someone else', () => {
+    const ctx = ctxWith(
+      [
+        wf(
+          [start, userStep('a', 'queue', { avgMinutes: 5 }), userStep('b', 'queue', { avgMinutes: 5, separateFrom: ['a'] }), end()],
+          [edge('s', 'a'), edge('a', 'b', { outcomeId: 'ok' }), edge('b', 'e', { outcomeId: 'ok' })],
+        ),
+      ],
+      { members: 2 },
+    )
+    const sim = quiet('a')
+    for (let i = 0; i < 30; i++) createObject(sim, ctx, 'w', {}, 'boss')
+    advance(sim, ctx, 24 * 60)
+    expect(sim.completed).toBe(30)
+    for (const o of Object.values(sim.objects)) {
+      const by = (n: string) => o.history.find((h) => h.kind === 'released' && h.nodeId === n)?.userId
+      expect(by('a')).toBeDefined()
+      expect(by('b')).not.toBe(by('a'))
+    }
+    // People can't get around it by hand either.
+    const ctx2 = ctxWith([wf([start, userStep('a', 'queue'), userStep('b', 'queue', { separateFrom: ['a'] }), end()], [edge('s', 'a'), edge('a', 'b', { outcomeId: 'ok' }), edge('b', 'e', { outcomeId: 'ok' })])], {
+      manual: ['u0', 'u1', 'u2', 'u3'],
+    })
+    const sim2 = quiet('a')
+    const o = createObject(sim2, ctx2, 'w', {}, 'boss')!
+    workClaim(sim2, ctx2, o.tokens[0]!.id, 'u1')
+    workRelease(sim2, ctx2, o.tokens[0]!.id, 'u1', 'ok', '', { notes: 'ok' })
+    const refused = workClaim(sim2, ctx2, o.tokens[0]!.id, 'u1')
+    expect(!refused.ok && refused.error).toMatch(/Separation of duties/)
+    expect(workClaim(sim2, ctx2, o.tokens[0]!.id, 'u2').ok).toBe(true)
+  })
+
   it('escalates work that sits too long: priority up, back to the dispatchers', () => {
     const ctx = ctxWith([
       wf(
