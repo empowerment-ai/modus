@@ -21,7 +21,8 @@ interface Job {
 
 /** The actual work. Replace with a call to your model, robot, legacy system… */
 async function handle(job: Job): Promise<Record<string, unknown>> {
-  await new Promise((r) => setTimeout(r, 300))
+  // job.inputs holds the step's request parameters, e.g. { po: 'PO-9' } for the ERP match.
+  await new Promise((r) => setTimeout(r, 300 + 100 * Object.keys(job.inputs).length))
   if (serviceId === 'svc_vision') return { confidence: Math.round(40 + Math.random() * 59), label: Math.random() < 0.7 ? 'Person' : 'Vehicle' }
   if (serviceId === 'svc_erp') return { matched: Math.random() < 0.85 }
   return {}
