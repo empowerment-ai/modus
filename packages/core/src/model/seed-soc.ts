@@ -1,0 +1,310 @@
+import { flatList, outcome, P, treeList } from './seed-helpers'
+import type { App, FieldDef, ListDef, ObjectType, Workflow } from './types'
+
+// A process that isn't a business process: camera signals arrive by the
+// hundred, AI looks at every one, enrichment runs in parallel, and only the
+// events worth a person's attention reach analysts and officers.
+
+export function socApp(): App {
+  const lists: ListDef[] = [
+    treeList('l_cams', 'Cameras (Site / Zone / Camera)', ['Site', 'Zone', 'Camera'], {
+      'Union Station': {
+        'Concourse A': ['CAM-A01', 'CAM-A02', 'CAM-A03'],
+        'Platform 2': ['CAM-P21', 'CAM-P22'],
+        'Parking Garage': ['CAM-G01', 'CAM-G02', 'CAM-G03'],
+      },
+      'City Hall': {
+        'Main Lobby': ['CAM-L01', 'CAM-L02'],
+        'Loading Dock': ['CAM-D01'],
+        'North Perimeter': ['CAM-N01', 'CAM-N02'],
+      },
+      'Riverside Park': {
+        'North Gate': ['CAM-R01', 'CAM-R02'],
+        Boathouse: ['CAM-R10'],
+      },
+    }),
+    flatList('l_evt', 'Event Type', 'Event Type', ['Motion', 'Person detected', 'Vehicle detected', 'Loitering', 'Perimeter breach', 'Abandoned object']),
+    flatList('l_sev', 'Severity', 'Severity', ['Low', 'Normal', 'High', 'Critical']),
+    flatList('l_detect', 'Detected Object', 'Object', ['Person', 'Vehicle', 'Animal', 'Unknown']),
+    flatList('l_threat', 'Threat Level', 'Threat', ['Low', 'Medium', 'High']),
+    flatList('l_disp', 'Disposition', 'Disposition', ['False alarm', 'Monitored', 'Officer responded', 'Incident report filed']),
+  ]
+
+  const fields: FieldDef[] = [
+    { id: 'e_site', label: 'Site', type: 'choice', listId: 'l_cams', level: 0, required: true, width: 'half', summary: true },
+    { id: 'e_zone', label: 'Zone', type: 'choice', listId: 'l_cams', level: 1, parentFieldId: 'e_site', required: true, width: 'half' },
+    { id: 'e_cam', label: 'Camera', type: 'choice', listId: 'l_cams', level: 2, parentFieldId: 'e_zone', required: true, width: 'half', summary: true },
+    { id: 'e_type', label: 'Event Type', type: 'choice', listId: 'l_evt', level: 0, required: true, width: 'half', summary: true },
+    { id: 'e_sev', label: 'Severity', type: 'choice', listId: 'l_sev', level: 0, width: 'half', helpText: 'From the camera vendor; sets the work priority.' },
+    { id: 'e_snap', label: 'Snapshot', type: 'attachment', width: 'half' },
+    { id: 'e_detected', label: 'Detected Object', type: 'choice', listId: 'l_detect', level: 0, width: 'half', system: true },
+    { id: 'e_conf', label: 'AI Confidence', type: 'number', min: 0, max: 100, width: 'half', system: true, summary: true },
+    { id: 'e_hit', label: 'Watchlist Hit', type: 'boolean', width: 'half', system: true },
+    { id: 'e_score', label: 'Match Score', type: 'number', min: 0, max: 100, width: 'half', system: true },
+    {
+      id: 'e_subject',
+      label: 'Watchlist Subject',
+      type: 'text',
+      width: 'half',
+      system: true,
+      helpText: 'Sensitive: Watch Commanders and SOC Analysts only.',
+      restrictedTo: ['g_watch', 'g_analysts'],
+    },
+    { id: 'e_threat', label: 'Threat Level', type: 'choice', listId: 'l_threat', level: 0, width: 'half', system: true, summary: true },
+    { id: 'e_clip', label: 'Clip Ready', type: 'boolean', width: 'half', system: true },
+    { id: 'e_incident', label: 'CAD Incident', type: 'text', width: 'half', system: true },
+    { id: 'e_officer', label: 'Responding Officer', type: 'user', width: 'half', system: true },
+    { id: 'e_disp', label: 'Disposition', type: 'choice', listId: 'l_disp', level: 0, width: 'half', system: true },
+    { id: 'e_notes', label: 'Officer Notes', type: 'textarea', width: 'full', system: true },
+  ]
+
+  const event: ObjectType = {
+    id: 't_event',
+    name: 'Camera Event',
+    pluralName: 'Camera Events',
+    icon: 'camera',
+    color: '#0d9488',
+    numberPrefix: 'EVT-',
+    fields,
+    titleFieldId: 'e_cam',
+    priorityFieldId: 'e_sev',
+    permissions: {
+      g_analysts: P(true, true, true, false),
+      g_watch: P(true, true, true, true),
+      g_officers: P(false, true, true, false),
+      g_records: P(false, true, false, false),
+    },
+  }
+
+  const allRead = Object.fromEntries(fields.map((f) => [f.id, 'read' as const]))
+  const auto = (id: string, label: string, x: number, y: number, serviceId: string, operationId: string, outputs: Array<{ key: string; fieldId: string }>, extra = {}) =>
+    ({
+      id,
+      type: 'auto' as const,
+      position: { x, y },
+      data: { label, avgMinutes: 1, actions: [], serviceId, operationId, outputs, retries: 1, onFailure: 'manual' as const, fallbackGroupId: 'g_analysts', ...extra },
+    })
+
+  const triage: Workflow = {
+    id: 'w_triage',
+    name: 'Event Triage',
+    description: 'Every camera event is screened by AI; only events worth a person’s time reach analysts and officers.',
+    kind: 'process',
+    objectTypeId: 't_event',
+    arrivalsPerHour: 120,
+    targetHours: 0.5,
+    fieldLocks: [{ id: 'lk_conf', fieldId: 'e_conf', access: 'read', when: 'always' }],
+    nodes: [
+      { id: 's_start', type: 'start', position: { x: 0, y: 246 }, data: { label: 'Camera event', trigger: 'event', source: 'mqtt: cameras/+/events' } },
+      auto('s_detect', 'AI object detection', 220, 243, 'svc_vision', 'op_detect', [
+        { key: 'confidence', fieldId: 'e_conf' },
+        { key: 'label', fieldId: 'e_detected' },
+      ]),
+      { id: 's_conf', type: 'decision', position: { x: 510, y: 210 }, data: { label: 'Worth a look?' } },
+      { id: 's_dismiss', type: 'end', position: { x: 492, y: 470 }, data: { label: 'Auto-dismissed', result: 'completed' } },
+      { id: 's_split', type: 'split', position: { x: 710, y: 228 }, data: { label: 'Enrich in parallel', mode: 'all' } },
+      auto('s_watch', 'Watchlist comparison', 870, 20, 'svc_watchlist', 'op_wl_compare', [
+        { key: 'hit', fieldId: 'e_hit' },
+        { key: 'score', fieldId: 'e_score' },
+        { key: 'subject', fieldId: 'e_subject' },
+      ]),
+      auto('s_nbr', 'Check adjacent cameras', 870, 160, 'svc_vms', 'op_vms_neighbors', []),
+      auto('s_clip', 'Pull 30-second clip', 870, 300, 'svc_vms', 'op_vms_clip', [{ key: 'ready', fieldId: 'e_clip' }]),
+      auto('s_agent', 'AI threat assessment', 870, 440, 'svc_triage', 'op_assess', [{ key: 'threat', fieldId: 'e_threat' }]),
+      { id: 's_join', type: 'join', position: { x: 1170, y: 228 }, data: { label: 'Enrichment done', mode: 'all' } },
+      { id: 's_route', type: 'decision', position: { x: 1330, y: 210 }, data: { label: 'Route by threat' } },
+      auto('s_cad', 'Open CAD incident', 1560, 80, 'svc_cad', 'op_cad_open', [{ key: 'incident', fieldId: 'e_incident' }], { onFailure: 'stuck', fallbackGroupId: undefined }),
+      {
+        id: 's_review',
+        type: 'user',
+        position: { x: 1560, y: 400 },
+        data: {
+          label: 'Analyst review',
+          description: 'Medium-threat events: watch the clip and adjacent cameras, then decide.',
+          distribution: 'queue',
+          groupId: 'g_analysts',
+          autoDistribute: true,
+          distributeEveryMinutes: 30,
+          avgMinutes: 4,
+          slaHours: 0.25,
+          outcomes: [
+            outcome('s_o_disp', 'Dispatch officer', 30),
+            outcome('s_o_mon', 'Keep monitoring', 45, { actions: [{ id: 's_a_mon', kind: 'setField', fieldId: 'e_disp', value: 'l_disp_1' }] }),
+            outcome('s_o_false', 'False alarm', 25, { actions: [{ id: 's_a_false', kind: 'setField', fieldId: 'e_disp', value: 'l_disp_0' }] }),
+          ],
+          fieldAccess: { ...allRead, e_notes: 'edit' },
+        },
+      },
+      {
+        id: 's_dispatch',
+        type: 'user',
+        position: { x: 1880, y: 66 },
+        data: {
+          label: 'Dispatch officer',
+          description: 'A watch commander points an officer at the camera; the officer responds and reports back.',
+          distribution: 'manager',
+          groupId: 'g_officers',
+          supervisorId: 'u_kwame',
+          distributorGroupId: 'g_watch',
+          autoDistribute: true,
+          distributeEveryMinutes: 5,
+          avgMinutes: 22,
+          slaHours: 0.5,
+          escalateAfterHours: 0.25,
+          escalation: { raisePriority: true, toDistributors: true, notify: 'Watch Commander' },
+          outcomes: [
+            outcome('s_o_res', 'Resolved on scene', 55, {
+              actions: [
+                { id: 's_a_off1', kind: 'setField', fieldId: 'e_officer', value: '{currentUser}' },
+                { id: 's_a_d1', kind: 'setField', fieldId: 'e_disp', value: 'l_disp_2' },
+              ],
+            }),
+            outcome('s_o_inc', 'Incident', 30, { actions: [{ id: 's_a_off2', kind: 'setField', fieldId: 'e_officer', value: '{currentUser}' }] }),
+            outcome('s_o_none', 'Nothing found', 15, { requireComment: true, actions: [{ id: 's_a_d3', kind: 'setField', fieldId: 'e_disp', value: 'l_disp_1' }] }),
+          ],
+          fieldAccess: { ...allRead, e_notes: 'edit', e_subject: 'hidden' },
+          allowDelegate: true,
+        },
+      },
+      { id: 's_resolved', type: 'end', position: { x: 2240, y: 0 }, data: { label: 'Resolved', result: 'completed' } },
+      { id: 's_report', type: 'subflow', position: { x: 2200, y: 186 }, data: { label: 'Incident report', description: 'The responding officer writes it up; a commander reviews; it is filed.', workflowId: 'w_report' } },
+      { id: 's_filed', type: 'end', position: { x: 2560, y: 212 }, data: { label: 'Report filed', result: 'completed' } },
+      { id: 's_logged', type: 'end', position: { x: 1910, y: 420 }, data: { label: 'Logged', result: 'completed' } },
+      { id: 's_false', type: 'end', position: { x: 1910, y: 560 }, data: { label: 'False alarm', result: 'completed' } },
+    ],
+    edges: [
+      { id: 'se_1', source: 's_start', target: 's_detect', sourceHandle: 'r', targetHandle: 'l', data: {} },
+      { id: 'se_2', source: 's_detect', target: 's_conf', sourceHandle: 'r', targetHandle: 'l', data: {} },
+      {
+        id: 'se_3',
+        source: 's_conf',
+        target: 's_split',
+        sourceHandle: 'r',
+        targetHandle: 'l',
+        data: { order: 0, condition: { match: 'all', rules: [{ id: 's_r1', fieldId: 'e_conf', op: 'gte', value: 60 }] } },
+      },
+      { id: 'se_4', source: 's_conf', target: 's_dismiss', sourceHandle: 'b', targetHandle: 't', data: { isDefault: true, order: 1 } },
+      { id: 'se_5', source: 's_split', target: 's_watch', sourceHandle: 't', targetHandle: 'l', data: {} },
+      { id: 'se_6', source: 's_split', target: 's_nbr', sourceHandle: 'r', targetHandle: 'l', data: {} },
+      { id: 'se_7', source: 's_split', target: 's_clip', sourceHandle: 'r', targetHandle: 'l', data: {} },
+      { id: 'se_8', source: 's_split', target: 's_agent', sourceHandle: 'b', targetHandle: 'l', data: {} },
+      { id: 'se_9', source: 's_watch', target: 's_join', sourceHandle: 'r', targetHandle: 't', data: {} },
+      { id: 'se_10', source: 's_nbr', target: 's_join', sourceHandle: 'r', targetHandle: 'l', data: {} },
+      { id: 'se_11', source: 's_clip', target: 's_join', sourceHandle: 'r', targetHandle: 'l', data: {} },
+      { id: 'se_12', source: 's_agent', target: 's_join', sourceHandle: 'r', targetHandle: 'b', data: {} },
+      { id: 'se_13', source: 's_join', target: 's_route', sourceHandle: 'r', targetHandle: 'l', data: {} },
+      {
+        id: 'se_14',
+        source: 's_route',
+        target: 's_cad',
+        sourceHandle: 't',
+        targetHandle: 'l',
+        data: { order: 0, condition: { match: 'all', rules: [{ id: 's_r2', fieldId: 'e_hit', op: 'isTrue' }] } },
+      },
+      {
+        id: 'se_15',
+        source: 's_route',
+        target: 's_cad',
+        sourceHandle: 'r',
+        targetHandle: 'b',
+        data: { order: 1, condition: { match: 'all', rules: [{ id: 's_r3', fieldId: 'e_threat', op: 'eq', value: 'l_threat_2' }] } },
+      },
+      {
+        id: 'se_16',
+        source: 's_route',
+        target: 's_review',
+        sourceHandle: 'b',
+        targetHandle: 'l',
+        data: { order: 2, condition: { match: 'all', rules: [{ id: 's_r4', fieldId: 'e_threat', op: 'eq', value: 'l_threat_1' }] } },
+      },
+      { id: 'se_17', source: 's_route', target: 's_logged', sourceHandle: 'b', targetHandle: 'l', data: { isDefault: true, order: 3 } },
+      { id: 'se_18', source: 's_review', target: 's_cad', sourceHandle: 't', targetHandle: 'b', data: { outcomeId: 's_o_disp' } },
+      { id: 'se_19', source: 's_review', target: 's_logged', sourceHandle: 'r', targetHandle: 'l', data: { outcomeId: 's_o_mon' } },
+      { id: 'se_20', source: 's_review', target: 's_false', sourceHandle: 'b', targetHandle: 'l', data: { outcomeId: 's_o_false' } },
+      { id: 'se_21', source: 's_cad', target: 's_dispatch', sourceHandle: 'r', targetHandle: 'l', data: {} },
+      { id: 'se_22', source: 's_dispatch', target: 's_resolved', sourceHandle: 't', targetHandle: 'l', data: { outcomeId: 's_o_res' } },
+      { id: 'se_23', source: 's_dispatch', target: 's_report', sourceHandle: 'r', targetHandle: 'l', data: { outcomeId: 's_o_inc' } },
+      { id: 'se_24', source: 's_dispatch', target: 's_logged', sourceHandle: 'b', targetHandle: 't', data: { outcomeId: 's_o_none' } },
+      { id: 'se_25', source: 's_report', target: 's_filed', sourceHandle: 'r', targetHandle: 'l', data: {} },
+    ],
+  }
+
+  const report: Workflow = {
+    id: 'w_report',
+    name: 'Incident Report',
+    description: 'Runs inside the “Incident report” step of Event Triage. Also saved as a reusable template.',
+    kind: 'subflow',
+    objectTypeId: 't_event',
+    arrivalsPerHour: 0,
+    nodes: [
+      { id: 'r_start', type: 'start', position: { x: 0, y: 136 }, data: { label: 'Incident confirmed' } },
+      {
+        id: 'r_write',
+        type: 'user',
+        position: { x: 230, y: 106 },
+        data: {
+          label: 'Write incident report',
+          description: 'Goes back to the officer who responded (retain familiar).',
+          distribution: 'field',
+          assigneeFieldId: 'e_officer',
+          groupId: 'g_officers',
+          autoDistribute: true,
+          distributeEveryMinutes: 30,
+          avgMinutes: 30,
+          slaHours: 8,
+          outcomes: [outcome('r_o_sub', 'Submit', 100)],
+          fieldAccess: { ...allRead, e_notes: 'edit', e_subject: 'hidden' },
+        },
+      },
+      {
+        id: 'r_review',
+        type: 'user',
+        position: { x: 600, y: 106 },
+        data: {
+          label: 'Commander review',
+          distribution: 'load-balance',
+          groupId: 'g_watch',
+          autoDistribute: true,
+          distributeEveryMinutes: 30,
+          avgMinutes: 8,
+          slaHours: 12,
+          outcomes: [outcome('r_o_ok', 'Approve', 85), outcome('r_o_back', 'Return for changes', 15, { requireComment: true })],
+          fieldAccess: { ...allRead, e_disp: 'edit' },
+        },
+      },
+      {
+        id: 'r_file',
+        type: 'auto',
+        position: { x: 970, y: 120 },
+        data: {
+          label: 'File to records',
+          avgMinutes: 1,
+          serviceId: 'svc_records',
+          operationId: 'op_rec_put',
+          retries: 1,
+          onFailure: 'manual',
+          fallbackGroupId: 'g_records',
+          actions: [{ id: 'r_a_disp', kind: 'setField', fieldId: 'e_disp', value: 'l_disp_3' }],
+        },
+      },
+      { id: 'r_end', type: 'end', position: { x: 1280, y: 136 }, data: { label: 'Filed', result: 'completed', outcome: 'Filed' } },
+    ],
+    edges: [
+      { id: 're_1', source: 'r_start', target: 'r_write', sourceHandle: 'r', targetHandle: 'l', data: {} },
+      { id: 're_2', source: 'r_write', target: 'r_review', sourceHandle: 'r', targetHandle: 'l', data: { outcomeId: 'r_o_sub' } },
+      { id: 're_3', source: 'r_review', target: 'r_file', sourceHandle: 'r', targetHandle: 'l', data: { outcomeId: 'r_o_ok' } },
+      { id: 're_4', source: 'r_review', target: 'r_write', sourceHandle: 'b', targetHandle: 'b', data: { outcomeId: 'r_o_back' } },
+      { id: 're_5', source: 'r_file', target: 'r_end', sourceHandle: 'r', targetHandle: 'l', data: {} },
+    ],
+  }
+
+  return {
+    id: 'app_soc',
+    name: 'Video Security Operations',
+    description: 'Camera events screened by AI, enriched in parallel, routed to analysts and officers.',
+    color: '#0d9488',
+    objectTypes: [event],
+    lists,
+    workflows: [triage, report],
+  }
+}

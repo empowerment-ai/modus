@@ -1,4 +1,8 @@
-import type { App, Design, FieldDef, Group, ListDef, ListItem, ObjectType, Outcome, TypePermission, User, Workflow } from './types'
+import { flatList, outcome, P, treeList } from './seed-helpers'
+import { socApp } from './seed-soc'
+import { seedServices } from './seed-services'
+import { seedTemplates } from './seed-templates'
+import type { App, Design, FieldDef, Group, ListDef, ObjectType, User, Workflow } from './types'
 import { uid } from './util'
 
 // ---------- Organization ----------
@@ -37,6 +41,23 @@ const people: Array<[string, string, string, number]> = [
   ['u_amir', 'Amir Haddad', 'Engineer', 1.0],
   ['u_chloe', 'Chloe Martin', 'Field Supervisor', 1.0],
   ['u_noah', 'Noah Fitzgerald', 'Analyst', 1.0],
+  // Security operations center
+  ['u_elena', 'Elena Vasquez', 'Watch Commander', 1.0],
+  ['u_kwame', 'Kwame Asante', 'Watch Commander', 1.0],
+  ['u_liz', 'Liz Moreno', 'Watch Commander', 1.0],
+  ['u_tess', 'Tess Nakamura', 'SOC Analyst', 0.85],
+  ['u_omar', 'Omar Farouk', 'SOC Analyst', 1.0],
+  ['u_jade', 'Jade Wilson', 'SOC Analyst', 1.1],
+  ['u_ben', 'Ben Adler', 'SOC Analyst', 0.95],
+  ['u_carmen', 'Carmen Diaz', 'Patrol Officer', 0.9],
+  ['u_jamal', 'Jamal Wright', 'Patrol Officer', 1.0],
+  ['u_ivy', 'Ivy Chen', 'Patrol Officer', 0.95],
+  ['u_pete', 'Pete Kowalski', 'Patrol Officer', 1.2],
+  ['u_ana', 'Ana Silva', 'Patrol Officer', 1.0],
+  ['u_ross', 'Ross Taylor', 'Patrol Officer', 1.1],
+  ['u_nina', 'Nina Okoro', 'Patrol Officer', 0.9],
+  ['u_dev', 'Dev Sharma', 'Patrol Officer', 1.05],
+  ['u_mei', 'Mei Lin', 'Records Specialist', 1.0],
 ]
 
 export function seedUsers(): User[] {
@@ -65,43 +86,28 @@ export function seedGroups(): Group[] {
     { id: 'g_procure', name: 'Procurement', supervisorId: 'u_dana', memberIds: ['u_ian', 'u_zoe', 'u_felix'] },
     { id: 'g_fleetlead', name: 'Fleet Leadership', memberIds: ['u_dana', 'u_gloria'] },
     { id: 'g_requesters', name: 'Vehicle Requesters', memberIds: ['u_amir', 'u_chloe', 'u_noah', 'u_ray', 'u_beth'] },
+    {
+      id: 'g_apdispatch',
+      name: 'AP Dispatch',
+      kind: 'distribution',
+      description: 'Supervisors who hand approval work to budget managers.',
+      memberIds: ['u_carla', 'u_victor'],
+    },
+    { id: 'g_fleetdispatch', name: 'Fleet Dispatch', kind: 'distribution', description: 'Hands vehicle requests to fleet coordinators.', memberIds: ['u_dana', 'u_gloria'] },
+    { id: 'g_analysts', name: 'SOC Analysts', supervisorId: 'u_elena', memberIds: ['u_tess', 'u_omar', 'u_jade', 'u_ben'] },
+    { id: 'g_officers', name: 'Patrol Officers', supervisorId: 'u_kwame', memberIds: ['u_carmen', 'u_jamal', 'u_ivy', 'u_pete', 'u_ana', 'u_ross', 'u_nina', 'u_dev'] },
+    {
+      id: 'g_watch',
+      name: 'Watch Commanders',
+      kind: 'distribution',
+      description: 'Point officers at cameras: hand each dispatch to the officer of their choice.',
+      memberIds: ['u_elena', 'u_kwame', 'u_liz'],
+    },
+    { id: 'g_records', name: 'Records', memberIds: ['u_mei'] },
   ]
 }
 
 // ---------- Helpers ----------
-
-const P = (create: boolean, read: boolean, update: boolean, del: boolean): TypePermission => ({ create, read, update, delete: del })
-
-function flatList(id: string, name: string, level: string, labels: string[]): ListDef {
-  return { id, name, levels: [level], items: labels.map((label, i) => ({ id: `${id}_${i}`, label, parentId: null })) }
-}
-
-interface Tree {
-  [label: string]: Tree | string[]
-}
-
-/** Build a linked (cascading) list from a nested object: { "2025": { "Ford": ["F-150", ...] } }. */
-function treeList(id: string, name: string, levels: string[], tree: Tree): ListDef {
-  const items: ListItem[] = []
-  let n = 0
-  const walk = (node: Tree | string[], parentId: string | null) => {
-    if (Array.isArray(node)) {
-      for (const label of node) items.push({ id: `${id}_${n++}`, label, parentId })
-      return
-    }
-    for (const [label, child] of Object.entries(node)) {
-      const itemId = `${id}_${n++}`
-      items.push({ id: itemId, label, parentId })
-      walk(child, itemId)
-    }
-  }
-  walk(tree, null)
-  return { id, name, levels, items }
-}
-
-function outcome(id: string, label: string, weight: number, extra: Partial<Outcome> = {}): Outcome {
-  return { id, label, weight, actions: [], ...extra }
-}
 
 // ---------- Invoice Processing ----------
 
@@ -164,6 +170,14 @@ function invoiceApp(): App {
     { id: 'f_email', label: 'Vendor Contact Email', type: 'email', width: 'half' },
     { id: 'f_doc', label: 'Invoice Document', type: 'attachment', width: 'half', helpText: 'PDF or image of the scanned invoice.' },
     { id: 'f_desc', label: 'Description', type: 'textarea', width: 'full' },
+    {
+      id: 'f_bank',
+      label: 'Vendor Bank Account',
+      type: 'text',
+      width: 'half',
+      helpText: 'Sensitive: visible to AP Exceptions and Finance Leadership only.',
+      restrictedTo: ['g_exceptions', 'g_finlead'],
+    },
     { id: 'f_pomatch', label: 'PO Matched', type: 'boolean', width: 'half', system: true },
     { id: 'f_approver', label: 'Approved By', type: 'user', width: 'half', system: true },
     { id: 'f_paydate', label: 'Scheduled Payment Date', type: 'date', width: 'half', system: true },
@@ -178,6 +192,7 @@ function invoiceApp(): App {
     numberPrefix: 'INV-',
     fields,
     titleFieldId: 'f_vendor',
+    priorityFieldId: 'f_priority',
     permissions: {
       g_clerks: P(true, true, true, false),
       g_exceptions: P(true, true, true, false),
@@ -192,8 +207,14 @@ function invoiceApp(): App {
   const wf: Workflow = {
     id: 'w_invoice',
     name: 'Invoice Approval',
+    kind: 'process',
     objectTypeId: 't_invoice',
     arrivalsPerHour: 14,
+    targetHours: 72,
+    fieldLocks: [
+      { id: 'lk_amt', fieldId: 'f_amount', access: 'read', when: 'after', afterNodeId: 'n_amount', exemptGroupIds: ['g_finlead'] },
+      { id: 'lk_vendor', fieldId: 'f_vendor', access: 'read', when: 'after', afterNodeId: 'n_pocheck', exemptGroupIds: ['g_exceptions', 'g_finlead'] },
+    ],
     nodes: [
       { id: 'n_start', type: 'start', position: { x: 0, y: 286 }, data: { label: 'Invoice received' } },
       {
@@ -202,9 +223,16 @@ function invoiceApp(): App {
         position: { x: 230, y: 283 },
         data: {
           label: 'Capture & match PO',
-          description: 'OCR the scanned invoice and match it against open purchase orders in the ERP.',
+          description: 'Match the invoice against open purchase orders in the ERP. If the ERP keeps failing, an exceptions specialist matches it by hand.',
           avgMinutes: 4,
-          actions: [{ id: 'a_match', kind: 'integration', system: 'ERP · purchase order match', resultFieldId: 'f_pomatch', successRate: 0.85 }],
+          actions: [],
+          serviceId: 'svc_erp',
+          operationId: 'op_erp_match',
+          inputs: { invoiceNumber: '{field:f_invno}', vendor: '{field:f_vendor}', amount: '{field:f_amount}', po: '{field:f_po}' },
+          outputs: [{ key: 'matched', fieldId: 'f_pomatch' }],
+          retries: 1,
+          onFailure: 'manual',
+          fallbackGroupId: 'g_exceptions',
         },
       },
       { id: 'n_pocheck', type: 'decision', position: { x: 530, y: 250 }, data: { label: 'PO matched?' } },
@@ -233,14 +261,17 @@ function invoiceApp(): App {
         position: { x: 1060, y: 262 },
         data: {
           label: 'Manager approval',
-          description: 'The AP supervisor hands each invoice to the budget manager of her choice.',
+          description: 'The AP Dispatch group hands each invoice to the budget manager of their choice.',
           distribution: 'manager',
           groupId: 'g_approvers',
           supervisorId: 'u_carla',
+          distributorGroupId: 'g_apdispatch',
           autoDistribute: true,
           distributeEveryMinutes: 40,
           avgMinutes: 16,
           slaHours: 24,
+          escalateAfterHours: 16,
+          escalation: { raisePriority: true, toDistributors: true, notify: 'AP Supervisor' },
           outcomes: [
             outcome('o_m_ok', 'Approve', 84, { actions: approveSetsApprover }),
             outcome('o_m_no', 'Reject', 10, { requireComment: true }),
@@ -261,46 +292,70 @@ function invoiceApp(): App {
           distributeEveryMinutes: 30,
           avgMinutes: 11,
           slaHours: 24,
+          escalateAfterHours: 20,
+          escalation: { raisePriority: true, toDistributors: false },
           outcomes: [outcome('o_k_ok', 'Approve', 94, { actions: approveSetsApprover }), outcome('o_k_no', 'Reject', 6, { requireComment: true })],
           fieldAccess: { ...allRead, f_cc: 'edit', f_gl: 'edit', f_po: 'edit', f_desc: 'edit', f_priority: 'edit' },
         },
       },
       {
         id: 'n_exception',
-        type: 'user',
+        type: 'subflow',
         position: { x: 461, y: 484 },
         data: {
           label: 'Resolve exception',
-          description: 'Unmatched invoices wait in a shared queue; specialists fetch the next one, fix the PO and send it back to be matched again.',
-          distribution: 'queue',
-          groupId: 'g_exceptions',
-          autoDistribute: true,
-          distributeEveryMinutes: 30,
-          avgMinutes: 32,
-          slaHours: 48,
-          outcomes: [
-            outcome('o_x_fix', 'Resolved', 80),
-            outcome('o_x_rej', 'Reject invoice', 20, { requireComment: true }),
-          ],
-          fieldAccess: { ...allRead, f_po: 'edit', f_vendor: 'edit', f_amount: 'edit', f_desc: 'edit', f_email: 'edit' },
+          description: 'Unmatched invoices run the Exception Handling subflow: triage, then get the PO or correct the data.',
+          workflowId: 'w_exception',
+        },
+      },
+      { id: 'n_split', type: 'split', position: { x: 1400, y: 268 }, data: { label: 'Pay & file', mode: 'all' } },
+      {
+        id: 'n_post',
+        type: 'auto',
+        position: { x: 1560, y: 110 },
+        data: {
+          label: 'Post to ERP',
+          description: 'Create the payable and schedule payment.',
+          avgMinutes: 1,
+          serviceId: 'svc_erp',
+          operationId: 'op_erp_post',
+          retries: 2,
+          onFailure: 'stuck',
+          actions: [{ id: 'a_pd', kind: 'setField', fieldId: 'f_paydate', value: '{today+14}' }],
         },
       },
       {
-        id: 'n_pay',
+        id: 'n_remit',
         type: 'auto',
-        position: { x: 1440, y: 283 },
+        position: { x: 1560, y: 283 },
         data: {
-          label: 'Schedule payment',
-          description: 'Post the approved invoice to the ERP and schedule payment.',
-          avgMinutes: 2,
-          actions: [
-            { id: 'a_pd', kind: 'setField', fieldId: 'f_paydate', value: '{today+14}' },
-            { id: 'a_erp', kind: 'integration', system: 'ERP · post payable', successRate: 1 },
-            { id: 'a_rem', kind: 'notify', to: 'Vendor Contact Email', message: 'Remittance advice for {number}' },
-          ],
+          label: 'Send remittance advice',
+          avgMinutes: 1,
+          serviceId: 'svc_mail',
+          operationId: 'op_mail_send',
+          retries: 3,
+          onFailure: 'stuck',
+          actions: [{ id: 'a_rem', kind: 'notify', to: 'Vendor Contact Email', message: 'Remittance advice for {number}' }],
         },
       },
-      { id: 'n_paid', type: 'end', position: { x: 1760, y: 286 }, data: { label: 'Paid', result: 'completed' } },
+      {
+        id: 'n_archive',
+        type: 'auto',
+        position: { x: 1560, y: 456 },
+        data: {
+          label: 'Archive to records',
+          description: 'File the invoice image and approvals under the 7-year retention schedule.',
+          avgMinutes: 1,
+          serviceId: 'svc_records',
+          operationId: 'op_rec_put',
+          retries: 1,
+          onFailure: 'manual',
+          fallbackGroupId: 'g_clerks',
+          actions: [],
+        },
+      },
+      { id: 'n_join', type: 'join', position: { x: 1880, y: 268 }, data: { label: 'All filed', mode: 'all' } },
+      { id: 'n_paid', type: 'end', position: { x: 2040, y: 290 }, data: { label: 'Paid', result: 'completed' } },
       {
         id: 'n_notify',
         type: 'auto',
@@ -326,8 +381,8 @@ function invoiceApp(): App {
         data: { order: 0, condition: { match: 'all', rules: [{ id: 'r_pm', fieldId: 'f_pomatch', op: 'isTrue' }] } },
       },
       { id: 'e_4', source: 'n_pocheck', target: 'n_exception', sourceHandle: 'b', targetHandle: 't', data: { isDefault: true, order: 1 } },
-      { id: 'e_5', source: 'n_exception', target: 'n_capture', sourceHandle: 'l', targetHandle: 'b', data: { outcomeId: 'o_x_fix' } },
-      { id: 'e_6', source: 'n_exception', target: 'n_notify', sourceHandle: 'b', targetHandle: 'l', data: { outcomeId: 'o_x_rej' } },
+      { id: 'e_5', source: 'n_exception', target: 'n_capture', sourceHandle: 'l', targetHandle: 'b', data: { outcomeId: 'Resolved' } },
+      { id: 'e_6', source: 'n_exception', target: 'n_notify', sourceHandle: 'b', targetHandle: 'l', data: { outcomeId: 'Rejected' } },
       {
         id: 'e_7',
         source: 'n_amount',
@@ -345,13 +400,19 @@ function invoiceApp(): App {
         data: { order: 1, condition: { match: 'all', rules: [{ id: 'r_a2', fieldId: 'f_amount', op: 'gt', value: 1000 }] } },
       },
       { id: 'e_9', source: 'n_amount', target: 'n_clerk', sourceHandle: 'b', targetHandle: 'l', data: { isDefault: true, order: 2 } },
-      { id: 'e_10', source: 'n_controller', target: 'n_pay', sourceHandle: 'r', targetHandle: 't', data: { outcomeId: 'o_c_ok' } },
+      { id: 'e_10', source: 'n_controller', target: 'n_split', sourceHandle: 'r', targetHandle: 't', data: { outcomeId: 'o_c_ok' } },
       { id: 'e_11', source: 'n_controller', target: 'n_notify', sourceHandle: 'r', targetHandle: 't', data: { outcomeId: 'o_c_no' } },
-      { id: 'e_12', source: 'n_manager', target: 'n_pay', sourceHandle: 'r', targetHandle: 'l', data: { outcomeId: 'o_m_ok' } },
+      { id: 'e_12', source: 'n_manager', target: 'n_split', sourceHandle: 'r', targetHandle: 'l', data: { outcomeId: 'o_m_ok' } },
       { id: 'e_13', source: 'n_manager', target: 'n_notify', sourceHandle: 'r', targetHandle: 't', data: { outcomeId: 'o_m_no' } },
-      { id: 'e_15', source: 'n_clerk', target: 'n_pay', sourceHandle: 'r', targetHandle: 'b', data: { outcomeId: 'o_k_ok' } },
+      { id: 'e_15', source: 'n_clerk', target: 'n_split', sourceHandle: 'r', targetHandle: 'b', data: { outcomeId: 'o_k_ok' } },
       { id: 'e_16', source: 'n_clerk', target: 'n_notify', sourceHandle: 'b', targetHandle: 't', data: { outcomeId: 'o_k_no' } },
-      { id: 'e_17', source: 'n_pay', target: 'n_paid', sourceHandle: 'r', targetHandle: 'l', data: {} },
+      { id: 'e_s1', source: 'n_split', target: 'n_post', sourceHandle: 't', targetHandle: 'l', data: {} },
+      { id: 'e_s2', source: 'n_split', target: 'n_remit', sourceHandle: 'r', targetHandle: 'l', data: {} },
+      { id: 'e_s3', source: 'n_split', target: 'n_archive', sourceHandle: 'b', targetHandle: 'l', data: {} },
+      { id: 'e_j1', source: 'n_post', target: 'n_join', sourceHandle: 'r', targetHandle: 't', data: {} },
+      { id: 'e_j2', source: 'n_remit', target: 'n_join', sourceHandle: 'r', targetHandle: 'l', data: {} },
+      { id: 'e_j3', source: 'n_archive', target: 'n_join', sourceHandle: 'r', targetHandle: 'b', data: {} },
+      { id: 'e_17', source: 'n_join', target: 'n_paid', sourceHandle: 'r', targetHandle: 'l', data: {} },
       { id: 'e_18', source: 'n_notify', target: 'n_rejected', sourceHandle: 'r', targetHandle: 'l', data: {} },
     ],
   }
@@ -363,7 +424,84 @@ function invoiceApp(): App {
     color: '#4f46e5',
     objectTypes: [invoice],
     lists,
-    workflows: [wf],
+    workflows: [wf, exceptionSubflow(allRead)],
+  }
+}
+
+/** The "Resolve exception" step, blown out into its own subflow. */
+function exceptionSubflow(allRead: Record<string, 'read'>): Workflow {
+  const fix = { ...allRead, f_po: 'edit' as const, f_vendor: 'edit' as const, f_amount: 'edit' as const, f_desc: 'edit' as const, f_email: 'edit' as const, f_bank: 'edit' as const }
+  return {
+    id: 'w_exception',
+    name: 'Exception Handling',
+    description: 'Runs inside the “Resolve exception” step of Invoice Approval.',
+    kind: 'subflow',
+    objectTypeId: 't_invoice',
+    arrivalsPerHour: 0,
+    nodes: [
+      { id: 'x_start', type: 'start', position: { x: 0, y: 206 }, data: { label: 'Exception raised' } },
+      {
+        id: 'x_triage',
+        type: 'user',
+        position: { x: 230, y: 176 },
+        data: {
+          label: 'Triage exception',
+          description: 'Work out why the PO did not match.',
+          distribution: 'queue',
+          groupId: 'g_exceptions',
+          autoDistribute: true,
+          distributeEveryMinutes: 30,
+          avgMinutes: 8,
+          slaHours: 8,
+          outcomes: [outcome('o_x_po', 'PO missing', 45), outcome('o_x_data', 'Data error', 40), outcome('o_x_rej', 'Reject invoice', 15, { requireComment: true })],
+          fieldAccess: { ...allRead, f_desc: 'edit' },
+        },
+      },
+      {
+        id: 'x_request',
+        type: 'user',
+        position: { x: 620, y: 30 },
+        data: {
+          label: 'Get PO from requester',
+          description: 'Chase the department for a purchase order.',
+          distribution: 'load-balance',
+          groupId: 'g_exceptions',
+          autoDistribute: true,
+          distributeEveryMinutes: 30,
+          avgMinutes: 40,
+          slaHours: 48,
+          outcomes: [outcome('o_x_got', 'PO received', 85), outcome('o_x_nopo', 'No PO', 15, { requireComment: true })],
+          fieldAccess: fix,
+        },
+      },
+      {
+        id: 'x_fix',
+        type: 'user',
+        position: { x: 620, y: 330 },
+        data: {
+          label: 'Correct invoice data',
+          distribution: 'queue',
+          groupId: 'g_exceptions',
+          autoDistribute: true,
+          distributeEveryMinutes: 30,
+          avgMinutes: 20,
+          slaHours: 24,
+          outcomes: [outcome('o_x_fixed', 'Fixed', 100)],
+          fieldAccess: fix,
+        },
+      },
+      { id: 'x_resolved', type: 'end', position: { x: 1010, y: 130 }, data: { label: 'Resolved', result: 'completed', outcome: 'Resolved' } },
+      { id: 'x_rejected', type: 'end', position: { x: 1010, y: 340 }, data: { label: 'Rejected', result: 'rejected', outcome: 'Rejected' } },
+    ],
+    edges: [
+      { id: 'xe_1', source: 'x_start', target: 'x_triage', sourceHandle: 'r', targetHandle: 'l', data: {} },
+      { id: 'xe_2', source: 'x_triage', target: 'x_request', sourceHandle: 't', targetHandle: 'l', data: { outcomeId: 'o_x_po' } },
+      { id: 'xe_3', source: 'x_triage', target: 'x_fix', sourceHandle: 'b', targetHandle: 'l', data: { outcomeId: 'o_x_data' } },
+      { id: 'xe_4', source: 'x_triage', target: 'x_rejected', sourceHandle: 'r', targetHandle: 'l', data: { outcomeId: 'o_x_rej' } },
+      { id: 'xe_5', source: 'x_request', target: 'x_resolved', sourceHandle: 'r', targetHandle: 'l', data: { outcomeId: 'o_x_got' } },
+      { id: 'xe_6', source: 'x_request', target: 'x_rejected', sourceHandle: 'r', targetHandle: 't', data: { outcomeId: 'o_x_nopo' } },
+      { id: 'xe_7', source: 'x_fix', target: 'x_resolved', sourceHandle: 'r', targetHandle: 'b', data: { outcomeId: 'o_x_fixed' } },
+    ],
   }
 }
 
@@ -440,8 +578,15 @@ function fleetApp(): App {
   const wf: Workflow = {
     id: 'w_vehicle',
     name: 'Vehicle Acquisition',
+    kind: 'process',
     objectTypeId: 't_vehicle',
     arrivalsPerHour: 3,
+    targetHours: 120,
+    fieldLocks: [
+      { id: 'lk_y', fieldId: 'v_year', access: 'read', when: 'after', afterNodeId: 'v_review', exemptGroupIds: ['g_fleetlead'] },
+      { id: 'lk_mk', fieldId: 'v_make', access: 'read', when: 'after', afterNodeId: 'v_review', exemptGroupIds: ['g_fleetlead'] },
+      { id: 'lk_md', fieldId: 'v_model', access: 'read', when: 'after', afterNodeId: 'v_review', exemptGroupIds: ['g_fleetlead'] },
+    ],
     nodes: [
       { id: 'v_start', type: 'start', position: { x: 0, y: 190 }, data: { label: 'Request submitted' } },
       {
@@ -450,10 +595,11 @@ function fleetApp(): App {
         position: { x: 220, y: 160 },
         data: {
           label: 'Fleet review',
-          description: 'The fleet manager decides which coordinator reviews each request.',
+          description: 'Fleet Dispatch decides which coordinator reviews each request.',
           distribution: 'manager',
           groupId: 'g_fleet',
           supervisorId: 'u_dana',
+          distributorGroupId: 'g_fleetdispatch',
           autoDistribute: true,
           distributeEveryMinutes: 60,
           avgMinutes: 25,
@@ -485,19 +631,12 @@ function fleetApp(): App {
       },
       {
         id: 'v_procure',
-        type: 'user',
+        type: 'subflow',
         position: { x: 1100, y: 160 },
         data: {
-          label: 'Order vehicle',
-          description: 'Procurement officers fetch the next request from the queue.',
-          distribution: 'queue',
-          groupId: 'g_procure',
-          autoDistribute: true,
-          distributeEveryMinutes: 30,
-          avgMinutes: 40,
-          slaHours: 72,
-          outcomes: [outcome('v_p_ok', 'Ordered', 100)],
-          fieldAccess: { ...allRead, v_cost: 'edit' },
+          label: 'Purchase vehicle',
+          description: 'Ask three dealers for quotes in parallel, continue once two reply, then order.',
+          workflowId: 'w_purchase',
         },
       },
       {
@@ -532,7 +671,7 @@ function fleetApp(): App {
       { id: 've_5', source: 'v_cost', target: 'v_procure', sourceHandle: 'r', targetHandle: 'l', data: { isDefault: true, order: 1 } },
       { id: 've_6', source: 'v_director', target: 'v_procure', sourceHandle: 'r', targetHandle: 't', data: { outcomeId: 'v_d_ok' } },
       { id: 've_7', source: 'v_director', target: 'v_denied', sourceHandle: 'b', targetHandle: 't', data: { outcomeId: 'v_d_no' } },
-      { id: 've_8', source: 'v_procure', target: 'v_issue', sourceHandle: 'r', targetHandle: 'l', data: { outcomeId: 'v_p_ok' } },
+      { id: 've_8', source: 'v_procure', target: 'v_issue', sourceHandle: 'r', targetHandle: 'l', data: { outcomeId: 'Ordered' } },
       { id: 've_9', source: 'v_issue', target: 'v_ordered', sourceHandle: 'r', targetHandle: 'l', data: {} },
     ],
   }
@@ -544,12 +683,79 @@ function fleetApp(): App {
     color: '#0891b2',
     objectTypes: [request],
     lists,
-    workflows: [wf],
+    workflows: [wf, purchaseSubflow(allRead)],
+  }
+}
+
+/** Quotes from three dealers at once; the first two replies are enough. */
+function purchaseSubflow(allRead: Record<string, 'read'>): Workflow {
+  const quote = (id: string, label: string, y: number) => ({
+    id,
+    type: 'auto' as const,
+    position: { x: 430, y },
+    data: {
+      label,
+      avgMinutes: 50,
+      serviceId: 'svc_dealers',
+      operationId: 'op_quote',
+      inputs: { model: '{field:v_model}', year: '{field:v_year}' },
+      retries: 1,
+      onFailure: 'manual' as const,
+      fallbackGroupId: 'g_procure',
+      actions: [],
+    },
+  })
+  return {
+    id: 'w_purchase',
+    name: 'Purchase Vehicle',
+    description: 'Runs inside the “Purchase vehicle” step of Vehicle Acquisition.',
+    kind: 'subflow',
+    objectTypeId: 't_vehicle',
+    arrivalsPerHour: 0,
+    nodes: [
+      { id: 'p_start', type: 'start', position: { x: 0, y: 206 }, data: { label: 'Approved to buy' } },
+      { id: 'p_split', type: 'split', position: { x: 240, y: 190 }, data: { label: 'Request quotes', mode: 'all' } },
+      quote('p_q1', 'Quote: Capital Ford', 30),
+      quote('p_q2', 'Quote: Metro Toyota', 200),
+      quote('p_q3', 'Quote: Valley Honda', 370),
+      { id: 'p_join', type: 'join', position: { x: 740, y: 190 }, data: { label: 'Two quotes in', mode: 'count', count: 2, cancelRemaining: true } },
+      {
+        id: 'p_select',
+        type: 'user',
+        position: { x: 900, y: 176 },
+        data: {
+          label: 'Compare quotes & order',
+          description: 'Procurement officers fetch the next request from the queue.',
+          distribution: 'queue',
+          groupId: 'g_procure',
+          autoDistribute: true,
+          distributeEveryMinutes: 30,
+          avgMinutes: 40,
+          slaHours: 72,
+          outcomes: [outcome('p_o_ok', 'Ordered', 92), outcome('p_o_cancel', 'Cancel request', 8, { requireComment: true })],
+          fieldAccess: { ...allRead, v_cost: 'edit' },
+        },
+      },
+      { id: 'p_ordered', type: 'end', position: { x: 1270, y: 120 }, data: { label: 'Ordered', result: 'completed', outcome: 'Ordered' } },
+      { id: 'p_cancelled', type: 'end', position: { x: 1270, y: 330 }, data: { label: 'Cancelled', result: 'cancelled', outcome: 'Cancelled' } },
+    ],
+    edges: [
+      { id: 'pe_1', source: 'p_start', target: 'p_split', sourceHandle: 'r', targetHandle: 'l', data: {} },
+      { id: 'pe_2', source: 'p_split', target: 'p_q1', sourceHandle: 't', targetHandle: 'l', data: {} },
+      { id: 'pe_3', source: 'p_split', target: 'p_q2', sourceHandle: 'r', targetHandle: 'l', data: {} },
+      { id: 'pe_4', source: 'p_split', target: 'p_q3', sourceHandle: 'b', targetHandle: 'l', data: {} },
+      { id: 'pe_5', source: 'p_q1', target: 'p_join', sourceHandle: 'r', targetHandle: 't', data: {} },
+      { id: 'pe_6', source: 'p_q2', target: 'p_join', sourceHandle: 'r', targetHandle: 'l', data: {} },
+      { id: 'pe_7', source: 'p_q3', target: 'p_join', sourceHandle: 'r', targetHandle: 'b', data: {} },
+      { id: 'pe_8', source: 'p_join', target: 'p_select', sourceHandle: 'r', targetHandle: 'l', data: {} },
+      { id: 'pe_9', source: 'p_select', target: 'p_ordered', sourceHandle: 'r', targetHandle: 'l', data: { outcomeId: 'p_o_ok' } },
+      { id: 'pe_10', source: 'p_select', target: 'p_cancelled', sourceHandle: 'b', targetHandle: 'l', data: { outcomeId: 'p_o_cancel' } },
+    ],
   }
 }
 
 export function seedDesign(): Design {
-  return { apps: [invoiceApp(), fleetApp()], users: seedUsers(), groups: seedGroups() }
+  return { apps: [invoiceApp(), fleetApp(), socApp()], users: seedUsers(), groups: seedGroups(), services: seedServices(), templates: seedTemplates() }
 }
 
 // ---------- Blank templates used by "New ..." buttons ----------
@@ -575,6 +781,7 @@ export function blankWorkflow(name: string, objectTypeId: string): Workflow {
   return {
     id: uid('w'),
     name,
+    kind: 'process',
     objectTypeId,
     arrivalsPerHour: 6,
     nodes: [
