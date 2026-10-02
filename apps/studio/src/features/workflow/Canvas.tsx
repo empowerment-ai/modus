@@ -15,10 +15,10 @@ import {
   useNodesState,
   useReactFlow,
 } from '@xyflow/react'
-import { Bot, GitFork, type LucideIcon, Play, Square, UserRound } from 'lucide-react'
-import { type DragEvent, useCallback, useEffect, useMemo } from 'react'
+import { Bot, GitFork, GitMerge, Hourglass, Layers, LibraryBig, type LucideIcon, Play, Plus, Square, UserRound } from 'lucide-react'
+import { type DragEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { cx } from '../../components/ui'
-import type { App, WfNodeType, Workflow } from '@throughline/core/model/types'
+import type { App, WfNodeType, Workflow, XY } from '@throughline/core/model/types'
 import { useDesign } from '../../store/design'
 import { useSim, useSimView } from '../../store/sim'
 import { useUi } from '../../store/ui'
@@ -26,11 +26,16 @@ import { edgeLabel } from './edgeLabels'
 import { edgeTypes, type FlowEdgeData, STROKE } from './FlowEdge'
 import { canConnect, newEdge, newNode } from './model'
 import { type FlowNodeData, nodeTypes } from './nodes'
+import { InsertTemplateModal } from './TemplateModals'
 
-const PALETTE: Array<{ type: WfNodeType; label: string; hint: string; icon: LucideIcon; tone: string }> = [
+const PALETTE: Array<{ type: WfNodeType; label: string; hint: string; more?: string; icon: LucideIcon; tone: string }> = [
   { type: 'user', label: 'User step', hint: 'A person does the work', icon: UserRound, tone: 'bg-sky-50 text-sky-600' },
-  { type: 'auto', label: 'Automated step', hint: 'The server does it', icon: Bot, tone: 'bg-violet-50 text-violet-600' },
+  { type: 'auto', label: 'Automated step', hint: 'A system or service does it', icon: Bot, tone: 'bg-violet-50 text-violet-600' },
+  { type: 'subflow', label: 'Subflow', hint: 'Run a reusable subflow', icon: Layers, tone: 'bg-teal-50 text-teal-600' },
   { type: 'decision', label: 'Decision', hint: 'Route on field values', icon: GitFork, tone: 'bg-amber-50 text-amber-600' },
+  { type: 'split', label: 'Parallel split', hint: 'Run paths at the same time', more: 'broadcast', icon: Plus, tone: 'bg-indigo-50 text-indigo-600' },
+  { type: 'join', label: 'Join', hint: 'Wait for branches to meet', more: 'rendezvous', icon: GitMerge, tone: 'bg-indigo-50 text-indigo-600' },
+  { type: 'wait', label: 'Timer', hint: 'Wait for a while', icon: Hourglass, tone: 'bg-orange-50 text-orange-600' },
   { type: 'end', label: 'End', hint: 'Finish the process', icon: Square, tone: 'bg-slate-100 text-slate-600' },
   { type: 'start', label: 'Start', hint: 'Where new items enter', icon: Play, tone: 'bg-emerald-50 text-emerald-600' },
 ]
@@ -50,6 +55,7 @@ function CanvasInner({ app, wf }: { app: App; wf: Workflow }) {
   const groups = useDesign((s) => s.design.groups)
   const selection = useUi((s) => s.selection)
   const { screenToFlowPosition, fitView } = useReactFlow()
+  const [fromTemplate, setFromTemplate] = useState(false)
   const updateWorkflow = useDesign((s) => s.updateWorkflow)
   const update = useCallback((fn: (w: Workflow) => void) => updateWorkflow(app.id, wf.id, fn), [updateWorkflow, app.id, wf.id])
 
@@ -122,16 +128,21 @@ function CanvasInner({ app, wf }: { app: App; wf: Workflow }) {
     useUi.getState().select(null)
   }
 
+  /** Where a dropped or clicked palette item lands, in flow coordinates (canvas center by default). */
+  const flowPoint = (clientX?: number, clientY?: number): XY => {
+    const rect = document.querySelector('.react-flow')?.getBoundingClientRect()
+    return screenToFlowPosition({
+      x: clientX ?? (rect ? rect.left + rect.width / 2 : 400),
+      y: clientY ?? (rect ? rect.top + rect.height / 2 : 300),
+    })
+  }
+
   const addNode = (type: WfNodeType, clientX?: number, clientY?: number) => {
     if (type === 'start' && wf.nodes.some((n) => n.type === 'start')) {
       useUi.getState().toast('This workflow already has a Start step.', 'warn')
       return
     }
-    const rect = document.querySelector('.react-flow')?.getBoundingClientRect()
-    const point = screenToFlowPosition({
-      x: clientX ?? (rect ? rect.left + rect.width / 2 : 400),
-      y: clientY ?? (rect ? rect.top + rect.height / 2 : 300),
-    })
+    const point = flowPoint(clientX, clientY)
     const node = newNode(type, { x: Math.round(point.x - 100), y: Math.round(point.y - 30) }, groups)
     update((w) => {
       w.nodes.push(node)
@@ -165,6 +176,12 @@ function CanvasInner({ app, wf }: { app: App; wf: Workflow }) {
           })
         }}
         onNodeClick={(_, n) => useUi.getState().select({ kind: 'node', id: n.id })}
+        onNodeDoubleClick={(_, n) => {
+          // Double-click a subflow step to open the subflow it runs.
+          const node = wf.nodes.find((x) => x.id === n.id)
+          const childId = node?.type === 'subflow' ? node.data.workflowId : undefined
+          if (childId && app.workflows.some((w) => w.id === childId)) useUi.getState().drillInto(childId)
+        }}
         onEdgeClick={(_, e) => useUi.getState().select({ kind: 'edge', id: e.id })}
         onPaneClick={() => useUi.getState().select(null)}
         onConnect={(c) => {
@@ -184,6 +201,7 @@ function CanvasInner({ app, wf }: { app: App; wf: Workflow }) {
         connectionLineStyle={{ stroke: '#6366f1', strokeWidth: 2 }}
         snapToGrid
         snapGrid={[10, 10]}
+        zoomOnDoubleClick={false}
         minZoom={0.3}
         maxZoom={1.75}
         fitView
@@ -209,11 +227,8 @@ function CanvasInner({ app, wf }: { app: App; wf: Workflow }) {
                     e.dataTransfer.effectAllowed = 'move'
                   }}
                   onClick={() => addNode(p.type)}
-                  title={disabled ? 'A workflow has one Start step' : `Drag or click to add a ${p.label.toLowerCase()}`}
-                  className={cx(
-                    'flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left',
-                    disabled ? 'cursor-not-allowed opacity-40' : 'cursor-grab hover:bg-slate-50 active:cursor-grabbing',
-                  )}
+                  title={disabled ? 'A workflow has one Start step' : `Drag or click to add a ${p.label.toLowerCase()}${p.more ? ` (${p.more})` : ''}`}
+                  className={cx('flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left', disabled ? 'cursor-not-allowed opacity-40' : 'cursor-grab hover:bg-slate-50 active:cursor-grabbing')}
                 >
                   <span className={cx('flex h-7 w-7 shrink-0 items-center justify-center rounded-md', p.tone)}>
                     <p.icon size={15} />
@@ -225,6 +240,20 @@ function CanvasInner({ app, wf }: { app: App; wf: Workflow }) {
                 </button>
               )
             })}
+            <button
+              type="button"
+              onClick={() => setFromTemplate(true)}
+              title="Add a step that runs a copy of a template from the library"
+              className="mt-1 flex w-full items-center gap-2 rounded-lg border-t border-slate-100 px-1.5 pt-2 pb-1 text-left hover:bg-slate-50"
+            >
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-teal-50 text-teal-600">
+                <LibraryBig size={15} />
+              </span>
+              <span className="leading-tight">
+                <span className="block text-[12px] font-medium text-slate-800">From template…</span>
+                <span className="block text-[10.5px] text-slate-500">Reuse a proven subflow</span>
+              </span>
+            </button>
           </div>
         </Panel>
         {!started && (
@@ -235,6 +264,7 @@ function CanvasInner({ app, wf }: { app: App; wf: Workflow }) {
           </Panel>
         )}
       </ReactFlow>
+      {fromTemplate && <InsertTemplateModal app={app} wf={wf} at={() => flowPoint()} onClose={() => setFromTemplate(false)} />}
     </div>
   )
 }
@@ -243,6 +273,10 @@ const MINIMAP: Record<string, string> = {
   start: '#34d399',
   end: '#94a3b8',
   decision: '#fbbf24',
+  split: '#818cf8',
+  join: '#818cf8',
+  subflow: '#5eead4',
+  wait: '#fdba74',
   auto: '#a78bfa',
   user: '#7dd3fc',
 }
