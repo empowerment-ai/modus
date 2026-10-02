@@ -54,7 +54,7 @@ export function GroupCreateModal({ onClose, onCreated }: { onClose: () => void; 
             onKeyDown={(e) => e.key === 'Enter' && create()}
           />
         </Field>
-        <Field label="Description" hint="Optional. Shown on the group and when picking it for a step.">
+        <Field label="Description" hint="Optional. A line on what the group is for.">
           <Input value={description} placeholder={GROUP_KINDS[kind].placeholder} onChange={(e) => setDescription(e.target.value)} />
         </Field>
       </div>
