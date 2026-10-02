@@ -16,6 +16,7 @@ pnpm --filter @throughline/server test           # one invoice, end to end throu
 | Engine runtime: clock, command serialization, event flushing | `src/runtime.ts` |
 | Storage ports (design, live state, event log) | `src/ports.ts` |
 | In-memory / JSON-file adapter | `src/adapters/memory.ts` |
+| Example registered worker ("device") | `examples/worker.ts` |
 
 Identity is a stand-in (`x-user-id` header). The call stack, the database strategy
 (Postgres first, then SQL Server and Oracle behind the same ports) and the milestones to
@@ -34,6 +35,9 @@ curl -X POST localhost:8787/api/jobs/poll -H 'content-type: application/json' \
   -d '{"serviceId":"svc_erp","workerId":"erp-1"}'
 curl -X POST 'localhost:8787/api/jobs/app_invoice:o1~1/complete' -H 'content-type: application/json' \
   -d '{"outputs":{"matched":true}}'
+
+# Or run the example worker, which polls, works and completes jobs for one service
+SERVICE=svc_erp pnpm --filter @throughline/server worker
 
 # The clerk it was load balanced to sees it, and releases it
 curl localhost:8787/api/apps/app_invoice/my/basket -H 'x-user-id: u_jordan'
