@@ -1,0 +1,16 @@
+{
+  "name": "throughline",
+  "private": true,
+  "version": "0.2.0",
+  "description": "Open-source process manager: design, simulate and run business and data processes on one model.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@11.17.0",
+  "scripts": {
+    "dev": "pnpm --filter @throughline/studio dev",
+    "build": "pnpm -r build",
+    "build:standalone": "pnpm --filter @throughline/studio build:standalone",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  }
+}

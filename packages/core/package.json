@@ -1,0 +1,20 @@
+{
+  "name": "@throughline/core",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Throughline process model and engine. Pure TypeScript, no UI, no I/O: the same code runs the browser simulator and (next) the server.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "devDependencies": {
+    "typescript": "~6.0.3",
+    "vitest": "^5.0.3"
+  }
+}
