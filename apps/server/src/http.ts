@@ -22,6 +22,7 @@ import {
   createObject,
   type Ctx,
   distributionFor,
+  exportOcel,
   failJob,
   fieldVerdicts,
   type Id,
@@ -144,6 +145,13 @@ export function buildServer(rt: Runtime): FastifyInstance {
       const v = computeView(sim, ctx)
       return { clock: v.clock, active: v.active, completed: v.completed, rejected: v.rejected, stuck: v.stuck, overdue: v.overdue, bottleneckId: v.bottleneckId, steps: v.nodes, services: v.services }
     })
+  })
+
+  /** The event log as OCEL 2.0 JSON, for process-mining tools. */
+  app.get('/api/apps/:app/export/ocel', async (req, reply) => {
+    const { app: appId } = appParams.parse(req.params)
+    const log = await rt.read(appId, (sim, ctx) => exportOcel(sim, ctx))
+    return reply.header('content-disposition', `attachment; filename="${appId}-ocel2.json"`).send(log)
   })
 
   // ----- Items -----
