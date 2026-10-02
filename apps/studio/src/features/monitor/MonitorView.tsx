@@ -1,9 +1,10 @@
-import { Activity, ArrowRight, FastForward, FlaskConical, Play, TriangleAlert } from 'lucide-react'
+import { Activity, ArrowRight, Download, FastForward, FlaskConical, Play, TriangleAlert } from 'lucide-react'
+import { exportOcel } from '@throughline/core'
 import { type ReactNode, useMemo } from 'react'
 import { Button, Card, cx, EmptyState } from '../../components/ui'
 import { formatClock, formatDuration } from '@throughline/core/model/util'
 import { useApp, useDesign } from '../../store/design'
-import { useSim, useSimState, useSimView } from '../../store/sim'
+import { ctxFor, useSim, useSimState, useSimView } from '../../store/sim'
 import { useUi } from '../../store/ui'
 import { ActivityFeed } from './ActivityFeed'
 import { describeBottleneck, openStep } from './bottleneck'
@@ -12,6 +13,20 @@ import { ServicesPanel } from './ServicesPanel'
 import { StepsTable } from './StepsTable'
 import { WipChart } from './WipChart'
 import { WorkloadTable } from './WorkloadTable'
+
+/** Download the simulation's event log for process-mining tools (Celonis, PM4Py, ProM, …). */
+function downloadEventLog(appId: string) {
+  const sim = useSim.getState().sims[appId]
+  const ctx = ctxFor(appId)
+  if (!sim || !ctx) return
+  const blob = new Blob([JSON.stringify(exportOcel(sim, ctx))], { type: 'application/json' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `${ctx.app.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-ocel2.json`
+  a.click()
+  URL.revokeObjectURL(a.href)
+  useUi.getState().toast('Event log exported as OCEL 2.0.', 'success')
+}
 
 // The administrator's live view of the open application's simulated work:
 // where items are piling up, who is carrying the load, and what just happened.
@@ -45,10 +60,15 @@ export function MonitorView() {
               Live view of simulated work in <span className="font-medium text-slate-700">{app.name}</span>: find bottlenecks, see who carries the load, and follow every release.
             </p>
           </div>
-          <span className={cx('inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium', running ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600')}>
-            <span className={cx('h-1.5 w-1.5 rounded-full', running ? 'animate-pulse bg-emerald-500' : 'bg-slate-400')} />
-            {running ? 'Live' : 'Paused'} · {formatClock(view?.clock ?? 0)}
-          </span>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="ghost" icon={<Download size={13} />} disabled={!hasWork} onClick={() => downloadEventLog(appId)} title="Every audit entry as an OCEL 2.0 object-centric event log, for process-mining tools">
+              Export event log (OCEL 2.0)
+            </Button>
+            <span className={cx('inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium', running ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600')}>
+              <span className={cx('h-1.5 w-1.5 rounded-full', running ? 'animate-pulse bg-emerald-500' : 'bg-slate-400')} />
+              {running ? 'Live' : 'Paused'} · {formatClock(view?.clock ?? 0)}
+            </span>
+          </div>
         </header>
 
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9">
