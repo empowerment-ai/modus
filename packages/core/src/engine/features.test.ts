@@ -6,8 +6,8 @@ import { normalizeData, rowsOf } from '../model/tables'
 import type { ObjectType } from '../model/types'
 import { ask, translateQuestion } from './assistant'
 import { activeTokens, advance, createObject, type Ctx, newSim, workStepOf, buildIndex } from './engine'
-import { canExpedite, setExpedite, superviseAssign, superviseRedistribute, superviseRelease, workDelegate, workNext, workSave } from './ops'
-import { parseQuery, searchItems } from './search'
+import { adminUpdateData, canExpedite, setExpedite, superviseAssign, superviseRedistribute, superviseRelease, workDelegate, workNext, workSave } from './ops'
+import { canReadItem, parseQuery, searchItems, visibleHistory } from './search'
 import { computeView, supervisionFor } from './view'
 
 function seedCtx(appIndex = 0, manual: string[] = []): Ctx {
@@ -198,6 +198,31 @@ describe('search', () => {
     expect(searchItems(sim, ctx, 'IBAN-SECRET', { userId: 'u_rosa' }).total).toBe(1) // AP Exceptions may see bank details
     expect(searchItems(sim, ctx, 'IBAN-SECRET', { userId: 'u_maya' }).total).toBe(0) // the clerk who created it may not
     expect(searchItems(sim, ctx, 'is:open', { userId: 'u_carmen' }).total).toBe(0) // a patrol officer can't read invoices
+  })
+
+  it('number= matches one item exactly; number: matches part of it', () => {
+    const ctx = seedCtx()
+    const sim = newSim('app_invoice', 12)
+    advance(sim, ctx, 8 * 60)
+    const first = Object.values(sim.objects)[0]!
+    const exact = searchItems(sim, ctx, `number=${first.number}`, { userId: 'u_avery' })
+    expect(exact.hits.map((h) => h.obj.id)).toEqual([first.id])
+    expect(searchItems(sim, ctx, `number:${first.number.slice(0, -1)}`, { userId: 'u_avery' }).total).toBeGreaterThan(1)
+  })
+
+  it('history and the assistant never reveal a hidden field’s value', () => {
+    const ctx = seedCtx()
+    const sim = newSim('app_invoice', 12)
+    sim.arrivals = false
+    const obj = createObject(sim, ctx, 'w_invoice', { f_lines: lines([1, 80]) }, 'u_maya')!
+    adminUpdateData(sim, ctx, obj.id, { f_bank: 'IBAN-SECRET-9911' })
+    const forClerk = visibleHistory(ctx, obj, 'u_maya').map((h) => h.text).join(' | ')
+    expect(forClerk).not.toContain('IBAN-SECRET')
+    expect(forClerk).toContain('Vendor Bank Account changed by')
+    expect(visibleHistory(ctx, obj, 'u_rosa').map((h) => h.text).join(' | ')).toContain('IBAN-SECRET') // AP Exceptions may see it
+    expect(ask(sim, ctx, `where is ${obj.number}?`, { userId: 'u_maya' }).text).not.toContain('IBAN-SECRET')
+    expect(canReadItem(ctx, obj, 'u_carmen')).toBe(false)
+    expect(ask(sim, ctx, `where is ${obj.number}?`, { userId: 'u_carmen' }).text).toMatch(/access/)
   })
 })
 

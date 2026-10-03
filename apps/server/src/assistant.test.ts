@@ -23,7 +23,7 @@ beforeAll(async () => {
   const created = await plain.inject({
     method: 'POST',
     url: '/api/apps/app_invoice/items',
-    headers: { 'x-user-id': 'u_maya' },
+    headers: { 'x-user-id': 'u_rosa' }, // AP Exceptions may enter bank details
     payload: {
       workflowId: 'w_invoice',
       data: { f_invno: 'ASK-1', f_vendor: 'l_vendors_0', f_lines: [{ id: 'row_1', c_desc: 'Toner', c_qty: 2, c_price: 50 }], f_dept: 'l_org_0', f_cc: 'l_org_1', f_bank: SECRET },
