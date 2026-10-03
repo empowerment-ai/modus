@@ -6,8 +6,8 @@ import { objectTitle } from '@modus-bpm/core/model/format'
 import type { App, Group, Id, User } from '@modus-bpm/core/model/types'
 import { formatDuration } from '@modus-bpm/core/model/util'
 import { useUi } from '../../store/ui'
+import { PriorityBadge } from '../objects/PriorityBadge'
 import { getNext } from './actions'
-import { UrgencyBadge } from './Expedite'
 import { sortItems } from './format'
 import type { WorkData } from './live'
 import { DueLabel, PageHeader, StateChip, StepName } from './parts'
@@ -289,7 +289,7 @@ function BasketRow({
       {/* Narrow: two lines */}
       <span className="block @3xl:hidden">
         <span className="flex items-center gap-2">
-          <UrgencyBadge priority={i.priority} expedited={i.expedited} quietNormal />
+          <PriorityBadge priority={i.priority} expedited={i.expedited} reason={i.obj.expedite?.reason} quietNormal />
           <span className="font-mono text-[11px] font-medium text-brand-700">{i.obj.number}</span>
           <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-slate-900">{title || 'Untitled'}</span>
           <DueLabel due={i.due} clock={clock} className="text-[11px]" />
@@ -303,7 +303,7 @@ function BasketRow({
       {/* Wide: one line per item, table columns */}
       <span className={cx('hidden items-center gap-3 @3xl:grid', GRID)}>
         <span>
-          <UrgencyBadge priority={i.priority} expedited={i.expedited} />
+          <PriorityBadge priority={i.priority} expedited={i.expedited} reason={i.obj.expedite?.reason} />
         </span>
         <span className="font-mono text-[11px] font-medium text-brand-700">{i.obj.number}</span>
         <span className="truncate text-[13px] font-medium text-slate-900">{title || <span className="text-slate-400">Untitled</span>}</span>

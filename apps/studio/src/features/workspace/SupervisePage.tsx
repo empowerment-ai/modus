@@ -24,7 +24,7 @@ import { useSim } from '../../store/sim'
 import { useUi } from '../../store/ui'
 import { PriorityBadge } from '../objects/PriorityBadge'
 import { openFound } from './actions'
-import { ExpediteDialog, UrgencyBadge } from './Expedite'
+import { ExpediteDialog } from './Expedite'
 import { isRejectLike, sortItems } from './format'
 import { perform, type WorkData } from './live'
 import { Count, DueLabel, PageHeader, titleHidden } from './parts'
@@ -399,7 +399,7 @@ function SupervisedRow({ item: i, showStep, me, app, users, groups, sim, ctx, cl
   return (
     <li className={cx('flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5 text-xs', i.token.escalated && 'bg-rose-50/30')}>
       <span className="flex w-[78px] shrink-0 justify-center">
-        <UrgencyBadge priority={i.priority} expedited={i.expedited} quietNormal />
+        <PriorityBadge priority={i.priority} expedited={i.expedited} reason={i.obj.expedite?.reason} quietNormal />
       </span>
       <button type="button" onClick={() => openFound(i.obj.id, basket)} className="font-mono text-[11px] font-medium text-brand-700 hover:underline" title="Open it">
         {i.obj.number}

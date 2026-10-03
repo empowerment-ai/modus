@@ -11,7 +11,8 @@ import { useSim } from '../../store/sim'
 import { useUi } from '../../store/ui'
 import { ObjectHistory } from '../objects/ObjectHistory'
 import { whereNow } from './actions'
-import { ExpediteAction, ExpediteNote, ExpeditedBadge } from './Expedite'
+import { ExpeditedBadge } from '../objects/PriorityBadge'
+import { ExpediteAction, ExpediteNote } from './Expedite'
 import { isRejectLike, timeOfDay } from './format'
 import { perform } from './live'
 import { DueLabel, PriorityMenu, StateChip } from './parts'
@@ -215,7 +216,7 @@ function ItemBody({ item, me, app, ctx, users, groups, sim, tick, position, onMo
           <h2 className="mt-1.5 text-xl font-semibold tracking-tight text-slate-900">{title || `${type.name} ${obj.number}`}</h2>
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            {item.expedited && <ExpeditedBadge />}
+            {item.expedited && <ExpeditedBadge reason={obj.expedite?.reason} />}
             <PriorityMenu priority={obj.priority} onChange={setPriority} />
             <StateChip state={token.state} />
             <DueChip label="Step" due={item.stepDue} clock={clock} />

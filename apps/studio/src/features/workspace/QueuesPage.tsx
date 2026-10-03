@@ -6,8 +6,8 @@ import { objectTitle } from '@modus-bpm/core/model/format'
 import type { App, User } from '@modus-bpm/core/model/types'
 import { formatDuration } from '@modus-bpm/core/model/util'
 import { useUi } from '../../store/ui'
+import { PriorityBadge } from '../objects/PriorityBadge'
 import { getNext } from './actions'
-import { UrgencyBadge } from './Expedite'
 import { perform, type WorkData } from './live'
 import { DueLabel, PageHeader, StepName } from './parts'
 import { useWorkspace } from './store'
@@ -105,7 +105,7 @@ function QueueCard({
           <ul className="divide-y divide-slate-100 border-t border-slate-100">
             {q.items.slice(0, limit).map((i) => (
               <li key={i.token.id} className="flex items-center gap-3 px-4 py-2 text-xs hover:bg-slate-50/70">
-                <UrgencyBadge priority={i.priority} expedited={i.expedited} className="w-[78px] justify-center" />
+                <PriorityBadge priority={i.priority} expedited={i.expedited} reason={i.obj.expedite?.reason} className="w-[78px] justify-center" />
                 <span className="font-mono text-[11px] font-medium text-brand-700">{i.obj.number}</span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[13px] text-slate-900">{objectTitle(type(i), i.obj.data, app.lists, users) || 'Untitled'}</span>

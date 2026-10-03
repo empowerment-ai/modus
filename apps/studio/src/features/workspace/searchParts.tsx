@@ -4,7 +4,7 @@ import { useClickOutside } from '../../components/Shell'
 import { Badge, cx } from '../../components/ui'
 import { type Ctx, type ParsedQuery, type SearchHit, searchItems, type SearchResult, type SimState } from '@modus-bpm/core'
 import type { App, Id } from '@modus-bpm/core/model/types'
-import { UrgencyBadge } from './Expedite'
+import { PriorityBadge } from '../objects/PriorityBadge'
 import { agoText } from './format'
 import { DueLabel, STATUS, titleHidden } from './parts'
 import type { SearchSort } from './store'
@@ -207,7 +207,7 @@ export function SearchHitRow({
       className={cx('block w-full text-left transition-colors', compact ? 'px-3 py-2' : 'px-4 py-3', active ? 'bg-brand-50' : 'hover:bg-slate-50')}
     >
       <span className="flex items-center gap-2">
-        <UrgencyBadge priority={o.priority} expedited={!!o.expedite} quietNormal />
+        <PriorityBadge priority={o.priority} expedited={!!o.expedite} reason={o.expedite?.reason} quietNormal />
         <span className="font-mono text-[11px] font-medium text-brand-700">
           <Highlight text={o.number} words={words} />
         </span>

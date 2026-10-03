@@ -9,7 +9,8 @@ import type { App, Group, Id, Priority, User, WfNode } from '@modus-bpm/core/mod
 import { formatClock, formatDuration } from '@modus-bpm/core/model/util'
 import { useUi } from '../../store/ui'
 import { ObjectHistory } from '../objects/ObjectHistory'
-import { ExpediteAction, ExpediteNote, UrgencyBadge } from './Expedite'
+import { ExpeditedBadge, PriorityBadge } from '../objects/PriorityBadge'
+import { ExpediteAction, ExpediteNote } from './Expedite'
 import { agoText } from './format'
 import { perform, type WorkData } from './live'
 import { DueLabel, PageHeader, PriorityMenu, STATUS, titleHidden } from './parts'
@@ -123,7 +124,7 @@ function RequestRow({ r, title, sim, ctx, clock, users, me }: { r: RequestSummar
       <td className="max-w-[240px] px-2 py-2">
         <span className="flex items-center gap-1.5">
           <span className="truncate text-[13px] text-slate-900">{title || 'Untitled'}</span>
-          <UrgencyBadge priority={r.obj.priority} expedited={!!r.obj.expedite} quietNormal />
+          <PriorityBadge priority={r.obj.priority} expedited={!!r.obj.expedite} reason={r.obj.expedite?.reason} quietNormal />
         </span>
       </td>
       <td className="px-2 py-2 text-slate-700">
@@ -216,7 +217,7 @@ export function ItemReadView({
         <h2 className="mt-1.5 text-xl font-semibold tracking-tight text-slate-900">{title || `${type.name} ${obj.number}`}</h2>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <Badge tone={s.tone}>{s.label}</Badge>
-          {obj.expedite && obj.status === 'active' && <UrgencyBadge priority={obj.priority} expedited />}
+          {obj.expedite && obj.status === 'active' && <ExpeditedBadge reason={obj.expedite.reason} />}
           <PriorityMenu priority={obj.priority} onChange={setPriority} disabled={!canPrioritize} />
           {obj.status === 'active' && obj.dueBy !== undefined && (
             <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-1.5 py-0.5 text-[11px]">
