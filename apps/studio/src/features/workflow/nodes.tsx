@@ -1,5 +1,5 @@
 import { Handle, type NodeProps, Position } from '@xyflow/react'
-import { AlarmClock, Ban, Bot, ChevronRight, CircleCheck, CircleX, Filter, GitFork, GitMerge, Hand, Hourglass, Layers, Play, Plus, RotateCw, TriangleAlert, UserRound } from 'lucide-react'
+import { AlarmClock, Ban, Bot, ChevronRight, CircleCheck, CircleX, Eye, Filter, GitFork, GitMerge, Hand, Hourglass, Layers, Play, Plus, RotateCw, TriangleAlert, UserRound } from 'lucide-react'
 import { memo } from 'react'
 import { cx } from '../../components/ui'
 import { DISTRIBUTION } from '../../components/icons'
@@ -10,6 +10,7 @@ import { formatDuration } from '@modus-bpm/core/model/util'
 import { useApp, useDesign } from '../../store/design'
 import { useSim, useSimView } from '../../store/sim'
 import { useUi } from '../../store/ui'
+import { audienceText } from './inspector/AudiencePicker'
 import { FAILURE, SERVICE_KIND, SERVICE_STATUS, TRIGGER } from './kinds'
 
 export type FlowNodeData = { node: WfNode; workflowId: string }
@@ -469,6 +470,7 @@ export const UserNode = memo(function UserNode({ id, data, selected }: NodeProps
     who = `by ${dispatchers} → ${groupText}`
   } else who = groupText
   const subtitle = `${dist.short}${d.distribution === 'manager' ? ' ' : ' · '}${who}`
+  const supervisedBy = audienceText(d.supervisors, users, groups)
   const total = m?.total ?? 0
 
   return (
@@ -485,11 +487,20 @@ export const UserNode = memo(function UserNode({ id, data, selected }: NodeProps
             <span className="truncate" title={subtitle}>
               {subtitle}
             </span>
-            {d.escalateAfterHours ? (
-              <span title={`Escalates after ${d.escalateAfterHours} h at this step`} className="ml-auto shrink-0 text-amber-600">
-                <AlarmClock size={11} />
+            {(!!supervisedBy || !!d.escalateAfterHours) && (
+              <span className="ml-auto flex shrink-0 items-center gap-1">
+                {supervisedBy && (
+                  <span title={`Supervised by ${supervisedBy}`} className="text-violet-500">
+                    <Eye size={11} />
+                  </span>
+                )}
+                {d.escalateAfterHours ? (
+                  <span title={`Escalates after ${d.escalateAfterHours} h at this step`} className="text-amber-600">
+                    <AlarmClock size={11} />
+                  </span>
+                ) : null}
               </span>
-            ) : null}
+            )}
           </div>
         </div>
         <CountBadge value={total} heat={m?.heat ?? 0} title={`${total} at this step`} />

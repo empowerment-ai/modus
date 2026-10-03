@@ -1,8 +1,8 @@
 import { Bot, CircleAlert, CircleCheck, GitBranch, Layers, Lock, TriangleAlert, Workflow as WorkflowIcon } from 'lucide-react'
 import { useMemo } from 'react'
 import { DISTRIBUTION } from '../../../components/icons'
-import { cx, Field, Input, Select, Textarea } from '../../../components/ui'
-import type { App, Workflow } from '@modus-bpm/core/model/types'
+import { cx, Field, Input, Select, Textarea, Toggle } from '../../../components/ui'
+import type { App, ExpeditePolicy, Workflow } from '@modus-bpm/core/model/types'
 import { formatDuration } from '@modus-bpm/core/model/util'
 import { useDesign } from '../../../store/design'
 import { useSimView } from '../../../store/sim'
@@ -11,7 +11,8 @@ import { SERVICE_KIND } from '../kinds'
 import { subflowCallers, validate } from '../model'
 import { showStep } from '../navigate'
 import { AutoInspector } from './AutoInspector'
-import { NumberInput, Section } from './common'
+import { AudiencePicker } from './AudiencePicker'
+import { ChoiceCard, NumberInput, Section } from './common'
 import { EdgeInspector } from './EdgeInspector'
 import { JoinInspector, SplitInspector, WaitInspector } from './FlowInspectors'
 import { DecisionInspector, EndInspector, StartInspector } from './SimpleInspectors'
@@ -167,6 +168,21 @@ function WorkflowOverview({ app, wf }: { app: App; wf: Workflow }) {
           {errors > 0 && <p className="mt-2 text-[11px] text-slate-500">Work that reaches a broken spot is parked as “stuck” and resumes on its own once you fix the map.</p>}
         </Section>
 
+        <Section
+          title="Process supervisors"
+          hint={`They oversee every item in this ${isSubflow ? 'subflow' : 'workflow and the subflows it runs'}: reassign work, release it on someone’s behalf, change priority, expedite, and hear about escalations.`}
+        >
+          <AudiencePicker
+            value={wf.supervisors}
+            onChange={(a) => updateWorkflow(app.id, wf.id, (w) => void (w.supervisors = a))}
+            users={users}
+            groups={groups}
+            emptyText="No process supervisors: only administrators and each step’s supervisors can step in."
+          />
+        </Section>
+
+        {!isSubflow && <ExpediteSection app={app} wf={wf} />}
+
         <Section title="Field security" hint="Workflow-wide locks. Edit them in People & Security › Field security.">
           {(wf.fieldLocks ?? []).length === 0 ? (
             <p className="text-xs text-slate-500">No fields are locked across this workflow.</p>
@@ -300,5 +316,71 @@ function WorkflowOverview({ app, wf }: { app: App; wf: Workflow }) {
         </Section>
       </div>
     </>
+  )
+}
+
+const SPEEDS: Array<{ factor: number; label: string }> = [
+  { factor: 1, label: 'Same due dates' },
+  { factor: 0.75, label: '1.3× faster' },
+  { factor: 0.5, label: '2× faster' },
+  { factor: 0.33, label: '3× faster' },
+  { factor: 0.25, label: '4× faster' },
+]
+
+const WHO: Array<{ value: ExpeditePolicy['who']; title: string; text: string }> = [
+  { value: 'supervisors', title: 'Supervisors only', text: 'Process and step supervisors, and administrators.' },
+  { value: 'requester', title: 'The requester and supervisors', text: 'Whoever asked for the item can flag it as urgent too.' },
+  { value: 'anyone', title: 'Anyone working on it', text: 'Also the people holding it at a step, besides the requester and supervisors.' },
+]
+
+/** Who may flag an item to go faster, how much faster, and how often it happens in the simulation. */
+function ExpediteSection({ app, wf }: { app: App; wf: Workflow }) {
+  const updateWorkflow = useDesign((s) => s.updateWorkflow)
+  const policy = wf.expedite
+  const set = (patch: Partial<ExpeditePolicy>) => updateWorkflow(app.id, wf.id, (w) => void (w.expedite = { ...(w.expedite ?? { who: 'supervisors', slaFactor: 0.5 }), ...patch }))
+  // Keep a custom factor (set elsewhere) selectable.
+  const speeds = policy && !SPEEDS.some((s) => s.factor === policy.slaFactor) ? [...SPEEDS, { factor: policy.slaFactor, label: `${(1 / policy.slaFactor).toFixed(1)}× faster` }] : SPEEDS
+  return (
+    <Section title="Expedite" hint="Expedited items jump every queue and basket (even urgent work), get tighter due dates, and can take a fast lane through rules on “Expedited”.">
+      <Toggle
+        checked={!!policy}
+        onChange={(on) => updateWorkflow(app.id, wf.id, (w) => void (w.expedite = on ? { who: 'supervisors', slaFactor: 0.5, requireReason: true } : undefined))}
+        label={<span className="text-sm">Set an expedite policy for this process</span>}
+      />
+      {policy ? (
+        <div className="mt-3 space-y-3">
+          <div>
+            <span className="mb-1 block text-xs font-medium text-slate-600">Who can expedite</span>
+            <div className="space-y-1.5">
+              {WHO.map((o) => (
+                <ChoiceCard key={o.value} active={policy.who === o.value} title={o.title} text={o.text} onClick={() => set({ who: o.value })} />
+              ))}
+            </div>
+          </div>
+          <Field label="How much faster" hint="Expedited items get their due dates and step SLAs shortened by this much.">
+            <Select value={String(policy.slaFactor)} onChange={(e) => set({ slaFactor: Number(e.target.value) })}>
+              {speeds.map((s) => (
+                <option key={s.factor} value={String(s.factor)}>
+                  {s.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Toggle checked={!!policy.requireReason} onChange={(on) => set({ requireReason: on || undefined })} label={<span className="text-xs">Ask for a reason when someone expedites</span>} />
+          <Field label="Simulated share of new items expedited" hint="Only shapes the simulation. Leave at 0 to expedite by hand.">
+            <NumberInput
+              className="w-[120px]"
+              value={Math.round((policy.simulateRate ?? 0) * 100)}
+              min={0}
+              max={50}
+              suffix="%"
+              onChange={(v) => set({ simulateRate: v ? Math.min(50, Math.max(0, v)) / 100 : undefined })}
+            />
+          </Field>
+        </div>
+      ) : (
+        <p className="mt-1.5 text-[11px] text-slate-500">Without a policy, supervisors and administrators can still expedite; those items get due dates twice as fast.</p>
+      )}
+    </Section>
   )
 }
