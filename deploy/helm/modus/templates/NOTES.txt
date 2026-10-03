@@ -1,0 +1,27 @@
+Modus is installed as {{ include "modus.fullname" . }} ({{ include "modus.image" . }}).
+
+{{- if .Values.ingress.enabled }}
+
+Open it at:
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/
+{{- end }}
+{{- else }}
+
+Reach it from your machine:
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "modus.fullname" . }} 8787:{{ .Values.service.port }}
+  open http://localhost:8787/          # the studio
+  curl http://localhost:8787/api      # the API and its routes
+{{- end }}
+
+Health:     /api/health (liveness)   /api/ready (readiness)
+
+What runs today:
+  - Storage is in memory with JSON snapshots on {{ if .Values.persistence.enabled }}the {{ include "modus.fullname" . }}-data volume{{ else }}an emptyDir (lost on restart){{ end }}; one pod.
+  - Identity is the x-user-id header (a stand-in for OIDC). Do not expose this release to untrusted users.
+  - Assistant: {{ if .Values.assistant.existingSecret }}{{ .Values.assistant.model }} (key from Secret {{ .Values.assistant.existingSecret }}){{ else }}built-in (set assistant.existingSecret for the language model){{ end }}.
+{{- if eq .Values.tenancy.mode "multi" }}
+  - tenancy.mode=multi is planned; the server runs as a single tenant and logs a warning.
+{{- end }}
+
+Planned (docs/DEPLOYMENT.md): PostgreSQL, SQL Server and Oracle storage, OIDC, split roles and autoscaling.
