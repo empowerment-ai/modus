@@ -12,7 +12,7 @@
 //   step:"manager approval"     where it is now (also at:)
 //   assignee:me  assignee:maya  who holds it now (also who:)
 //   creator:me                  who created it (also by:)
-//   type:invoice workflow:fleet
+//   type:invoice workflow:fleet number=INV-1042 (number:INV-10 matches part of it)
 //   created:<2d  due:<4h        within the last 2 days / due within 4 hours (m, h, d, w)
 //   amount>10k  "line total">=500  vendor:acme  category:software   any field or line-item column, by label
 
@@ -20,6 +20,7 @@ import { rowsOf } from '../model/tables'
 import { fieldVerdicts } from '../model/security'
 import type { ColumnDef, FieldDef, Id, ObjectType, Priority, TableRow } from '../model/types'
 import { formatFieldValue } from '../model/format'
+import type { AuditEntry } from './state'
 import { activeTokens, buildIndex, type Ctx, describeTokenText, hasRole, type Index, PRIORITY_RANK, type SimObject, type SimState, supervisesProcess, urgencyRank } from './engine'
 
 // ---------- Parsing ----------
@@ -161,6 +162,26 @@ function hiddenFields(idx: Index, obj: SimObject, type: ObjectType, userId: Id |
   return new Set(Object.entries(v).filter(([, x]) => x.access === 'hidden').map(([id]) => id))
 }
 
+/** May this person see this item at all? The same rule search uses. */
+export function canReadItem(ctx: Ctx, obj: SimObject, userId: Id | undefined): boolean {
+  const idx = buildIndex(ctx)
+  const type = idx.type.get(obj.typeId)
+  return !!type && mayRead(idx, obj, type, userId)
+}
+
+/** Fields hidden from this person on this item wherever it is (sensitive fields, workflow locks). */
+export function hiddenFieldsOf(ctx: Ctx, obj: SimObject, userId: Id | undefined): Set<Id> {
+  const idx = buildIndex(ctx)
+  const type = idx.type.get(obj.typeId)
+  return type ? hiddenFields(idx, obj, type, userId) : new Set()
+}
+
+/** The item's history as this person may read it: entries that show a hidden field's value read their redacted text. */
+export function visibleHistory(ctx: Ctx, obj: SimObject, userId: Id | undefined, hidden: Set<Id> = hiddenFieldsOf(ctx, obj, userId)): AuditEntry[] {
+  if (!hidden.size) return obj.history
+  return obj.history.map((h) => (h.fieldIds?.some((f) => hidden.has(f)) ? { ...h, text: h.redacted ?? 'A restricted field changed' } : h))
+}
+
 // ---------- Filters ----------
 
 function compare(a: number, op: Comparison, b: number): boolean {
@@ -263,7 +284,7 @@ function passes(idx: Index, sim: SimState, obj: SimObject, type: ObjectType, hid
     case 'workflow':
       return (idx.wf.get(obj.workflowId)?.name ?? '').toLowerCase().includes(v)
     case 'number':
-      return obj.number.toLowerCase().includes(v)
+      return f.op === '=' ? obj.number.toLowerCase() === v : obj.number.toLowerCase().includes(v)
     case 'created':
     case 'due': {
       const minutes = parseDuration(f.value)
