@@ -1,4 +1,4 @@
-import { Gauge, type LucideIcon, Plus, Power, Shuffle, Timer, TrendingUp, Users, X } from 'lucide-react'
+import { Gauge, type LucideIcon, Plus, Power, Shuffle, Timer, TrendingUp, Users, X, Zap } from 'lucide-react'
 import type { ScenarioChange } from '@modus-bpm/core'
 import type { App, Design, Distribution, Id, ServiceDef, WfNode } from '@modus-bpm/core/model/types'
 import { DISTRIBUTION } from '../../components/icons'
@@ -15,6 +15,7 @@ export const KINDS: Array<{ kind: Kind; label: string; icon: LucideIcon }> = [
   { kind: 'arrivals', label: 'Arrivals', icon: TrendingUp },
   { kind: 'capacity', label: 'Service capacity', icon: Gauge },
   { kind: 'service-status', label: 'Service status', icon: Power },
+  { kind: 'expedite-rate', label: 'Expedite share', icon: Zap },
 ]
 
 type UserNode = Extract<WfNode, { type: 'user' }>
@@ -63,6 +64,11 @@ export function defaultChange(kind: Kind, app: App, design: Design, bottleneckId
     case 'service-status': {
       const svc = bnService ?? used[0] ?? design.services[0]
       return svc ? { kind, serviceId: svc.id, status: svc.status === 'offline' ? 'online' : 'offline' } : undefined
+    }
+    case 'expedite-rate': {
+      const wf = [...processes(app)].sort((a, b) => b.arrivalsPerHour - a.arrivalsPerHour)[0]
+      const now = wf?.expedite?.simulateRate
+      return wf ? { kind, workflowId: wf.id, rate: now ? Math.min(0.5, now * 2) : 0.1 } : undefined
     }
   }
 }
@@ -325,6 +331,35 @@ function ChangeEditor({ app, design, change: c, onChange }: { app: App; design: 
             <option value="offline">Offline</option>
           </Select>
           <span className="text-slate-400">now {svc?.status ?? 'unknown'}</span>
+        </>
+      )
+    }
+    case 'expedite-rate': {
+      const wf = app.workflows.find((w) => w.id === c.workflowId)
+      return (
+        <>
+          <Input
+            type="number"
+            className="w-16 text-right"
+            min={0}
+            max={100}
+            step={5}
+            aria-label="Share of new items expedited, percent"
+            value={Math.round(c.rate * 100)}
+            onChange={(e) => onChange({ ...c, rate: Math.max(0, Math.min(100, Number(e.target.value) || 0)) / 100 })}
+          />
+          <span>% of new items in</span>
+          <Select className="w-56" value={c.workflowId} onChange={(e) => onChange({ ...c, workflowId: e.target.value })} aria-label="Workflow">
+            {processes(app).map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name}
+              </option>
+            ))}
+          </Select>
+          <span>arrive expedited</span>
+          <span className="text-slate-400">
+            now {Math.round((wf?.expedite?.simulateRate ?? 0) * 100)}%{wf && !wf.expedite ? ' · not set up, uses 2× faster due dates' : ''}
+          </span>
         </>
       )
     }

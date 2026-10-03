@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ChevronDown, CornerDownRight, GripVertical, Link2, ListTree, Plus } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, CornerDownRight, GripVertical, Link2, ListTree, Plus, Sigma } from 'lucide-react'
 import { type DragEvent, useEffect, useRef, useState } from 'react'
 import { FIELD_ICONS } from '../../components/icons'
 import { useClickOutside } from '../../components/Shell'
@@ -9,6 +9,7 @@ import type { App, FieldDef, FieldType, ObjectType } from '@modus-bpm/core/model
 import { uid } from '@modus-bpm/core/model/util'
 import { useDesign } from '../../store/design'
 import { useUi } from '../../store/ui'
+import { newColumns } from './ColumnsEditor'
 import { FieldEditor } from './FieldEditor'
 import { FIELD_TYPE_HELP, FIELD_TYPE_ORDER } from './references'
 
@@ -42,10 +43,14 @@ export function FieldList({ app, type, selectedId, onSelect }: Props) {
   const addField = (fieldType: FieldType) => {
     const id = uid('f')
     useDesign.getState().updateType(app.id, type.id, (t) => {
-      const f: FieldDef = { id, label: `New ${FIELD_TYPE_LABEL[fieldType].toLowerCase()} field`, type: fieldType, width: fieldType === 'textarea' ? 'full' : 'half' }
+      const f: FieldDef = { id, label: `New ${FIELD_TYPE_LABEL[fieldType].toLowerCase()} field`, type: fieldType, width: fieldType === 'textarea' || fieldType === 'table' ? 'full' : 'half' }
       if (fieldType === 'choice') {
         f.listId = app.lists[0]?.id
         f.level = 0
+      }
+      if (fieldType === 'table') {
+        f.label = 'Line items'
+        f.columns = newColumns()
       }
       t.fields.push(f)
     })
@@ -165,6 +170,17 @@ export function FieldList({ app, type, selectedId, onSelect }: Props) {
                         </Badge>
                       )}
                       {parent && <Badge tone="amber">after {parent.label}</Badge>}
+                      {f.type === 'table' && (
+                        <Badge tone="slate">
+                          {f.columns?.length ?? 0} column{f.columns?.length === 1 ? '' : 's'}
+                        </Badge>
+                      )}
+                      {f.total && (
+                        <Badge tone="green" className="max-w-[200px]">
+                          <Sigma size={11} className="shrink-0" />
+                          <span className="truncate">Sum of {fieldById(f.total.tableFieldId)?.columns?.find((c) => c.id === f.total!.columnId)?.label ?? 'a removed column'}</span>
+                        </Badge>
+                      )}
                       {f.type === 'choice' && (f.level ?? 0) > 0 && !parent && <Badge tone="red">needs a parent field</Badge>}
                     </div>
                   </div>

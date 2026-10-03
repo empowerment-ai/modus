@@ -1,4 +1,4 @@
-import { CalendarClock, Clock, GitFork, Pencil, Workflow as WorkflowIcon, X } from 'lucide-react'
+import { CalendarClock, Clock, GitFork, Pencil, Workflow as WorkflowIcon, X, Zap } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { FormRenderer } from '../../components/FormRenderer'
 import { TypeIcon } from '../../components/icons'
@@ -12,7 +12,7 @@ import { ctxFor, useSim, useSimState } from '../../store/sim'
 import { useUi } from '../../store/ui'
 import { AdminPanel } from './AdminPanel'
 import { ObjectHistory } from './ObjectHistory'
-import { PriorityBadge } from './PriorityBadge'
+import { ExpeditedBadge, PriorityBadge } from './PriorityBadge'
 
 const DRAWER_KEYFRAMES = '@keyframes objdrawer-in{from{transform:translateX(28px);opacity:0}to{transform:none;opacity:1}}'
 
@@ -133,6 +133,7 @@ function DrawerBody({ obj, app, clock }: { obj: SimObject; app: App; clock: numb
                 <h2 className="font-mono text-lg font-semibold tracking-tight text-slate-900">{obj.number}</h2>
                 <Badge tone={status.tone}>{status.label}</Badge>
                 <PriorityBadge priority={obj.priority} />
+                {obj.expedite && <ExpeditedBadge reason={obj.expedite.reason} />}
                 {overdue && (
                   <Badge tone="red">
                     <Clock size={11} /> Step SLA overdue by {formatDuration(inStep - slaMinutes!)}
@@ -146,6 +147,15 @@ function DrawerBody({ obj, app, clock }: { obj: SimObject; app: App; clock: numb
                   · {type?.name} · {wf?.name ?? 'Unknown workflow'}
                 </span>
               </p>
+              {obj.expedite && (
+                <p className="mt-0.5 flex items-center gap-1 text-xs text-orange-800">
+                  <Zap size={12} className="shrink-0 text-orange-600" fill="currentColor" />
+                  <span className="min-w-0 truncate">
+                    Expedited by {obj.expedite.by} {ago(clock - obj.expedite.at)}
+                    {obj.expedite.reason && <span className="text-orange-700"> — {obj.expedite.reason}</span>}
+                  </span>
+                </p>
+              )}
             </div>
             <IconButton label="Close" onClick={close}>
               <X size={16} />

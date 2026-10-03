@@ -11,6 +11,8 @@ the work.
   <a href="docs/DEMO.md">Demo script</a> ·
   <a href="docs/CONCEPTS.md">Concepts</a> ·
   <a href="docs/ARCHITECTURE.md">Architecture</a> ·
+  <a href="docs/TECH-STACK.md">Tech stack</a> ·
+  <a href="docs/DEPLOYMENT.md">Deploy</a> ·
   <a href="docs/ROADMAP.md">Roadmap</a>
 </p>
 
@@ -24,15 +26,18 @@ are at each step right now, where work piles up, who is overloaded, and what wou
 they changed something.
 
 > **Status: prototype.** The studio and the Workspace run entirely in the browser with a
-> simulated organization. The server is a working skeleton. See the [roadmap](docs/ROADMAP.md).
+> simulated organization. The server is a working skeleton that ships as one container image
+> (in-memory storage for now). See the [roadmap](docs/ROADMAP.md).
 
 ## What it does
 
 **Design**
 
-- **Dynamic object types** with generated forms, and **linked lists** (Model Year → Make → Model).
-- A **visual workflow designer**: people steps, automated steps, decisions on field values,
-  **parallel split / join** (all, first one wins, N of M), **subflows**, timers.
+- **Dynamic object types** with generated forms, **line items** (an invoice's lines with
+  calculated totals), and **linked lists** (Model Year → Make → Model).
+- A **visual workflow designer**: people steps, automated steps, decisions on field values and
+  line items ("any line where Category is Software"), **parallel split / join** (all, first one
+  wins, N of M), **subflows**, timers.
 - **Templates**: save any workflow, stamp it into another application with a field mapping, or
   blow a single step out into its own subflow.
 
@@ -40,9 +45,16 @@ they changed something.
 
 - Five ways to hand out work: **load balanced**, **queue** (claim / get next), **distribution
   groups** (dispatchers hand each item out), **direct**, and **the person named on the item**.
-- **Priorities and due dates**, escalation, reassign within a group, delegate, return.
+- **Priorities and due dates**, escalation, reassign within a group, delegate, return — and
+  **expedite**: flag an item to jump every queue with faster clocks and a fast lane, under a
+  per-process policy.
+- **Supervisors** for processes and for individual steps, plus **roles** (administrator,
+  designer, auditor). Supervisors see everything at their steps and can reassign, release on
+  behalf, re-prioritize, expedite and rebalance.
 - An end-user **Workspace**: home dashboard, my basket, queues, a dispatch board, my requests,
-  new request, and the work form with field security applied.
+  new request, the work form with field security applied, **search** across everything you may
+  see (`is:overdue amount>10k vendor:acme`), and **Ask Modus**, a chat that answers questions
+  about the work in plain words.
 
 **Automate**
 
@@ -89,20 +101,31 @@ pnpm build:standalone                      # one self-contained HTML file (doubl
 
 Requires Node.js 22+ and pnpm 11 (`corepack enable`).
 
+Or run the whole product — API and studio on one port — in a container:
+
+```bash
+docker compose up                          # http://localhost:8787
+```
+
+[DEPLOYMENT.md](docs/DEPLOYMENT.md) covers Docker, Compose, the Helm chart for Kubernetes and
+SaaS, and every configuration setting.
+
 ## How it is built
 
 ```
 packages/core   the model and the engine: pure, deterministic TypeScript, no UI, no I/O
 apps/studio     React 19 + Vite + Tailwind + React Flow: Studio and Workspace
 apps/server     the same engine live behind a REST API, a worker job protocol and a live stream
-docs            architecture, concepts, roadmap, demo script, research
+deploy          Helm chart (Dockerfile and docker-compose.yml at the root)
+docs            architecture, tech stack, deployment, concepts, roadmap, demo script, research
 ```
 
 The engine that simulates in the browser is the engine the server runs; the server simply
 switches off the simulated people and turns automated steps into jobs for real workers. The
 plan to production — PostgreSQL first, then SQL Server and Oracle behind the same storage
 ports, OIDC sign-in, MCP and REST connectors, stream ingest — is in
-[ARCHITECTURE.md](docs/ARCHITECTURE.md), backed by a [competitive analysis](docs/research/competitive-analysis.md)
+[ARCHITECTURE.md](docs/ARCHITECTURE.md); every layer of the stack, from React to Postgres
+search to the SaaS control plane, is in [TECH-STACK.md](docs/TECH-STACK.md). Both are backed by a [competitive analysis](docs/research/competitive-analysis.md)
 of Appian, Pega, Camunda, ServiceNow, Power Automate, Temporal, n8n and others, and a survey of
 [backend options](docs/research/backend-options.md).
 

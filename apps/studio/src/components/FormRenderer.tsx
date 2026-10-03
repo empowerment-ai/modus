@@ -1,8 +1,10 @@
-import { EyeOff, Lock, Paperclip, Upload, X } from 'lucide-react'
+import { EyeOff, Lock, Paperclip, Sigma, Upload, X } from 'lucide-react'
 import { useRef } from 'react'
 import { dependentFields, optionsForField } from '@modus-bpm/core/model/lists'
 import { type AttachmentValue, formatBytes, formatFieldValue } from '@modus-bpm/core/model/format'
+import { isComputed, normalizeData } from '@modus-bpm/core/model/tables'
 import type { FieldAccess, FieldDef, ListDef, ObjectType, User } from '@modus-bpm/core/model/types'
+import { TableField } from './TableField'
 import { cx, Input, Select, Textarea, Toggle } from './ui'
 
 // The UI is a by-product of the object type definition: this one component
@@ -26,7 +28,10 @@ interface Props {
   onFieldClick?: (fieldId: string) => void
 }
 
-export function FormRenderer({ type, lists, users, values, onChange, access, includeSystem, errors, highlightFieldId, onFieldClick }: Props) {
+export function FormRenderer({ type, lists, users, values: given, onChange, access, includeSystem, errors, highlightFieldId, onFieldClick }: Props) {
+  // While editing, show totals and calculated columns current even when the caller
+  // keeps only the fields the person may change (a total is never one of them).
+  const values = onChange ? normalizeData(type, given) : given
   const fields = type.fields.filter((f) => (includeSystem || !f.system) && access?.[f.id] !== 'hidden')
   const hiddenCount = access ? type.fields.filter((f) => (includeSystem || !f.system) && access[f.id] === 'hidden').length : 0
 
@@ -35,20 +40,25 @@ export function FormRenderer({ type, lists, users, values, onChange, access, inc
     const next = { ...values, [field.id]: v }
     // Changing a parent in a linked list clears everything beneath it.
     for (const dep of dependentFields(type, field.id)) delete next[dep.id]
-    onChange(next)
+    // Keep computed columns and totals (Amount = sum of Line Total) current as people type.
+    onChange(normalizeData(type, next))
   }
 
   return (
     <div>
       <div className="grid grid-cols-2 gap-x-4 gap-y-3.5">
         {fields.map((f) => {
-          const readOnly = !onChange || access?.[f.id] === 'read'
+          const computed = isComputed(f)
+          const readOnly = !onChange || access?.[f.id] === 'read' || computed
+          const source = f.total ? type.fields.find((x) => x.id === f.total!.tableFieldId) : undefined
+          const column = source?.columns?.find((c) => c.id === f.total!.columnId)
           return (
             <div
               key={f.id}
               onClick={onFieldClick ? () => onFieldClick(f.id) : undefined}
               className={cx(
-                f.width === 'full' ? 'col-span-2' : 'col-span-2 sm:col-span-1',
+                'min-w-0',
+                f.width === 'full' || f.type === 'table' ? 'col-span-2' : 'col-span-2 sm:col-span-1',
                 onFieldClick && 'cursor-pointer rounded-md p-1.5 -m-1.5 hover:bg-slate-50',
                 highlightFieldId === f.id && 'bg-brand-50 ring-2 ring-brand-300 hover:bg-brand-50',
               )}
@@ -56,12 +66,21 @@ export function FormRenderer({ type, lists, users, values, onChange, access, inc
               <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-600">
                 <span>{f.label}</span>
                 {f.required && !readOnly && <span className="text-rose-500">*</span>}
-                {readOnly && onChange && <Lock size={11} className="text-slate-400" aria-label="Read only at this step" />}
+                {readOnly && onChange && !computed && <Lock size={11} className="text-slate-400" aria-label="Read only at this step" />}
+                {computed && (
+                  <span className="inline-flex items-center gap-0.5 rounded bg-slate-100 px-1 text-[10px] font-medium text-slate-500" title="Calculated: it can’t be typed in">
+                    <Sigma size={9} /> calculated
+                  </span>
+                )}
                 {f.system && <span className="rounded bg-slate-100 px-1 text-[10px] font-medium text-slate-500">set by workflow</span>}
               </div>
-              <FieldControl field={f} type={type} lists={lists} users={users} values={values} readOnly={readOnly} onValue={(v) => setValue(f, v)} />
+              <FieldControl field={f} type={type} lists={lists} users={users} values={values} readOnly={readOnly} error={errors?.[f.id]} onValue={(v) => setValue(f, v)} />
               {errors?.[f.id] ? (
                 <p className="mt-1 text-[11px] text-rose-600">{errors[f.id]}</p>
+              ) : computed && onChange ? (
+                <p className="mt-1 text-[11px] leading-snug text-slate-500">
+                  Adds up {column?.label ?? 'a column'} across {source?.label ?? 'a table'}.
+                </p>
               ) : (
                 f.helpText && !readOnly && <p className="mt-1 text-[11px] leading-snug text-slate-500">{f.helpText}</p>
               )}
@@ -85,6 +104,7 @@ function FieldControl({
   users,
   values,
   readOnly,
+  error,
   onValue,
 }: {
   field: FieldDef
@@ -93,14 +113,18 @@ function FieldControl({
   users: User[]
   values: Record<string, unknown>
   readOnly: boolean
+  error?: string
   onValue: (v: unknown) => void
 }) {
   const v = values[field.id]
+  if (field.type === 'table') return <TableField field={field} type={type} value={v} lists={lists} users={users} onChange={readOnly ? undefined : onValue} error={error} />
   if (readOnly) {
     if (field.type === 'attachment') return <AttachmentList files={Array.isArray(v) ? (v as AttachmentValue[]) : []} />
     const text = formatFieldValue(field, v, lists, users)
     return (
-      <div className={cx('min-h-8 rounded-md border border-transparent bg-slate-50 px-2.5 py-1.5 text-sm', text ? 'text-slate-800' : 'text-slate-400', field.type === 'textarea' && 'whitespace-pre-wrap')}>
+      <div
+        className={cx('min-h-8 rounded-md border border-transparent bg-slate-50 px-2.5 py-1.5 text-sm', text ? 'text-slate-800' : 'text-slate-400', field.type === 'textarea' && 'whitespace-pre-wrap')}
+      >
         {text || '—'}
       </div>
     )

@@ -1,0 +1,21 @@
+{{- if and (eq .Values.database.dialect "memory") .Values.persistence.enabled (not .Values.persistence.existingClaim) -}}
+# Snapshots of the in-memory store (design, live state, event log).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "modus.fullname" . }}-data
+  labels:
+    {{- include "modus.labels" . | nindent 4 }}
+  annotations:
+    # Keep the data when the release is uninstalled.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.accessModes | nindent 4 }}
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}
