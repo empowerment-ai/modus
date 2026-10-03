@@ -1,4 +1,4 @@
-import { PRIORITY_RANK, type WorkItem } from '@modus-bpm/core'
+import { urgencyRank, type WorkItem } from '@modus-bpm/core'
 import { formatDuration } from '@modus-bpm/core/model/util'
 import type { BasketSort } from './store'
 
@@ -32,13 +32,15 @@ export function isRejectLike(label: string): boolean {
 }
 
 const dueKey = (i: WorkItem) => i.due ?? Number.POSITIVE_INFINITY
+/** Expedited outranks urgent. */
+const rank = (i: WorkItem) => urgencyRank(i.obj)
 
-/** Basket order. Default: most urgent priority, then the earliest due, then the longest waiting. */
+/** Basket order. Default: expedited, then most urgent priority, then the earliest due, then the longest waiting. */
 export function sortItems(items: WorkItem[], sort: BasketSort): WorkItem[] {
   const out = [...items]
-  if (sort === 'due') out.sort((a, b) => dueKey(a) - dueKey(b) || PRIORITY_RANK[b.priority] - PRIORITY_RANK[a.priority] || b.age - a.age)
-  else if (sort === 'age') out.sort((a, b) => b.age - a.age || PRIORITY_RANK[b.priority] - PRIORITY_RANK[a.priority])
-  else out.sort((a, b) => PRIORITY_RANK[b.priority] - PRIORITY_RANK[a.priority] || dueKey(a) - dueKey(b) || b.age - a.age)
+  if (sort === 'due') out.sort((a, b) => dueKey(a) - dueKey(b) || rank(b) - rank(a) || b.age - a.age)
+  else if (sort === 'age') out.sort((a, b) => b.age - a.age || rank(b) - rank(a))
+  else out.sort((a, b) => rank(b) - rank(a) || dueKey(a) - dueKey(b) || b.age - a.age)
   return out
 }
 

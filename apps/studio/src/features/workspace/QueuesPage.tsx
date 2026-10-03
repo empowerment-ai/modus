@@ -74,6 +74,7 @@ function QueueCard({
   const [limit, setLimit] = useState(SHOW)
   const oldest = q.items.reduce((m, i) => Math.max(m, i.age), 0)
   const urgent = q.items.filter((i) => i.priority === 'urgent').length
+  const expedited = q.items.filter((i) => i.expedited).length
   const overdue = q.items.filter((i) => i.overdue).length
   const type = (i: WorkItem) => app.objectTypes.find((t) => t.id === i.obj.typeId)
 
@@ -92,6 +93,7 @@ function QueueCard({
         </span>
         <Stat label="Waiting" value={q.items.length.toLocaleString()} strong />
         <Stat label="Oldest" value={q.items.length ? formatDuration(oldest) : '—'} />
+        {expedited > 0 && <Stat label="Expedited" value={String(expedited)} tone="orange" />}
         <Stat label="Urgent" value={String(urgent)} tone={urgent ? 'red' : undefined} />
         <Stat label="Overdue" value={String(overdue)} tone={overdue ? 'red' : undefined} />
         <ChevronDown size={16} className={cx('shrink-0 text-slate-400 transition-transform', open && 'rotate-180')} />
@@ -103,7 +105,7 @@ function QueueCard({
           <ul className="divide-y divide-slate-100 border-t border-slate-100">
             {q.items.slice(0, limit).map((i) => (
               <li key={i.token.id} className="flex items-center gap-3 px-4 py-2 text-xs hover:bg-slate-50/70">
-                <PriorityBadge priority={i.priority} className="w-[64px] justify-center" />
+                <PriorityBadge priority={i.priority} expedited={i.expedited} reason={i.obj.expedite?.reason} className="w-[78px] justify-center" />
                 <span className="font-mono text-[11px] font-medium text-brand-700">{i.obj.number}</span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[13px] text-slate-900">{objectTitle(type(i), i.obj.data, app.lists, users) || 'Untitled'}</span>
@@ -134,11 +136,17 @@ function QueueCard({
   )
 }
 
-function Stat({ label, value, strong, tone }: { label: string; value: string; strong?: boolean; tone?: 'red' }) {
+function Stat({ label, value, strong, tone }: { label: string; value: string; strong?: boolean; tone?: 'red' | 'orange' }) {
   return (
     <span className="hidden w-[68px] shrink-0 text-right leading-tight sm:block">
       <span className="block text-[10px] font-medium tracking-wide text-slate-400 uppercase">{label}</span>
-      <span className={cx('block tabular-nums', strong ? 'text-base font-semibold text-slate-900' : 'text-[13px] font-medium', tone === 'red' ? 'text-rose-600' : !strong && 'text-slate-700')}>
+      <span
+        className={cx(
+          'block tabular-nums',
+          strong ? 'text-base font-semibold text-slate-900' : 'text-[13px] font-medium',
+          tone === 'red' ? 'text-rose-600' : tone === 'orange' ? 'text-orange-700' : !strong && 'text-slate-700',
+        )}
+      >
         {value}
       </span>
     </span>
