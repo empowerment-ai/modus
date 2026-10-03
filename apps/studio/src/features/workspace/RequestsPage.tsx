@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react'
 import { FormRenderer } from '../../components/FormRenderer'
 import { TypeIcon } from '../../components/icons'
 import { Badge, Button, Card, cx, EmptyState, IconButton, Segmented } from '../../components/ui'
-import { canExpedite, type Ctx, describeToken, fieldAccessMap, type RequestSummary, type SimObject, type SimState, workSetPriority } from '@modus-bpm/core'
+import { canExpedite, type Ctx, describeToken, fieldAccessMap, type RequestSummary, type SimObject, type SimState, visibleHistory, workSetPriority } from '@modus-bpm/core'
 import { objectTitle } from '@modus-bpm/core/model/format'
 import type { App, Group, Id, Priority, User, WfNode } from '@modus-bpm/core/model/types'
 import { formatClock, formatDuration } from '@modus-bpm/core/model/util'
@@ -272,7 +272,7 @@ export function ItemReadView({
               <FormRenderer type={type} lists={app.lists} users={users} values={obj.data} access={access} includeSystem />
             </Card>
           ) : (
-            <ObjectHistory obj={obj} app={app} />
+            <ObjectHistory obj={{ ...obj, history: visibleHistory(ctx, obj, me.id) }} app={app} />
           )}
         </div>
       </div>
