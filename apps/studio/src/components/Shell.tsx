@@ -23,6 +23,7 @@ import {
 } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { PRODUCT } from '../brand'
+import { GitHubMark } from './GitHubMark'
 import { blankApp } from '@modus-bpm/core/model/seed'
 import type { Design } from '@modus-bpm/core/model/types'
 import { formatClock, formatDuration } from '@modus-bpm/core/model/util'
@@ -51,25 +52,25 @@ export function Shell({ children }: { children: ReactNode }) {
       <TopBar />
       <div className="flex min-h-0 flex-1">
         {mode === 'studio' && (
-        <nav className="flex w-[76px] shrink-0 flex-col items-center gap-1 border-r border-slate-200 bg-white py-3" aria-label="Designer sections">
-          {NAV.map(({ view: v, label, icon: Icon }) => (
-            <button
-              key={v}
-              type="button"
-              onClick={() => setView(v)}
-              aria-current={view === v ? 'page' : undefined}
-              className={cx(
-                'flex w-[64px] flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10.5px] leading-tight font-medium transition-colors',
-                view === v ? 'bg-brand-50 text-brand-700' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800',
-              )}
-            >
-              <Icon size={19} strokeWidth={view === v ? 2.2 : 1.8} />
-              <span className="text-center">{label}</span>
-            </button>
-          ))}
-          <div className="flex-1" />
-          <SettingsMenu />
-        </nav>
+          <nav className="flex w-[76px] shrink-0 flex-col items-center gap-1 border-r border-slate-200 bg-white py-3" aria-label="Designer sections">
+            {NAV.map(({ view: v, label, icon: Icon }) => (
+              <button
+                key={v}
+                type="button"
+                onClick={() => setView(v)}
+                aria-current={view === v ? 'page' : undefined}
+                className={cx(
+                  'flex w-[64px] flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10.5px] leading-tight font-medium transition-colors',
+                  view === v ? 'bg-brand-50 text-brand-700' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800',
+                )}
+              >
+                <Icon size={19} strokeWidth={view === v ? 2.2 : 1.8} />
+                <span className="text-center">{label}</span>
+              </button>
+            ))}
+            <div className="flex-1" />
+            <SettingsMenu />
+          </nav>
         )}
         <main className="relative min-w-0 flex-1">{children}</main>
       </div>
@@ -80,19 +81,32 @@ export function Shell({ children }: { children: ReactNode }) {
 function TopBar() {
   return (
     <header className="flex h-[52px] shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-3">
-      <div className="flex w-[52px] items-center justify-center">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-white shadow-sm">
-          <GitBranch size={17} strokeWidth={2.4} />
-        </div>
-      </div>
-      <div className="hidden leading-tight min-[1200px]:block">
-        <div className="text-sm font-semibold text-slate-900">{PRODUCT.name}</div>
-        <div className="hidden text-[10.5px] font-medium tracking-wide text-slate-400 uppercase min-[1440px]:block">{PRODUCT.tagline}</div>
-      </div>
+      <a href="#/" title={`${PRODUCT.name} home`} aria-label={`${PRODUCT.name} home`} className="flex items-center gap-3 rounded-lg">
+        <span className="flex w-[52px] items-center justify-center">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-white shadow-sm">
+            <GitBranch size={17} strokeWidth={2.4} />
+          </span>
+        </span>
+        <span className="hidden leading-tight min-[1200px]:block">
+          <span className="block text-sm font-semibold text-slate-900">{PRODUCT.name}</span>
+          <span className="hidden text-[10.5px] font-medium tracking-wide text-slate-400 uppercase min-[1440px]:block">{PRODUCT.tagline}</span>
+        </span>
+      </a>
       <div className="mx-2 hidden h-6 w-px bg-slate-200 min-[1200px]:block" />
       <ModeSwitch />
       <AppSwitcher />
       <div className="flex-1" />
+      <a
+        href={PRODUCT.repo}
+        target="_blank"
+        rel="noreferrer"
+        title={`${PRODUCT.name} on GitHub: source code, docs and issues`}
+        className="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+      >
+        <GitHubMark size={16} />
+        <span className="hidden min-[1600px]:inline">GitHub</span>
+        <span className="sr-only min-[1600px]:hidden">{PRODUCT.name} on GitHub</span>
+      </a>
       <SimControls />
     </header>
   )
@@ -121,7 +135,7 @@ function ModeSwitch() {
             mode === o.value ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800',
           )}
         >
-          <o.icon size={14} />
+          <o.icon size={14} className="max-[1199px]:hidden" />
           {o.label}
         </button>
       ))}
@@ -149,7 +163,9 @@ function AppSwitcher() {
         <AppWindow size={15} style={{ color: app?.color }} />
         <span className="leading-tight">
           <span className="block text-[10px] font-medium tracking-wide text-slate-400 uppercase">Application</span>
-          <span className="block max-w-[140px] truncate text-sm font-semibold text-slate-800 min-[1200px]:max-w-[190px]" title={app?.name}>{app?.name}</span>
+          <span className="block max-w-[140px] truncate text-sm font-semibold text-slate-800 min-[1200px]:max-w-[190px]" title={app?.name}>
+            {app?.name}
+          </span>
         </span>
         <ChevronDown size={14} className="ml-1 text-slate-400" />
       </button>
@@ -272,7 +288,9 @@ function SimControls() {
       </div>
       <div className="h-6 w-px bg-slate-200" />
       <div className="rounded-md bg-slate-900 px-2.5 py-1 font-mono text-xs whitespace-nowrap text-slate-100 tabular-nums" title="Simulated time">
-        {formatClock(view?.clock ?? 0)}
+        {/* Narrow screens drop the weekday: "Day 1 · 08:00". */}
+        <span className="max-[1199px]:hidden">{formatClock(view?.clock ?? 0)}</span>
+        <span className="min-[1200px]:hidden">{formatClock(view?.clock ?? 0).replace(/^\w+ · /, '')}</span>
       </div>
       <div className="hidden min-[1440px]:block">
         <Segmented size="sm" value={speed} onChange={setSpeed} options={SPEEDS.map((s) => ({ value: s.value, label: s.label, title: `${s.label} of simulated time` }))} />
@@ -311,7 +329,14 @@ function SimControls() {
         <span className="hidden min-[1440px]:inline">Reset</span>
       </Button>
       <Button variant={running ? 'secondary' : 'primary'} onClick={toggle} icon={running ? <Pause size={14} /> : <Play size={14} />} className="min-[1200px]:w-[118px]" title="Space bar">
-        {running ? 'Pause' : <><span className="min-[1200px]:hidden">Run</span><span className="hidden min-[1200px]:inline">Run simulation</span></>}
+        {running ? (
+          'Pause'
+        ) : (
+          <>
+            <span className="min-[1200px]:hidden">Run</span>
+            <span className="hidden min-[1200px]:inline">Run simulation</span>
+          </>
+        )}
       </Button>
     </div>
   )

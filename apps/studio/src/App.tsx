@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { Shell } from './components/Shell'
 import { Toaster } from './components/Toaster'
 import { IntegrationsView } from './features/integrations/IntegrationsView'
@@ -12,7 +12,9 @@ import { TemplatesView } from './features/templates/TemplatesView'
 import { TypesView } from './features/types/TypesView'
 import { WorkflowView } from './features/workflow/WorkflowView'
 import { WorkspaceView } from './features/workspace/WorkspaceView'
+import { LandingPage } from './features/home/LandingPage'
 import { useDesign } from './store/design'
+import { useRoute } from './store/route'
 import { useSim } from './store/sim'
 import { useUi } from './store/ui'
 
@@ -21,6 +23,19 @@ export function App() {
   const mode = useUi((s) => s.mode)
   const appId = useUi((s) => s.appId)
   const apps = useDesign((s) => s.design.apps)
+  const route = useRoute()
+
+  // The URL decides the mode when it names one (#/studio, #/workspace)…
+  useEffect(() => {
+    if (route && route !== useUi.getState().mode) useUi.getState().setMode(route)
+  }, [route])
+  // …and switching between Studio and Workspace inside the app updates the URL.
+  const lastMode = useRef(mode)
+  useEffect(() => {
+    if (lastMode.current === mode) return
+    lastMode.current = mode
+    if (route && route !== mode) window.location.hash = `/${mode}`
+  }, [mode, route])
 
   // Recover if the remembered app was deleted (or storage came from an older version).
   useEffect(() => {
@@ -31,6 +46,7 @@ export function App() {
     useSim.getState().refresh()
   }, [appId])
 
+  if (!route) return <LandingPage />
   if (!apps.some((a) => a.id === appId)) return null
 
   return (
