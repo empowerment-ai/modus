@@ -26,22 +26,25 @@ const JUSTIFICATIONS = [
   'Electric replacement supports the fleet emissions reduction goal.',
 ]
 
-const LINE_DESCRIPTIONS = [
-  'Laptop, 14-inch business model',
-  'Docking station',
-  'Janitorial service, weekly',
-  'HVAC filter set',
-  'Cloud compute hours',
-  'Software license seat (annual)',
-  'Freight, pallet transfer',
-  'Electrical repair labor (hours)',
-  'Consulting hours',
-  'Printer paper, case',
-  'Catering, per person',
-  'Toner cartridge',
-  'Network switch, 24-port',
-  'Safety vests, box of 10',
+/** Line descriptions, each with the spend category it belongs to (used when the table has a matching choice column). */
+const LINE_ITEMS: Array<[string, string]> = [
+  ['Laptop, 14-inch business model', 'Hardware'],
+  ['Docking station', 'Hardware'],
+  ['Janitorial service, weekly', 'Facilities'],
+  ['HVAC filter set', 'Facilities'],
+  ['Cloud compute hours', 'Software'],
+  ['Software license seat (annual)', 'Software'],
+  ['Freight, pallet transfer', 'Freight'],
+  ['Electrical repair labor (hours)', 'Services'],
+  ['Consulting hours', 'Services'],
+  ['Printer paper, case', 'Supplies'],
+  ['Catering, per person', 'Services'],
+  ['Toner cartridge', 'Supplies'],
+  ['Network switch, 24-port', 'Hardware'],
+  ['Safety vests, box of 10', 'Supplies'],
 ]
+const LINE_DESCRIPTIONS = LINE_ITEMS.map(([d]) => d)
+const LINE_CATEGORY = new Map(LINE_ITEMS)
 
 const GENERIC = ['Routine request.', 'See attached details.', 'Requested by the department lead.', 'Follow-up to last month’s request.']
 
@@ -175,6 +178,13 @@ function generateRows(s: HasRng, f: FieldDef, lists: ListDef[], users: User[], t
       else if (shares && factors.has(c.id)) row[c.id] = Math.max(0.01, Math.round((shares[i]! / qty) * 100) / 100)
       else if (shares && c.id === totalColumnId) row[c.id] = Math.round(shares[i]! * 100) / 100
       else row[c.id] = cellValue(s, c, lists, users, today)
+    }
+    // Keep a line's category consistent with its description.
+    const desc = cols.find((c) => c.type === 'text' && typeof row[c.id] === 'string' && LINE_CATEGORY.has(row[c.id] as string))
+    const category = desc && LINE_CATEGORY.get(row[desc.id] as string)
+    for (const c of cols.filter((x) => x.type === 'choice' && x.listId)) {
+      const match = lists.find((l) => l.id === c.listId)?.items.find((it) => it.parentId === null && it.label === category)
+      if (match) row[c.id] = match.id
     }
     return row
   })
