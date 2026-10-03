@@ -109,6 +109,7 @@ interface Entry {
 interface Indexed {
   len: number
   title: string
+  titleFieldId?: Id
   entries: Entry[]
 }
 
@@ -139,7 +140,7 @@ function indexItem(idx: Index, obj: SimObject, type: ObjectType): Indexed {
   for (const h of obj.history) if (h.comment) entries.push({ fieldId: '$comment', label: 'Comment', text: h.comment })
   const titleField = type.fields.find((x) => x.id === type.titleFieldId) ?? type.fields.find((x) => x.summary)
   const title = titleField ? formatFieldValue(titleField, obj.data[titleField.id], lists, users) : ''
-  const indexed = { len: obj.history.length + obj.tokens.length, title, entries }
+  const indexed = { len: obj.history.length + obj.tokens.length, title, titleFieldId: titleField?.id, entries }
   cache.set(obj, indexed)
   return indexed
 }
@@ -357,8 +358,10 @@ export function searchItems(sim: SimState, ctx: Ctx, query: string, opts: Search
     if (!ok) continue
     const doc = indexItem(idx, obj, type)
     const visible = doc.entries.filter((e) => !hidden.has(e.fieldId))
+    // A title made from a field this person may not see is neither shown nor searched.
+    const title = doc.titleFieldId && hidden.has(doc.titleFieldId) ? '' : doc.title
     const where = obj.tokens.map((t) => describeTokenText(idx, t)).join(' · ')
-    const haystack = [obj.number, doc.title, where, ...visible.map((e) => e.text)].join(' \u0001 ').toLowerCase()
+    const haystack = [obj.number, title, where, ...visible.map((e) => e.text)].join(' \u0001 ').toLowerCase()
     if (parsed.excluded.some((w) => haystack.includes(w))) continue
     let score = 0
     const matches: SearchHit['matches'] = []
@@ -369,7 +372,7 @@ export function searchItems(sim: SimState, ctx: Ctx, query: string, opts: Search
       }
       if (obj.number.toLowerCase() === w) score += 100
       else if (obj.number.toLowerCase().includes(w)) score += 40
-      if (doc.title.toLowerCase().includes(w)) score += 20
+      if (title.toLowerCase().includes(w)) score += 20
       const e = visible.find((x) => x.text.toLowerCase().includes(w))
       if (e) {
         score += parsed.phrases.includes(w) ? 12 : 6
@@ -378,7 +381,7 @@ export function searchItems(sim: SimState, ctx: Ctx, query: string, opts: Search
     }
     if (!ok) continue
     score += urgencyRank(obj) + (obj.status === 'active' ? 2 : 0) + Math.max(0, 1 - (sim.clock - obj.createdAt) / (7 * 1440))
-    hits.push({ obj, score, title: doc.title, where: obj.status === 'active' ? where : `Finished (${obj.status})`, matches })
+    hits.push({ obj, score, title, where: obj.status === 'active' ? where : `Finished (${obj.status})`, matches })
     const steps = obj.status === 'active' ? [...new Set(obj.tokens.map((t) => idx.node.get(t.nodeId)?.node.data.label ?? '?'))] : ['Finished']
     facets.status[obj.status] = (facets.status[obj.status] ?? 0) + 1
     facets.priority[obj.expedite ? 'expedited' : obj.priority] = (facets.priority[obj.expedite ? 'expedited' : obj.priority] ?? 0) + 1

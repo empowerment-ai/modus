@@ -1576,11 +1576,24 @@ export function supervisesProcess(idx: Index, workflowId: Id, userId: Id): boole
 }
 
 /** Does this person supervise this step (step supervisors, its group's supervisor, or its process)? */
+/** Every workflow that runs this one as a subflow, directly or through other subflows. */
+function callersOf(idx: Index, wfId: Id, seen = new Set<Id>([wfId])): Workflow[] {
+  const out: Workflow[] = []
+  for (const w of idx.ctx.app.workflows) {
+    if (seen.has(w.id) || !w.nodes.some((n) => n.type === 'subflow' && n.data.workflowId === wfId)) continue
+    seen.add(w.id)
+    out.push(w, ...callersOf(idx, w.id, seen))
+  }
+  return out
+}
+
 export function supervisesStep(idx: Index, nodeId: Id, userId: Id): boolean {
   const found = idx.node.get(nodeId)
   if (!found) return false
   const n = found.node
   if (hasRole(idx, userId, 'admin') || inAudience(idx, found.wf.supervisors, userId)) return true
+  // A subflow's steps are also overseen by the supervisors of every process that calls it.
+  if (callersOf(idx, found.wf.id).some((w) => inAudience(idx, w.supervisors, userId))) return true
   if (n.type === 'user') return inAudience(idx, n.data.supervisors, userId) || (!!n.data.groupId && idx.group.get(n.data.groupId)?.supervisorId === userId)
   return false
 }

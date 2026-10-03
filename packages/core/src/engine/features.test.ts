@@ -5,7 +5,7 @@ import { fieldVerdicts } from '../model/security'
 import { normalizeData, rowsOf } from '../model/tables'
 import type { ObjectType } from '../model/types'
 import { ask, translateQuestion } from './assistant'
-import { activeTokens, advance, createObject, type Ctx, newSim, workStepOf, buildIndex } from './engine'
+import { activeTokens, advance, createObject, type Ctx, newSim, workStepOf, buildIndex, supervisesStep } from './engine'
 import { adminUpdateData, canExpedite, setExpedite, superviseAssign, superviseRedistribute, superviseRelease, workDelegate, workNext, workSave } from './ops'
 import { canReadItem, parseQuery, searchItems, visibleHistory } from './search'
 import { computeView, supervisionFor } from './view'
@@ -143,6 +143,15 @@ describe('supervisors', () => {
     expect(obj.history.some((h) => h.kind === 'released' && h.actor === 'Carla Mendes' && h.comment?.includes('audit meetings'))).toBe(true)
   })
 
+  it('process supervisors also oversee the subflows their process calls', () => {
+    const ctx = seedCtx(2)
+    const idx = buildIndex(ctx)
+    // Liz is a watch commander (process supervisors of Event Triage); Incident Report's writing step belongs to the officers' group.
+    expect(supervisesStep(idx, 'r_write', 'u_liz')).toBe(true)
+    expect(supervisionFor(newSim('app_soc', 1), ctx, 'u_liz').steps.map((s) => s.nodeId)).toContain('r_write')
+    expect(supervisesStep(idx, 'r_write', 'u_carmen')).toBe(false)
+  })
+
   it('a supervisor sees every step they oversee and what is there now', () => {
     const ctx = seedCtx()
     const sim = newSim('app_invoice', 4)
@@ -200,6 +209,17 @@ describe('search', () => {
     expect(searchItems(sim, ctx, 'is:open', { userId: 'u_carmen' }).total).toBe(0) // a patrol officer can't read invoices
   })
 
+  it('blanks a title made from a field the searcher may not see', () => {
+    const ctx = seedCtx()
+    ctx.app.objectTypes[0]!.titleFieldId = 'f_bank'
+    const sim = newSim('app_invoice', 12)
+    sim.arrivals = false
+    createObject(sim, ctx, 'w_invoice', { f_lines: lines([1, 80]), f_bank: 'IBAN-TITLE-1' }, 'u_rosa')
+    expect(searchItems(sim, ctx, 'is:open', { userId: 'u_rosa' }).hits[0]!.title).toBe('IBAN-TITLE-1')
+    expect(searchItems(sim, ctx, 'is:open', { userId: 'u_maya' }).hits[0]!.title).toBe('')
+    expect(searchItems(sim, ctx, 'IBAN-TITLE', { userId: 'u_maya' }).total).toBe(0)
+  })
+
   it('number= matches one item exactly; number: matches part of it', () => {
     const ctx = seedCtx()
     const sim = newSim('app_invoice', 12)
@@ -229,6 +249,15 @@ describe('search', () => {
 // ---------- Assistant ----------
 
 describe('assistant', () => {
+  it('reads “my …” as my basket and ignores filler such as “only”', () => {
+    const ctx = seedCtx()
+    const mine = translateQuestion('Show my overdue items', ctx, 'u_maya').query
+    expect(mine).toContain('is:mine')
+    expect(mine).toContain('is:overdue')
+    expect(translateQuestion('Only the expedited ones', ctx, 'u_maya').query).toBe('is:expedited')
+    expect(translateQuestion('my team’s overdue invoices', ctx, 'u_maya').query).not.toContain('is:mine')
+  })
+
   it('turns a question into a search it can show', () => {
     const ctx = seedCtx()
     const { query } = translateQuestion('Show me urgent invoices from Acme over $10k that are overdue', ctx)
