@@ -1,5 +1,5 @@
 import { Eye, Layers, type LucideIcon, PencilRuler, ShieldCheck, Users, Workflow as WorkflowIcon } from 'lucide-react'
-import { Fragment } from 'react'
+import { Fragment, useState } from 'react'
 import { Avatar, Badge, Card, cx, EmptyState, Toggle } from '../../components/ui'
 import type { App, Audience, Group, Id, OrgRole, User } from '@modus-bpm/core/model/types'
 import { useApp, useDesign } from '../../store/design'
@@ -18,6 +18,9 @@ export function RolesTab() {
   const groups = useDesign((s) => s.design.groups)
   const app = useApp(useUi((s) => s.appId))
   const admins = users.filter((u) => u.roles?.includes('admin')).length
+  // People who hold a role come first; the order is fixed on open so rows don't jump while toggling.
+  const [first] = useState(() => new Set(users.filter((u) => u.roles?.length).map((u) => u.id)))
+  const rows = [...users.filter((u) => first.has(u.id)), ...users.filter((u) => !first.has(u.id))]
 
   const setRole = (u: User, role: OrgRole, on: boolean) => {
     if (!on && role === 'admin' && admins <= 1 && u.roles?.includes('admin')) {
@@ -63,7 +66,7 @@ export function RolesTab() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {users.map((u) => (
+              {rows.map((u) => (
                 <tr key={u.id}>
                   <td className="px-3 py-1.5">
                     <div className="flex items-center gap-2">
