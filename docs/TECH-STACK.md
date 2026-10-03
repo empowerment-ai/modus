@@ -289,7 +289,7 @@ sequenceDiagram
 
 | Concern | Design |
 | --- | --- |
-| Two tiers | **Built-in** (deterministic, offline, always on): a question → query translator plus a help library, in the core. **Model-backed** (optional): Claude with tool use, configured with `ANTHROPIC_API_KEY`. Same response shape, so the UI doesn't care which answered. |
+| Two tiers | **Built-in** (deterministic, offline, always on): a question → query translator plus a help library, in the core. **Model-backed** (optional): Claude with tool use, configured with `ANTHROPIC_API_KEY` (default model `claude-opus-5-5`, set with `MODUS_ASSISTANT_MODEL`). Same response shape, so the UI doesn't care which answered; if the model is unreachable or declines, the built-in tier answers with a notice. |
 | Tools | `search_items`, `get_item`, `my_work`, `process_overview`, `explain`. Each calls the core **as the person asking**, so the model only ever sees what that person could see in the Workspace. |
 | Read-only | The assistant answers and suggests; it never changes work. Actions it proposes ("expedite INV-1042?") are rendered as buttons the person confirms, which go through the normal API and permission checks. |
 | Guardrails | Tool output is data, not instructions. Answers must cite item numbers. Tool-call loops are capped; tokens and requests are budgeted per tenant. |
