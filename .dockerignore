@@ -1,0 +1,17 @@
+# Only sources and lockfiles go into the build context.
+**/node_modules
+**/dist
+**/dist-standalone
+**/*.tsbuildinfo
+.git
+.github
+.impeccable
+.DS_Store
+.env
+.env.*
+**/data
+deploy
+docs
+docker-compose.yml
+Dockerfile
+.dockerignore
