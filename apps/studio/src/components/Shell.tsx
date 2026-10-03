@@ -85,11 +85,11 @@ function TopBar() {
           <GitBranch size={17} strokeWidth={2.4} />
         </div>
       </div>
-      <div className="leading-tight">
+      <div className="hidden leading-tight min-[1200px]:block">
         <div className="text-sm font-semibold text-slate-900">{PRODUCT.name}</div>
         <div className="hidden text-[10.5px] font-medium tracking-wide text-slate-400 uppercase min-[1440px]:block">{PRODUCT.tagline}</div>
       </div>
-      <div className="mx-2 h-6 w-px bg-slate-200" />
+      <div className="mx-2 hidden h-6 w-px bg-slate-200 min-[1200px]:block" />
       <ModeSwitch />
       <AppSwitcher />
       <div className="flex-1" />
@@ -149,7 +149,7 @@ function AppSwitcher() {
         <AppWindow size={15} style={{ color: app?.color }} />
         <span className="leading-tight">
           <span className="block text-[10px] font-medium tracking-wide text-slate-400 uppercase">Application</span>
-          <span className="block max-w-[190px] truncate text-sm font-semibold text-slate-800" title={app?.name}>{app?.name}</span>
+          <span className="block max-w-[140px] truncate text-sm font-semibold text-slate-800 min-[1200px]:max-w-[190px]" title={app?.name}>{app?.name}</span>
         </span>
         <ChevronDown size={14} className="ml-1 text-slate-400" />
       </button>
@@ -296,7 +296,7 @@ function SimControls() {
       <Button variant="ghost" size="sm" icon={<FastForward size={14} />} onClick={() => fastForward(8 * 60)} title="Jump ahead a simulated working day">
         8h
       </Button>
-      <Toggle checked={arrivals} onChange={(on) => useSim.getState().setArrivals(on)} label={<span className="text-xs text-slate-600">Arrivals</span>} />
+      <Toggle checked={arrivals} onChange={(on) => useSim.getState().setArrivals(on)} label={<span className="text-xs text-slate-600 max-[1199px]:sr-only">Arrivals</span>} />
       <Button
         variant="ghost"
         size="sm"
@@ -310,8 +310,8 @@ function SimControls() {
       >
         <span className="hidden min-[1440px]:inline">Reset</span>
       </Button>
-      <Button variant={running ? 'secondary' : 'primary'} onClick={toggle} icon={running ? <Pause size={14} /> : <Play size={14} />} className="w-[118px]" title="Space bar">
-        {running ? 'Pause' : 'Run simulation'}
+      <Button variant={running ? 'secondary' : 'primary'} onClick={toggle} icon={running ? <Pause size={14} /> : <Play size={14} />} className="min-[1200px]:w-[118px]" title="Space bar">
+        {running ? 'Pause' : <><span className="min-[1200px]:hidden">Run</span><span className="hidden min-[1200px]:inline">Run simulation</span></>}
       </Button>
     </div>
   )
