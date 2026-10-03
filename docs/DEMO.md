@@ -1,12 +1,15 @@
 # A twenty-five-minute demo
 
-Open the [live demo](https://empowerment-ai.github.io/modus/) (or `pnpm dev`). Everything
-runs in the browser: a simulated organization of about 50 people works three sample
-applications. **Settings › Restore sample data** resets everything.
+Open the [live demo](https://empowerment-ai.github.io/modus/) (or `pnpm dev`). The front page
+says what Modus is and offers doors in: open a sample application in the Studio, or work in it
+as one of its people. Everything runs in the browser: a simulated organization of about 50
+people works three sample applications. **Settings › Restore sample data** resets everything;
+the Modus logo in the top bar returns to the front page.
 
 ## 1. The big picture (Invoice Processing)
 
-1. **Workflows › Invoice Approval.** Press **Run simulation** (or Space). Invoices arrive
+1. On the front page, **Invoice Processing › Open in the Studio**, which lands on **Workflows ›
+   Invoice Approval**. Press **Run simulation** (or Space). Invoices arrive
    (14 an hour), tokens travel along the paths, and every step shows how many are there now.
 2. Follow an invoice: **Capture & match PO** calls the ERP (a registered REST service). If the
    ERP keeps failing, the work is handed to an exceptions specialist to do by hand.

@@ -228,8 +228,10 @@ function CanvasInner({ app, wf }: { app: App; wf: Workflow }) {
                     e.dataTransfer.setData(DND_TYPE, p.type)
                     e.dataTransfer.effectAllowed = 'move'
                   }}
-                  onClick={() => addNode(p.type)}
-                  title={disabled ? 'A workflow has one Start step' : `Drag or click to add a ${p.label.toLowerCase()}${p.more ? ` (${p.more})` : ''}`}
+                  // Steps land on the map only when dropped there. A mouse click just says so;
+                  // Enter or Space (a click with no pointer) still adds one, for keyboard users.
+                  onClick={(e) => (e.detail === 0 ? addNode(p.type) : useUi.getState().toast(`Drag “${p.label}” onto the map to add it.`))}
+                  title={disabled ? 'A workflow has one Start step' : `Drag onto the map to add a ${p.label.toLowerCase()}${p.more ? ` (${p.more})` : ''}`}
                   className={cx('flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left', disabled ? 'cursor-not-allowed opacity-40' : 'cursor-grab hover:bg-slate-50 active:cursor-grabbing')}
                 >
                   <span className={cx('flex h-7 w-7 shrink-0 items-center justify-center rounded-md', p.tone)}>
