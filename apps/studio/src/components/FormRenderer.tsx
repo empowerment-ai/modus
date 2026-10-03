@@ -28,7 +28,10 @@ interface Props {
   onFieldClick?: (fieldId: string) => void
 }
 
-export function FormRenderer({ type, lists, users, values, onChange, access, includeSystem, errors, highlightFieldId, onFieldClick }: Props) {
+export function FormRenderer({ type, lists, users, values: given, onChange, access, includeSystem, errors, highlightFieldId, onFieldClick }: Props) {
+  // While editing, show totals and calculated columns current even when the caller
+  // keeps only the fields the person may change (a total is never one of them).
+  const values = onChange ? normalizeData(type, given) : given
   const fields = type.fields.filter((f) => (includeSystem || !f.system) && access?.[f.id] !== 'hidden')
   const hiddenCount = access ? type.fields.filter((f) => (includeSystem || !f.system) && access[f.id] === 'hidden').length : 0
 
