@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ChevronsUp } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronsUp, Zap } from 'lucide-react'
 import type { Priority } from '@modus-bpm/core/model/types'
 import { cx } from '../../components/ui'
 
@@ -9,8 +9,22 @@ const STYLE: Record<Priority, { label: string; className: string; icon?: typeof 
   urgent: { label: 'Urgent', className: 'bg-rose-50 text-rose-700', icon: ChevronsUp },
 }
 
-/** Work priority: shown on cards, tables and the item drawer. Normal is quiet on purpose. */
-export function PriorityBadge({ priority, quietNormal, className }: { priority: Priority; quietNormal?: boolean; className?: string }) {
+/** Expedited work outranks even urgent work, so it gets the loudest badge. */
+export function ExpeditedBadge({ reason, className }: { reason?: string; className?: string }) {
+  return (
+    <span
+      className={cx('inline-flex items-center gap-0.5 rounded bg-orange-600 px-1.5 py-0.5 text-[11px] font-semibold whitespace-nowrap text-white shadow-xs', className)}
+      title={`Expedited: ahead of all other work${reason ? ` — ${reason}` : ''}`}
+    >
+      <Zap size={11} strokeWidth={2.5} fill="currentColor" />
+      Expedited
+    </span>
+  )
+}
+
+/** Work priority: shown on cards, tables and the item drawer. Normal is quiet on purpose; expedited replaces it. */
+export function PriorityBadge({ priority, quietNormal, className, expedited, reason }: { priority: Priority; quietNormal?: boolean; className?: string; expedited?: boolean; reason?: string }) {
+  if (expedited) return <ExpeditedBadge reason={reason} className={className} />
   if (quietNormal && priority === 'normal') return null
   const s = STYLE[priority]
   const Icon = s.icon

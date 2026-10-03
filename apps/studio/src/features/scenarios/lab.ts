@@ -189,6 +189,18 @@ export function suggestions(view: SimView | undefined, ctx: Ctx): Suggestion[] {
       detail: `From ${round1(busiest.arrivalsPerHour)} to ${round1(busiest.arrivalsPerHour * 1.5)} an hour. Where does it break first?`,
       changes: [{ kind: 'arrivals', workflowId: busiest.id, factor: 1.5 }],
     })
+    // Only where expediting is allowed: what the fast lane gains, and what it costs everyone else.
+    const now = busiest.expedite?.simulateRate ?? 0
+    const rate = now >= 0.2 ? Math.min(0.5, now * 2) : 0.2
+    if (busiest.expedite && rate > now) {
+      out.push({
+        id: 'expedite',
+        tag: 'Stress test',
+        title: `Expedite ${Math.round(rate * 100)}% of new items in ${busiest.name}`,
+        detail: `${now ? `From ${Math.round(now * 100)}% today. ` : ''}Expedited items jump every queue. How much do they gain, and what does everything else lose?`,
+        changes: [{ kind: 'expedite-rate', workflowId: busiest.id, rate }],
+      })
+    }
   }
 
   const used = servicesUsedBy(ctx.app, ctx.services ?? [])
@@ -342,7 +354,7 @@ export function applyPlan(design: Design, appId: Id, changes: ScenarioChange[]):
   const edits: string[] = []
   const svcEdits: Array<{ id: Id; concurrency?: number; status?: ServiceDef['status']; ops: Record<Id, number> }> = []
   const nodeEdits: Array<{ wfId: Id; nodeId: Id; avgMinutes?: number; distribution?: Distribution }> = []
-  const wfEdits: Array<{ wfId: Id; arrivalsPerHour: number }> = []
+  const wfEdits: Array<{ wfId: Id; arrivalsPerHour?: number; simulateRate?: number }> = []
 
   for (const svc of after.services ?? []) {
     const old = design.services.find((x) => x.id === svc.id)
@@ -371,10 +383,17 @@ export function applyPlan(design: Design, appId: Id, changes: ScenarioChange[]):
     const old = app.workflows.find((w) => w.id === wf.id)
     if (!old) continue
     const arrivals = round1(wf.arrivalsPerHour)
+    const we: (typeof wfEdits)[number] = { wfId: wf.id }
     if (arrivals !== old.arrivalsPerHour) {
-      wfEdits.push({ wfId: wf.id, arrivalsPerHour: arrivals })
+      we.arrivalsPerHour = arrivals
       edits.push(`${wf.name}: arrivals ${old.arrivalsPerHour}/h → ${arrivals}/h`)
     }
+    const share = (r?: number) => `${Math.round((r ?? 0) * 100)}%`
+    if (share(wf.expedite?.simulateRate) !== share(old.expedite?.simulateRate)) {
+      we.simulateRate = wf.expedite?.simulateRate ?? 0
+      edits.push(`${wf.name}: expedited share ${share(old.expedite?.simulateRate)} → ${share(wf.expedite?.simulateRate)}${old.expedite ? '' : ' (turns on expediting for supervisors, 2× faster)'}`)
+    }
+    if (we.arrivalsPerHour !== undefined || we.simulateRate !== undefined) wfEdits.push(we)
     for (const n of wf.nodes) {
       const was = old.nodes.find((x) => x.id === n.id)
       if (!was) continue
@@ -410,7 +429,10 @@ export function applyPlan(design: Design, appId: Id, changes: ScenarioChange[]):
       const a = d.apps.find((x) => x.id === appId)
       for (const e of wfEdits) {
         const wf = a?.workflows.find((w) => w.id === e.wfId)
-        if (wf) wf.arrivalsPerHour = e.arrivalsPerHour
+        if (!wf) continue
+        if (e.arrivalsPerHour !== undefined) wf.arrivalsPerHour = e.arrivalsPerHour
+        // Same defaults the what-if run used when the process had no expedite policy yet.
+        if (e.simulateRate !== undefined) wf.expedite = { who: 'supervisors', slaFactor: 0.5, ...wf.expedite, simulateRate: e.simulateRate || undefined }
       }
       for (const e of nodeEdits) {
         const n = a?.workflows.find((w) => w.id === e.wfId)?.nodes.find((x) => x.id === e.nodeId)
