@@ -37,6 +37,7 @@ export class Runtime {
   private saver?: ReturnType<typeof setInterval>
   private lastTick = Date.now()
   private queue: Promise<unknown> = Promise.resolve()
+  private stopping = false
 
   private constructor(private readonly opts: Required<Omit<RuntimeOptions, 'storage'>> & { storage: Storage }) {}
 
@@ -62,7 +63,13 @@ export class Runtime {
     this.saver = setInterval(() => void this.persist(), 5000)
   }
 
+  /** Loaded and not shutting down: the readiness probe. */
+  get ready(): boolean {
+    return !this.stopping
+  }
+
   async stop() {
+    this.stopping = true
     if (this.timer) clearInterval(this.timer)
     if (this.saver) clearInterval(this.saver)
     await this.queue
