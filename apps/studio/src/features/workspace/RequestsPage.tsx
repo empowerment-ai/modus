@@ -1,28 +1,21 @@
-import { ArrowLeft, Check, FileText, Plus } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Check, FileText, Inbox, Plus } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { FormRenderer } from '../../components/FormRenderer'
 import { TypeIcon } from '../../components/icons'
 import { Badge, Button, Card, cx, EmptyState, IconButton, Segmented } from '../../components/ui'
-import { type Ctx, describeToken, fieldAccessMap, type RequestSummary, type SimObject, type SimState, workSetPriority } from '@modus-bpm/core'
+import { canExpedite, type Ctx, describeToken, fieldAccessMap, type RequestSummary, type SimObject, type SimState, workSetPriority } from '@modus-bpm/core'
 import { objectTitle } from '@modus-bpm/core/model/format'
 import type { App, Group, Id, Priority, User, WfNode } from '@modus-bpm/core/model/types'
 import { formatClock, formatDuration } from '@modus-bpm/core/model/util'
 import { useUi } from '../../store/ui'
 import { ObjectHistory } from '../objects/ObjectHistory'
-import { PriorityBadge } from '../objects/PriorityBadge'
+import { ExpediteAction, ExpediteNote, UrgencyBadge } from './Expedite'
 import { agoText } from './format'
 import { perform, type WorkData } from './live'
-import { DueLabel, PageHeader, PriorityMenu } from './parts'
+import { DueLabel, PageHeader, PriorityMenu, STATUS, titleHidden } from './parts'
 import { useWorkspace } from './store'
 
 type Show = 'open' | 'closed' | 'all'
-
-const STATUS: Record<SimObject['status'], { label: string; tone: 'brand' | 'green' | 'red' | 'slate' }> = {
-  active: { label: 'In progress', tone: 'brand' },
-  completed: { label: 'Completed', tone: 'green' },
-  rejected: { label: 'Rejected', tone: 'red' },
-  cancelled: { label: 'Cancelled', tone: 'slate' },
-}
 
 const ROW_LIMIT = 150
 
@@ -47,7 +40,7 @@ export function RequestsPage(props: Props) {
   const rows = useMemo(() => requests.filter((r) => (show === 'all' ? true : show === 'open' ? r.obj.status === 'active' : r.obj.status !== 'active')), [requests, show])
 
   const obj = requestId ? sim?.objects[requestId] : undefined
-  if (obj && sim) return <RequestView {...props} sim={sim} obj={obj} onBack={() => useWorkspace.getState().openRequest(null)} />
+  if (obj && sim) return <ItemReadView {...props} sim={sim} obj={obj} crumb={obj.createdBy === me.id ? 'My requests' : 'Following'} onBack={() => useWorkspace.getState().openRequest(null)} />
 
   const typeOf = (o: SimObject) => app.objectTypes.find((t) => t.id === o.typeId)
 
@@ -79,7 +72,7 @@ export function RequestsPage(props: Props) {
             <EmptyState icon={<FileText size={26} />} title={requests.length ? `No ${show === 'open' ? 'open' : 'closed'} requests` : 'You haven’t started anything yet'}>
               {requests.length
                 ? 'Switch the filter to see the rest.'
-                : 'Use New request to start one. Every item you create shows up here so you can follow it to the end. (While you work as someone, the simulation doesn’t create items for them.)'}
+                : 'Use New request to start one. Every item you create shows up here so you can follow it to the end, and you can expedite it if it becomes a rush. (While you work as someone, the simulation doesn’t create items for them.)'}
             </EmptyState>
           ) : (
             <div className="overflow-x-auto">
@@ -91,7 +84,10 @@ export function RequestsPage(props: Props) {
                     <th className="px-2 py-2 font-semibold">Title</th>
                     <th className="px-2 py-2 font-semibold">Where it is now</th>
                     <th className="px-2 py-2 font-semibold">Due</th>
-                    <th className="py-2 pr-4 pl-2 text-right font-semibold">Created</th>
+                    <th className="px-2 py-2 text-right font-semibold">Created</th>
+                    <th className="py-2 pr-4 pl-2">
+                      <span className="sr-only">Actions</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -127,7 +123,7 @@ function RequestRow({ r, title, sim, ctx, clock, users, me }: { r: RequestSummar
       <td className="max-w-[240px] px-2 py-2">
         <span className="flex items-center gap-1.5">
           <span className="truncate text-[13px] text-slate-900">{title || 'Untitled'}</span>
-          <PriorityBadge priority={r.obj.priority} quietNormal />
+          <UrgencyBadge priority={r.obj.priority} expedited={!!r.obj.expedite} quietNormal />
         </span>
       </td>
       <td className="px-2 py-2 text-slate-700">
@@ -148,15 +144,28 @@ function RequestRow({ r, title, sim, ctx, clock, users, me }: { r: RequestSummar
         )}
       </td>
       <td className="px-2 py-2">{r.obj.status === 'active' ? <DueLabel due={r.due} clock={clock} /> : <span className="text-slate-400">—</span>}</td>
-      <td className="py-2 pr-4 pl-2 text-right whitespace-nowrap text-slate-500 tabular-nums" title={formatClock(r.obj.createdAt)}>
+      <td className="px-2 py-2 text-right whitespace-nowrap text-slate-500 tabular-nums" title={formatClock(r.obj.createdAt)}>
         {agoText(clock - r.obj.createdAt)}
+      </td>
+      <td className="py-1.5 pr-4 pl-2 text-right" onClick={(e) => e.stopPropagation()}>
+        {sim && !r.obj.expedite && <ExpediteAction obj={r.obj} me={me} sim={sim} ctx={ctx} size="sm" />}
       </td>
     </tr>
   )
 }
 
-/** Read-only view of an item you follow: progress, where it is, the form and its history. */
-function RequestView({ me, app, ctx, users, groups, sim, obj, onBack }: Props & { sim: SimState; obj: SimObject; onBack: () => void }) {
+/** Read-only view of an item you follow or found: progress, where it is, the form and its history. */
+export function ItemReadView({
+  me,
+  app,
+  ctx,
+  users,
+  groups,
+  sim,
+  obj,
+  crumb,
+  onBack,
+}: Pick<Props, 'me' | 'app' | 'ctx' | 'users' | 'groups'> & { sim: SimState; obj: SimObject; crumb: string; onBack: () => void }) {
   const [tab, setTab] = useState<'details' | 'history'>('details')
   const type = app.objectTypes.find((t) => t.id === obj.typeId)
   const wf = app.workflows.find((w) => w.id === obj.workflowId)
@@ -166,13 +175,16 @@ function RequestView({ me, app, ctx, users, groups, sim, obj, onBack }: Props & 
     return m
   }, [app.workflows])
   if (!type) return null
-  const access = fieldAccessMap({ type, wf, passed: obj.passed, userId: me.id, groups })
+  // Fields you may not see stay hidden; administrators see everything (but nothing is editable here).
+  const access = fieldAccessMap({ type, wf, passed: obj.passed, userId: me.id, groups, admin: me.roles?.includes('admin') })
   const s = STATUS[obj.status]
   const clock = sim.clock
-  const title = objectTitle(type, obj.data, app.lists, users)
+  const title = titleHidden(ctx, obj, me.id) ? '' : objectTitle(type, obj.data, app.lists, users)
   const mine = obj.createdBy === me.id
   const working = obj.tokens.some((t) => t.userId === me.id)
+  const held = obj.tokens.find((t) => t.userId === me.id && (t.state === 'assigned' || t.state === 'working'))
   const canPrioritize = obj.status === 'active' && (mine || working)
+  const expeditable = canExpedite(sim, ctx, obj.id, me.id)
 
   const setPriority = (p: Priority) => {
     if (perform((sm, c) => workSetPriority(sm, c, obj.id, me.id, p)).ok) useUi.getState().toast(`${obj.number} is now ${p} priority.`, 'success')
@@ -181,12 +193,14 @@ function RequestView({ me, app, ctx, users, groups, sim, obj, onBack }: Props & 
   return (
     <div className="h-full overflow-y-auto bg-white">
       <div className="flex h-11 items-center gap-2 border-b border-slate-200 px-3">
-        <IconButton label="Back to my requests" onClick={onBack}>
+        <IconButton label={`Back to ${crumb === 'Following' ? 'my requests' : crumb.toLowerCase()}`} onClick={onBack}>
           <ArrowLeft size={16} />
         </IconButton>
         <span className="text-xs text-slate-500">
-          {mine ? 'My requests' : 'Following'} <span aria-hidden>›</span> <span className="font-mono font-medium text-slate-700">{obj.number}</span>
+          {crumb} <span aria-hidden>›</span> <span className="font-mono font-medium text-slate-700">{obj.number}</span>
         </span>
+        <div className="flex-1" />
+        <ExpediteAction obj={obj} me={me} sim={sim} ctx={ctx} size="sm" />
       </div>
       <div className="mx-auto max-w-[880px] px-6 pt-5 pb-10">
         <div className="flex items-center gap-2 text-xs text-slate-500">
@@ -202,10 +216,10 @@ function RequestView({ me, app, ctx, users, groups, sim, obj, onBack }: Props & 
         <h2 className="mt-1.5 text-xl font-semibold tracking-tight text-slate-900">{title || `${type.name} ${obj.number}`}</h2>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <Badge tone={s.tone}>{s.label}</Badge>
+          {obj.expedite && obj.status === 'active' && <UrgencyBadge priority={obj.priority} expedited />}
           <PriorityMenu priority={obj.priority} onChange={setPriority} disabled={!canPrioritize} />
           {obj.status === 'active' && obj.dueBy !== undefined && (
             <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-1.5 py-0.5 text-[11px]">
-              <span className="text-slate-500">Due</span>
               <DueLabel due={obj.dueBy} clock={clock} />
             </span>
           )}
@@ -214,8 +228,21 @@ function RequestView({ me, app, ctx, users, groups, sim, obj, onBack }: Props & 
               Took {formatDuration(obj.completedAt - obj.createdAt)}, ended {agoText(clock - obj.completedAt)}
             </span>
           )}
-          {canPrioritize && <span className="text-[11px] text-slate-400">You can raise its priority if it has become urgent.</span>}
+          {canPrioritize && !obj.expedite && (
+            <span className="text-[11px] text-slate-400">{expeditable ? 'If it has become a rush, raise its priority or expedite it.' : 'You can raise its priority if it has become urgent.'}</span>
+          )}
         </div>
+        {obj.status === 'active' && <ExpediteNote obj={obj} clock={clock} className="mt-2" />}
+
+        {held && (
+          <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-sky-200 bg-sky-50/60 px-3.5 py-2.5 text-[13px] text-sky-900">
+            <Inbox size={15} className="shrink-0 text-sky-600" />
+            <span className="min-w-0 flex-1">It’s in your basket. Open it in My work to fill it in and release it.</span>
+            <Button size="sm" variant="primary" icon={<ArrowRight size={13} />} onClick={() => useWorkspace.getState().openItem(held.id)}>
+              Open in My work
+            </Button>
+          </div>
+        )}
 
         <Card className="mt-4 p-4">
           <Journey obj={obj} nodes={nodes} sim={sim} ctx={ctx} />

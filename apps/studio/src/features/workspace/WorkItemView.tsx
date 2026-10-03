@@ -11,6 +11,7 @@ import { useSim } from '../../store/sim'
 import { useUi } from '../../store/ui'
 import { ObjectHistory } from '../objects/ObjectHistory'
 import { whereNow } from './actions'
+import { ExpediteAction, ExpediteNote, ExpeditedBadge } from './Expedite'
 import { isRejectLike, timeOfDay } from './format'
 import { perform } from './live'
 import { DueLabel, PriorityMenu, StateChip } from './parts'
@@ -185,6 +186,7 @@ function ItemBody({ item, me, app, ctx, users, groups, sim, tick, position, onMo
           My work <span aria-hidden>›</span> <span className="font-mono font-medium text-slate-700">{obj.number}</span>
         </span>
         <div className="flex-1" />
+        <ExpediteAction obj={obj} me={me} sim={sim} ctx={ctx} size="sm" />
         {position && (
           <>
             <span className="text-[11px] text-slate-500 tabular-nums">
@@ -213,10 +215,11 @@ function ItemBody({ item, me, app, ctx, users, groups, sim, tick, position, onMo
           <h2 className="mt-1.5 text-xl font-semibold tracking-tight text-slate-900">{title || `${type.name} ${obj.number}`}</h2>
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
+            {item.expedited && <ExpeditedBadge />}
             <PriorityMenu priority={obj.priority} onChange={setPriority} />
             <StateChip state={token.state} />
-            <DueChip label="Step due" due={item.stepDue} clock={clock} />
-            <DueChip label="Case due" due={item.caseDue} clock={clock} />
+            <DueChip label="Step" due={item.stepDue} clock={clock} />
+            <DueChip label="Case" due={item.caseDue} clock={clock} />
             <span className="text-[11px] text-slate-500">
               {formatDuration(item.age)} at this step
               {token.state === 'working' && token.startedAt !== undefined && ` · working since ${timeOfDay(simDate(token.startedAt))}`}
@@ -224,6 +227,7 @@ function ItemBody({ item, me, app, ctx, users, groups, sim, tick, position, onMo
           </div>
 
           <div className="mt-3 space-y-1 text-[13px] text-slate-600">
+            <ExpediteNote obj={obj} clock={clock} />
             <p className="flex items-center gap-1.5">
               <MapPin size={13} className="shrink-0 text-slate-400" />
               At <span className="font-medium text-slate-900">{step.label}</span>

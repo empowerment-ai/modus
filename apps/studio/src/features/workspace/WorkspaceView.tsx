@@ -1,5 +1,5 @@
-import { FileText, House, Inbox, Info, Layers, type LucideIcon, Plus, Send, Users, X } from 'lucide-react'
-import { useEffect, useLayoutEffect, useMemo } from 'react'
+import { Eye, FileText, House, Inbox, Info, Layers, type LucideIcon, Plus, Search, Send, Sparkles, Users, X } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
 import { cx, EmptyState } from '../../components/ui'
 import type { Ctx } from '@modus-bpm/core'
 import type { App, Group, User } from '@modus-bpm/core/model/types'
@@ -7,6 +7,7 @@ import { formatClock } from '@modus-bpm/core/model/util'
 import { useApp, useDesign } from '../../store/design'
 import { SPEEDS, useSim } from '../../store/sim'
 import { useUi } from '../../store/ui'
+import { AskPanel } from './AskPanel'
 import { DistributePage } from './DistributePage'
 import { HomePage } from './HomePage'
 import { useLiveSim, useWorkData, useWorkspaceCtx } from './live'
@@ -16,12 +17,16 @@ import { Count } from './parts'
 import { PersonaPicker } from './PersonaPicker'
 import { appPeople, suggestedPeople } from './personas'
 import { QueuesPage } from './QueuesPage'
+import { QuickSearch } from './QuickSearch'
 import { RequestsPage } from './RequestsPage'
+import { MOD_KEY } from './searchParts'
+import { SearchPage } from './SearchPage'
 import { type Page, useWorkspace } from './store'
+import { SupervisePage } from './SupervisePage'
 
 // The Workspace: what the people doing the work see. Pick who you are working as,
-// then work your basket, fetch from queues, hand out work and follow your requests
-// while the simulation keeps everyone else busy.
+// then work your basket, fetch from queues, hand out work, supervise, search and
+// follow your requests while the simulation keeps everyone else busy.
 
 export function WorkspaceView() {
   const appId = useUi((s) => s.appId)
@@ -66,8 +71,40 @@ function Workspace({ app, me, ctx, users, groups, people, suggested }: Workspace
   const { sim, tick } = useLiveSim()
   const data = useWorkData(sim, ctx, me.id, tick)
   const stored = useWorkspace((s) => s.page)
+  const quickOpen = useWorkspace((s) => s.quickOpen)
+  const askOpen = useWorkspace((s) => s.askOpen)
   const dispatches = data.distribution.length > 0
-  const page: Page = stored === 'distribute' && !dispatches ? 'home' : stored
+  const supervises = data.supervision.steps.length > 0 || data.supervision.processes.length > 0 || !!me.roles?.includes('admin')
+  const page: Page = (stored === 'distribute' && !dispatches) || (stored === 'supervise' && !supervises) ? 'home' : stored
+
+  // "/" or ⌘K / Ctrl+K: quick search from anywhere in the Workspace.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement
+      const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || t.isContentEditable
+      const modK = e.key.toLowerCase() === 'k' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey
+      const slash = e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey
+      if (!modK && !slash) return
+      const ws = useWorkspace.getState()
+      if (ws.quickOpen) {
+        e.preventDefault()
+        if (modK) ws.setQuickOpen(false)
+        return
+      }
+      // Leave dialogs (delegate, expedite, create…) alone.
+      if (useUi.getState().createFor || document.querySelector('[aria-modal="true"]')) return
+      e.preventDefault()
+      // On the Search page the box is right there.
+      if (ws.page === 'search' && !ws.viewId) document.querySelector<HTMLInputElement>('input[aria-label="Search items"]')?.focus()
+      else ws.setQuickOpen(true)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const closeQuick = useCallback(() => useWorkspace.getState().setQuickOpen(false), [])
+  const closeAsk = useCallback(() => useWorkspace.getState().setAskOpen(false), [])
+  const askModus = useCallback((question?: string) => useWorkspace.getState().openAsk(question), [])
 
   // Opening an item from elsewhere (e.g. "Create & open") shows it here, not in the administrator's drawer.
   const objectId = useUi((s) => s.objectId)
@@ -80,22 +117,35 @@ function Workspace({ app, me, ctx, users, groups, people, suggested }: Workspace
   }, [objectId, data.basket])
 
   const overdue = data.basket.filter((i) => i.overdue).length
+  const escalated = data.supervision.steps.reduce((n, s) => n + s.escalated.length, 0)
   const nav: Array<{ page: Page; label: string; icon: LucideIcon; count?: number; tone?: 'red' | 'brand' }> = [
     { page: 'home', label: 'Home', icon: House },
     { page: 'work', label: 'My work', icon: Inbox, count: data.basket.length, tone: overdue ? 'red' : 'brand' },
     { page: 'queues', label: 'Queues', icon: Layers, count: data.queues.reduce((n, q) => n + q.items.length, 0) },
     ...(dispatches ? [{ page: 'distribute' as const, label: 'Distribute', icon: Send, count: data.distribution.reduce((n, d) => n + d.waiting.length, 0) }] : []),
+    ...(supervises ? [{ page: 'supervise' as const, label: 'Supervise', icon: Eye, count: escalated, tone: 'red' as const }] : []),
     { page: 'requests', label: 'My requests', icon: FileText, count: data.requests.filter((r) => r.obj.status === 'active').length },
     { page: 'new', label: 'New request', icon: Plus },
+    { page: 'search', label: 'Search', icon: Search },
   ]
 
   const common = { me, app, ctx, users, groups, sim, tick, data }
 
   return (
-    <div className="flex h-full">
+    <div className="relative flex h-full">
       <aside className="flex w-[232px] shrink-0 flex-col border-r border-slate-200 bg-white">
-        <div className="p-3">
+        <div className="space-y-2 p-3">
           <PersonaPicker me={me} people={people} suggested={suggested} ctx={ctx} />
+          <button
+            type="button"
+            onClick={() => useWorkspace.getState().setQuickOpen(true)}
+            className="flex h-8 w-full items-center gap-2 rounded-md border border-slate-200 bg-slate-50/70 px-2.5 text-left text-[13px] text-slate-500 hover:border-slate-300 hover:bg-white hover:text-slate-700"
+            title={`Search items (/ or ${MOD_KEY}K)`}
+          >
+            <Search size={14} className="shrink-0" />
+            <span className="flex-1">Search…</span>
+            <kbd className="rounded border border-slate-200 bg-white px-1 font-sans text-[10.5px] text-slate-500">{MOD_KEY}K</kbd>
+          </button>
         </div>
         <nav className="space-y-0.5 px-2" aria-label="Workspace">
           {nav.map((n) => (
@@ -115,6 +165,20 @@ function Workspace({ app, me, ctx, users, groups, people, suggested }: Workspace
             </button>
           ))}
         </nav>
+        <div className="px-2 pt-2">
+          <button
+            type="button"
+            onClick={() => (askOpen ? closeAsk() : askModus())}
+            aria-pressed={askOpen}
+            className={cx(
+              'flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium transition-colors',
+              askOpen ? 'bg-brand-600 text-white' : 'text-brand-700 hover:bg-brand-50',
+            )}
+          >
+            <Sparkles size={16} strokeWidth={1.8} />
+            <span className="flex-1 text-left">Ask Modus</span>
+          </button>
+        </div>
         <div className="flex-1" />
         <SimStatus clock={data.clock} />
       </aside>
@@ -126,10 +190,15 @@ function Workspace({ app, me, ctx, users, groups, people, suggested }: Workspace
           {page === 'work' && <MyWorkPage {...common} />}
           {page === 'queues' && <QueuesPage {...common} />}
           {page === 'distribute' && <DistributePage {...common} />}
+          {page === 'supervise' && <SupervisePage {...common} />}
           {page === 'requests' && <RequestsPage {...common} />}
           {page === 'new' && <NewRequestPage {...common} />}
+          {page === 'search' && <SearchPage {...common} onAsk={askModus} />}
         </div>
       </div>
+
+      {quickOpen && <QuickSearch me={me} app={app} ctx={ctx} sim={sim} tick={tick} data={data} onAsk={askModus} onClose={closeQuick} />}
+      {askOpen && <AskPanel me={me} app={app} ctx={ctx} sim={sim} data={data} onClose={closeAsk} />}
     </div>
   )
 }

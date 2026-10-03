@@ -6,9 +6,9 @@ import { objectTitle } from '@modus-bpm/core/model/format'
 import type { App, User } from '@modus-bpm/core/model/types'
 import { formatDuration, simDate } from '@modus-bpm/core/model/util'
 import { useSim } from '../../store/sim'
-import { PriorityBadge } from '../objects/PriorityBadge'
 import { getNext } from './actions'
 import { type Activity, asYou, useMyActivity } from './activity'
+import { UrgencyBadge } from './Expedite'
 import { agoText, DUE_SOON_MINUTES, dueTone, greeting, longDate, sortItems, timeOfDay } from './format'
 import type { WorkData } from './live'
 import { DueLabel, StepName } from './parts'
@@ -25,7 +25,7 @@ interface Props {
 
 /** Where someone lands: what needs them now, what is at risk, and what just happened to their items. */
 export function HomePage({ me, app, users, sim, tick, data }: Props) {
-  const { clock, basket, queues, distribution, requests } = data
+  const { clock, basket, queues, distribution, requests, supervision } = data
   const ws = useWorkspace.getState()
   const date = simDate(clock)
   const running = useSim((s) => s.running)
@@ -36,6 +36,13 @@ export function HomePage({ me, app, users, sim, tick, data }: Props) {
   const toDistribute = distribution.reduce((n, d) => n + d.waiting.length, 0)
   const openRequests = requests.filter((r) => r.obj.status === 'active')
   const upNext = useMemo(() => sortItems(basket, 'priority').slice(0, 5), [basket])
+  // Expedited work you can act on: in your basket, your queues, or waiting for you to hand out.
+  const expeditedMine = basket.filter((i) => i.expedited).length
+  const expeditedQueued = queues.reduce((n, q) => n + q.items.filter((i) => i.expedited).length, 0)
+  const expeditedToHand = distribution.reduce((n, d) => n + d.waiting.filter((i) => i.expedited).length, 0)
+  const expedited = expeditedMine + expeditedQueued + expeditedToHand
+  const supervises = supervision.steps.length > 0
+  const escalated = supervision.steps.reduce((n, s) => n + s.escalated.length, 0)
   const activity = useMyActivity(sim, me, tick)
 
   // At risk: anything you can act on that is overdue or due within four hours, soonest first.
@@ -102,8 +109,22 @@ export function HomePage({ me, app, users, sim, tick, data }: Props) {
           )}
         </header>
 
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-3">
           <Tile label="In my basket" value={basket.length} onClick={() => ws.go('work')} />
+          {expedited > 0 && (
+            <Tile
+              label="Expedited"
+              hint={expeditedMine ? `${expeditedMine} in my basket` : expeditedQueued ? 'in my queues' : 'to hand out'}
+              value={expedited}
+              tone="orange"
+              onClick={() => {
+                if (expeditedMine) {
+                  ws.setFilter({ expeditedOnly: true })
+                  ws.go('work')
+                } else ws.go(expeditedQueued ? 'queues' : 'distribute')
+              }}
+            />
+          )}
           <Tile
             label="Overdue"
             value={overdue.length}
@@ -125,6 +146,7 @@ export function HomePage({ me, app, users, sim, tick, data }: Props) {
           />
           {queues.length > 0 && <Tile label="Waiting in my queues" value={queueWaiting} onClick={() => ws.go('queues')} />}
           {distribution.length > 0 && <Tile label="To distribute" value={toDistribute} tone={toDistribute ? 'brand' : undefined} onClick={() => ws.go('distribute')} />}
+          {supervises && <Tile label="Escalated to me" value={escalated} tone={escalated ? 'red' : undefined} onClick={() => ws.go('supervise')} />}
           <Tile label="My open requests" value={openRequests.length} onClick={() => ws.go('requests')} />
         </div>
 
@@ -152,7 +174,7 @@ export function HomePage({ me, app, users, sim, tick, data }: Props) {
                     {upNext.map((i) => (
                       <li key={i.token.id}>
                         <button type="button" onClick={() => ws.openItem(i.token.id)} className="group flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-slate-50">
-                          <PriorityBadge priority={i.priority} className="w-[64px] justify-center" />
+                          <UrgencyBadge priority={i.priority} expedited={i.expedited} className="w-[78px] justify-center" />
                           <span className="min-w-0 flex-1">
                             <span className="flex items-baseline gap-2">
                               <span className="font-mono text-[11px] font-medium text-brand-700">{i.obj.number}</span>
@@ -229,6 +251,7 @@ export function HomePage({ me, app, users, sim, tick, data }: Props) {
 
 const TILE_TONE = {
   red: 'text-rose-600',
+  orange: 'text-orange-600',
   amber: 'text-amber-700',
   brand: 'text-brand-700',
 }
