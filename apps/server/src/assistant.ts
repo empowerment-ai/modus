@@ -309,7 +309,8 @@ async function withModel(rt: Runtime, appId: Id, userId: Id, question: string, h
       ...(m.fallbacks ? { betas: [FALLBACK_BETA], fallbacks: 'default' as const } : {}),
     })
     if (res.stop_reason === 'refusal') throw new Declined('The model declined the question.')
-    if (res.stop_reason === 'pause_turn') {
+    // Only server tools pause, and there are none; still, never loop past the cap.
+    if (res.stop_reason === 'pause_turn' && !last) {
       messages.push({ role: 'assistant', content: res.content })
       continue
     }
