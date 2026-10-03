@@ -77,6 +77,10 @@ they changed something.
     <td width="50%"><img src="docs/images/workspace.jpg" alt="The Workspace: a watch commander's basket and the work form, with field security applied"><br><sub><b>Workspace.</b> What people doing the work see: their basket by priority and due date, and the form with exactly what they may change at this step.</sub></td>
     <td width="50%"><img src="docs/images/what-if.jpg" alt="What-if: raising GPU capacity clears the AI detection backlog"><br><sub><b>What-if.</b> Double the GPU pool behind AI detection: 231 more camera events handled in 8 hours, and the bottleneck moves to dispatch.</sub></td>
   </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/search-ask.jpg" alt="Search with matches inside line items, and Ask Modus answering a question with the search it ran"><br><sub><b>Search and Ask Modus.</b> Words and filters across every field and line item you may see, and plain-language questions that show the search they ran.</sub></td>
+    <td width="50%"><img src="docs/images/supervise.jpg" alt="Supervise: a watch commander's escalated dispatches, with an expedited event at the top"><br><sub><b>Supervise.</b> A watch commander sees what escalated to her, expedited work first, and can reassign, release or re-prioritize on the spot.</sub></td>
+  </tr>
 </table>
 
 ![Camera events: AI detection on a GPU worker pool, four enrichment checks in parallel, dispatch, and an incident-report subflow](docs/images/camera-triage.png)
