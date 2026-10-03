@@ -7,8 +7,8 @@ import type { App, User } from '@modus-bpm/core/model/types'
 import { formatDuration, simDate } from '@modus-bpm/core/model/util'
 import { useSim } from '../../store/sim'
 import { getNext } from './actions'
+import { PriorityBadge } from '../objects/PriorityBadge'
 import { type Activity, asYou, useMyActivity } from './activity'
-import { UrgencyBadge } from './Expedite'
 import { agoText, DUE_SOON_MINUTES, dueTone, greeting, longDate, sortItems, timeOfDay } from './format'
 import type { WorkData } from './live'
 import { DueLabel, StepName } from './parts'
@@ -174,7 +174,7 @@ export function HomePage({ me, app, users, sim, tick, data }: Props) {
                     {upNext.map((i) => (
                       <li key={i.token.id}>
                         <button type="button" onClick={() => ws.openItem(i.token.id)} className="group flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-slate-50">
-                          <UrgencyBadge priority={i.priority} expedited={i.expedited} className="w-[78px] justify-center" />
+                          <PriorityBadge priority={i.priority} expedited={i.expedited} reason={i.obj.expedite?.reason} className="w-[78px] justify-center" />
                           <span className="min-w-0 flex-1">
                             <span className="flex items-baseline gap-2">
                               <span className="font-mono text-[11px] font-medium text-brand-700">{i.obj.number}</span>

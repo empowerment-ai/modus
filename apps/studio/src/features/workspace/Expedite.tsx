@@ -2,33 +2,13 @@ import { Zap, ZapOff } from 'lucide-react'
 import { useState } from 'react'
 import { Button, cx, Field, Modal, Textarea } from '../../components/ui'
 import { canExpedite, type Ctx, setExpedite, type SimObject, type SimState } from '@modus-bpm/core'
-import type { Priority, User, Workflow } from '@modus-bpm/core/model/types'
+import type { User, Workflow } from '@modus-bpm/core/model/types'
 import { useUi } from '../../store/ui'
-import { PriorityBadge } from '../objects/PriorityBadge'
 import { agoText, dueText } from './format'
 import { perform } from './live'
 
 // Expedite: flag an item to go faster. It jumps every queue (even urgent work) and
 // its due dates tighten by the process's factor. Who may do it is set per process.
-
-/** Expedited: ahead of every queue, even urgent work. */
-export function ExpeditedBadge({ className, title }: { className?: string; title?: string }) {
-  return (
-    <span
-      className={cx('inline-flex items-center gap-0.5 rounded bg-orange-500 px-1.5 py-0.5 text-[11px] font-semibold whitespace-nowrap text-white', className)}
-      title={title ?? 'Expedited: ahead of every queue, even urgent work'}
-    >
-      <Zap size={11} strokeWidth={2.5} className="fill-current" />
-      Expedited
-    </span>
-  )
-}
-
-/** The priority badge, or Expedited when the item is flagged (it outranks urgent). */
-export function UrgencyBadge({ priority, expedited, quietNormal, className }: { priority: Priority; expedited: boolean; quietNormal?: boolean; className?: string }) {
-  if (expedited) return <ExpeditedBadge className={className} title={`Expedited (${priority} priority): ahead of every queue, even urgent work`} />
-  return <PriorityBadge priority={priority} quietNormal={quietNormal} className={className} />
-}
 
 /** How much faster expedited work must move: "2×" for a 0.5 due-date factor. */
 export function speedText(wf: Workflow | undefined): string {
