@@ -1,6 +1,39 @@
 import { itemLabel } from './lists'
-import type { Condition, FieldDef, FieldType, ListDef, ObjectType, Operator, Rule, User } from './types'
+import { columnSum, rowsOf } from './tables'
+import type { ColumnDef, Condition, FieldDef, FieldType, ListDef, ObjectType, Operator, Rule, User } from './types'
 import { currencyShort } from './util'
+
+// ---------- Work attributes rules can test besides the item's own fields ----------
+
+/** Pseudo-fields for rules: the item's work priority and whether it is expedited. */
+export const META_FIELDS: FieldDef[] = [
+  { id: '$priority', label: 'Work priority', type: 'text', width: 'half', helpText: 'low, normal, high or urgent' },
+  { id: '$expedited', label: 'Expedited', type: 'boolean', width: 'half' },
+]
+
+/** The field a rule refers to: one of the type's fields, or a work attribute. */
+export function ruleField(type: ObjectType, fieldId: string): FieldDef | undefined {
+  return type.fields.find((f) => f.id === fieldId) ?? META_FIELDS.find((f) => f.id === fieldId)
+}
+
+/** Item data plus its work attributes, the shape rules are evaluated against. */
+export function withMeta(data: Record<string, unknown>, meta: { priority?: string; expedited?: boolean }): Record<string, unknown> {
+  return { ...data, $priority: meta.priority ?? 'normal', $expedited: !!meta.expedited }
+}
+
+export const AGGREGATE_LABEL: Record<NonNullable<Rule['aggregate']>, string> = {
+  count: 'number of rows',
+  sum: 'sum of',
+  min: 'lowest',
+  max: 'highest',
+  any: 'any row where',
+  all: 'every row where',
+}
+
+/** A column seen as a field, so the usual operators and value pickers apply to it. */
+export function columnAsField(c: ColumnDef): FieldDef {
+  return { id: c.id, label: c.label, type: c.type, width: 'half', listId: c.listId, level: c.listId ? 0 : undefined, min: c.min, max: c.max }
+}
 
 export const OPERATOR_LABEL: Record<Operator, string> = {
   eq: 'is',
@@ -45,6 +78,7 @@ function isEmpty(v: unknown): boolean {
 
 export function evaluateRule(rule: Rule, field: FieldDef | undefined, data: Record<string, unknown>): boolean {
   if (!field) return false
+  if (field.type === 'table') return evaluateTableRule(rule, field, data)
   const v = data[field.id]
   switch (rule.op) {
     case 'empty':
@@ -98,15 +132,28 @@ export function evaluateRule(rule: Rule, field: FieldDef | undefined, data: Reco
   return false
 }
 
+/** Table fields: test the row count, an aggregate of a column, or a column row by row. */
+function evaluateTableRule(rule: Rule, field: FieldDef, data: Record<string, unknown>): boolean {
+  const rows = rowsOf(data[field.id])
+  const agg = rule.aggregate ?? 'count'
+  const number = (n: number) => evaluateRule({ ...rule, aggregate: undefined, columnId: undefined }, { id: '_', label: '', type: 'number', width: 'half' }, { _: n })
+  if (agg === 'count') return number(rows.length)
+  const col = field.columns?.find((c) => c.id === rule.columnId)
+  if (!col) return false
+  if (agg === 'sum') return number(columnSum(rows, col.id))
+  if (agg === 'min' || agg === 'max') {
+    const values = rows.map((r) => Number(r[col.id])).filter((n) => !Number.isNaN(n))
+    if (!values.length) return false
+    return number(agg === 'min' ? Math.min(...values) : Math.max(...values))
+  }
+  const cell = columnAsField(col)
+  const test = (r: Record<string, unknown>) => evaluateRule({ ...rule, aggregate: undefined, columnId: undefined, fieldId: col.id }, cell, r)
+  return agg === 'any' ? rows.some(test) : rows.length > 0 && rows.every(test)
+}
+
 export function evaluateCondition(cond: Condition | undefined, type: ObjectType, data: Record<string, unknown>): boolean {
   if (!cond || cond.rules.length === 0) return false
-  const results = cond.rules.map((r) =>
-    evaluateRule(
-      r,
-      type.fields.find((f) => f.id === r.fieldId),
-      data,
-    ),
-  )
+  const results = cond.rules.map((r) => evaluateRule(r, ruleField(type, r.fieldId), data))
   return cond.match === 'all' ? results.every(Boolean) : results.some(Boolean)
 }
 
@@ -128,9 +175,19 @@ export function describeValue(field: FieldDef, value: unknown, ctx: Omit<Describ
 }
 
 export function describeRule(rule: Rule, ctx: DescribeCtx): string {
-  const field = ctx.type.fields.find((f) => f.id === rule.fieldId)
+  const field = ruleField(ctx.type, rule.fieldId)
   if (!field) return 'Pick a field'
   const op = OPERATOR_LABEL[rule.op]
+  if (field.type === 'table') {
+    const agg = rule.aggregate ?? 'count'
+    const col = field.columns?.find((c) => c.id === rule.columnId)
+    const value = (f: FieldDef) => (operatorNeedsValue(rule.op) ? ` ${describeValue(f, rule.value, ctx)}` : '')
+    if (agg === 'count') return `${field.label}: ${AGGREGATE_LABEL.count} ${op}${value({ id: '_', label: '', type: 'number', width: 'half' })}`
+    if (!col) return `${field.label}: pick a column`
+    const cell = columnAsField(col)
+    if (agg === 'any' || agg === 'all') return `${field.label}: ${AGGREGATE_LABEL[agg]} ${col.label} ${op}${value(cell)}`
+    return `${field.label}: ${AGGREGATE_LABEL[agg]} ${col.label} ${op}${value(cell)}`
+  }
   if (!operatorNeedsValue(rule.op)) return `${field.label} ${op}`
   return `${field.label} ${op} ${describeValue(field, rule.value, ctx)}`
 }

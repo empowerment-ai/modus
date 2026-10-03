@@ -56,6 +56,7 @@ function sameTarget(a: ScenarioChange, b: ScenarioChange): boolean {
     case 'distribution':
       return a.nodeId === (b as typeof a).nodeId
     case 'arrivals':
+    case 'expedite-rate':
       return a.workflowId === (b as typeof a).workflowId
     default:
       return a.serviceId === (b as typeof a).serviceId

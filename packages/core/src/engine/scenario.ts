@@ -14,6 +14,8 @@ export type ScenarioChange =
   | { kind: 'distribution'; nodeId: Id; distribution: Distribution }
   | { kind: 'capacity'; serviceId: Id; concurrency: number }
   | { kind: 'service-status'; serviceId: Id; status: ServiceDef['status'] }
+  /** Share (0..1) of new items that arrive expedited. */
+  | { kind: 'expedite-rate'; workflowId: Id; rate: number }
 
 export interface ScenarioKpis {
   completed: number
@@ -96,6 +98,12 @@ export function applyChanges(ctx: Ctx, changes: ScenarioChange[]): Ctx {
         if (svc) svc.status = c.status
         break
       }
+      case 'expedite-rate':
+        for (const wf of app.workflows) {
+          if (wf.id !== c.workflowId) continue
+          wf.expedite = { who: 'supervisors', slaFactor: 0.5, ...wf.expedite, simulateRate: Math.min(1, Math.max(0, c.rate)) }
+        }
+        break
     }
   }
   return { ...ctx, app, users, groups, services }

@@ -60,6 +60,7 @@ export const FIELD_TYPE_HELP: Record<FieldType, string> = {
   choice: 'Pick from a list, flat or linked',
   user: 'Pick a person from the organization',
   email: 'An email address',
+  table: 'Rows with their own columns, like invoice line items',
   attachment: 'Upload documents or images',
 }
 

@@ -6,11 +6,28 @@ export type Id = string
 
 // ---------- Organization & security ----------
 
+/**
+ * Organization-wide roles. Everyone can work the steps their groups are given;
+ * these add rights on top. Supervising a process or a step is configured on the
+ * workflow and the step themselves (see `Audience`).
+ * - admin:    everything, including every item and the design
+ * - designer: can change designs in the studio
+ * - auditor:  can see every item and its history, change nothing
+ */
+export type OrgRole = 'admin' | 'designer' | 'auditor'
+
+/** A set of people: named users and/or everyone in some groups. */
+export interface Audience {
+  userIds?: Id[]
+  groupIds?: Id[]
+}
+
 export interface User {
   id: Id
   name: string
   title: string
   color: string
+  roles?: OrgRole[]
   /** Simulated handling speed: 1 = average, 0.7 = 30% faster, 1.4 = slower. */
   speed: number
   /** Unavailable users get no new work; whatever is already in their basket stays put. */
@@ -69,6 +86,29 @@ export type FieldType =
   | 'user'
   | 'email'
   | 'attachment'
+  | 'table'
+
+/** Column types allowed inside a table (multi-row) field. */
+export type ColumnType = 'text' | 'number' | 'currency' | 'date' | 'boolean' | 'choice' | 'user' | 'email'
+
+/** One column of a table field (e.g. an invoice line's Quantity). */
+export interface ColumnDef {
+  id: Id
+  label: string
+  type: ColumnType
+  required?: boolean
+  /** choice: a flat list (or the first level of a linked list). */
+  listId?: Id
+  min?: number
+  max?: number
+  /** Relative width in the grid (default 1). */
+  width?: number
+  /** Computed column, e.g. Line Total = Quantity × Unit Price. Read-only in forms. */
+  formula?: { op: 'multiply' | 'add'; of: [Id, Id] }
+}
+
+/** A row of a table field: an id plus one value per column. */
+export type TableRow = { id: Id } & Record<Id, unknown>
 
 export interface FieldDef {
   id: Id
@@ -88,6 +128,15 @@ export interface FieldDef {
   summary?: boolean
   /** Set by the system or a workflow step; not shown on the create form. */
   system?: boolean
+  /** table: the columns of each row (line items, contacts, dependents…). */
+  columns?: ColumnDef[]
+  minRows?: number
+  maxRows?: number
+  /**
+   * number / currency: keep this field equal to the sum of a table column
+   * (an invoice's Amount = the sum of its lines' Line Total). Read-only in forms.
+   */
+  total?: { tableFieldId: Id; columnId: Id }
   /**
    * Sensitive data: only members of these groups can see the field, anywhere.
    * Everyone else gets it hidden regardless of step settings. Empty/undefined = no restriction.
@@ -128,9 +177,17 @@ export type Operator =
 
 export interface Rule {
   id: Id
+  /** A field id, or a work attribute: `$priority` (low/normal/high/urgent) or `$expedited` (yes/no). */
   fieldId: Id
   op: Operator
   value?: string | number
+  /**
+   * Table fields: what to test. `count` compares the number of rows; `sum`,
+   * `min`, `max` compare an aggregate of `columnId`; `any` / `all` test the
+   * column value row by row.
+   */
+  aggregate?: 'count' | 'sum' | 'min' | 'max' | 'any' | 'all'
+  columnId?: Id
 }
 
 export interface Condition {
@@ -244,6 +301,8 @@ export interface Escalation {
   raisePriority: boolean
   /** Send it back to the distribution group (or supervisor) to be handed out again. */
   toDistributors: boolean
+  /** Notify the step's and the process's supervisors. */
+  notifySupervisors?: boolean
   /** Who to notify, e.g. "Supervisor". Empty for no notification. */
   notify?: string
 }
@@ -270,11 +329,17 @@ export interface UserStepData {
   distributeEveryMinutes: number
   avgMinutes: number
   slaHours?: number
-  /** Escalate items still here after this many hours. */
+  /** Escalate items still here after this many hours (half as long for expedited items). */
   escalateAfterHours?: number
   escalation?: Escalation
   /** Workers may hand an item to someone else in the same group. */
   allowDelegate?: boolean
+  /**
+   * Task supervisors: who oversees the work at this step (reassign within the
+   * group, release on someone's behalf, receive escalations). The work group's
+   * own supervisor always counts too.
+   */
+  supervisors?: Audience
   /**
    * Separation of duties (four eyes): nobody who released any of these steps on
    * this item may work this one.
@@ -421,6 +486,25 @@ export interface Workflow {
   fieldLocks?: FieldLock[]
   /** The template this workflow was created from, if any. */
   templateId?: Id
+  /** Process supervisors: oversee every item in this workflow (and the subflows it runs). */
+  supervisors?: Audience
+  /** Expedited items: who may flag them, and how much faster they must move. */
+  expedite?: ExpeditePolicy
+}
+
+/**
+ * Expediting puts an item at the front of every queue and basket, tightens its
+ * due dates, and lets rules route it on a fast lane (`$expedited`).
+ */
+export interface ExpeditePolicy {
+  /** Who may flag an item: anyone who can see it, only the requester (and supervisors), or only supervisors. */
+  who: 'anyone' | 'requester' | 'supervisors'
+  /** Due-date multiplier for expedited items (0.5 = twice as fast). */
+  slaFactor: number
+  /** Simulation: share of new items that arrive already expedited. */
+  simulateRate?: number
+  /** A reason is required when flagging. */
+  requireReason?: boolean
 }
 
 // ---------- Templates ----------

@@ -58,7 +58,15 @@ const people: Array<[string, string, string, number]> = [
   ['u_nina', 'Nina Okoro', 'Patrol Officer', 0.9],
   ['u_dev', 'Dev Sharma', 'Patrol Officer', 1.05],
   ['u_mei', 'Mei Lin', 'Records Specialist', 1.0],
+  ['u_avery', 'Avery Brooks', 'Process Administrator', 1.0],
 ]
+
+/** Organization-wide roles: administrators see and manage everything, designers change designs, auditors read everything. */
+const ROLES: Record<string, User['roles']> = {
+  u_avery: ['admin', 'designer'],
+  u_noah: ['designer'],
+  u_mei: ['auditor'],
+}
 
 export function seedUsers(): User[] {
   return people.map(([id, name, title, speed], i) => ({
@@ -68,6 +76,7 @@ export function seedUsers(): User[] {
     speed,
     color: PALETTE[i % PALETTE.length]!,
     available: true,
+    roles: ROLES[id],
   }))
 }
 
@@ -126,6 +135,7 @@ function invoiceApp(): App {
       'Pinecrest Janitorial',
     ]),
     flatList('l_priority', 'Priority', 'Priority', ['Normal', 'High', 'Urgent']),
+    flatList('l_category', 'Spend Category', 'Category', ['Hardware', 'Software', 'Services', 'Supplies', 'Freight', 'Facilities']),
     treeList('l_org', 'Department / Cost Center / GL Account', ['Department', 'Cost Center', 'GL Account'], {
       Finance: {
         'CC-1100 Accounting': ['6100 Professional Fees', '6110 Audit Services'],
@@ -149,7 +159,17 @@ function invoiceApp(): App {
   const fields: FieldDef[] = [
     { id: 'f_invno', label: 'Invoice Number', type: 'text', required: true, width: 'half', summary: true },
     { id: 'f_vendor', label: 'Vendor', type: 'choice', listId: 'l_vendors', level: 0, required: true, width: 'half', summary: true },
-    { id: 'f_amount', label: 'Amount', type: 'currency', required: true, width: 'half', min: 40, max: 48000, summary: true },
+    {
+      id: 'f_amount',
+      label: 'Amount',
+      type: 'currency',
+      width: 'half',
+      min: 40,
+      max: 48000,
+      summary: true,
+      total: { tableFieldId: 'f_lines', columnId: 'c_total' },
+      helpText: 'The total of the line items.',
+    },
     { id: 'f_priority', label: 'Priority', type: 'choice', listId: 'l_priority', level: 0, width: 'half' },
     { id: 'f_invdate', label: 'Invoice Date', type: 'date', required: true, width: 'half' },
     { id: 'f_duedate', label: 'Due Date', type: 'date', width: 'half' },
@@ -169,6 +189,22 @@ function invoiceApp(): App {
     { id: 'f_po', label: 'PO Number', type: 'text', width: 'half', helpText: 'Used by the automated PO match.' },
     { id: 'f_email', label: 'Vendor Contact Email', type: 'email', width: 'half' },
     { id: 'f_doc', label: 'Invoice Document', type: 'attachment', width: 'half', helpText: 'PDF or image of the scanned invoice.' },
+    {
+      id: 'f_lines',
+      label: 'Line Items',
+      type: 'table',
+      width: 'full',
+      required: true,
+      minRows: 1,
+      maxRows: 50,
+      columns: [
+        { id: 'c_desc', label: 'Description', type: 'text', required: true, width: 3 },
+        { id: 'c_cat', label: 'Category', type: 'choice', listId: 'l_category', width: 1.4 },
+        { id: 'c_qty', label: 'Quantity', type: 'number', required: true, min: 1, max: 12, width: 1 },
+        { id: 'c_price', label: 'Unit Price', type: 'currency', required: true, width: 1.2 },
+        { id: 'c_total', label: 'Line Total', type: 'currency', width: 1.2, formula: { op: 'multiply', of: ['c_qty', 'c_price'] } },
+      ],
+    },
     { id: 'f_desc', label: 'Description', type: 'textarea', width: 'full' },
     {
       id: 'f_bank',
@@ -211,6 +247,8 @@ function invoiceApp(): App {
     objectTypeId: 't_invoice',
     arrivalsPerHour: 14,
     targetHours: 72,
+    supervisors: { groupIds: ['g_finlead'] },
+    expedite: { who: 'requester', slaFactor: 0.5, simulateRate: 0.05, requireReason: true },
     fieldLocks: [
       { id: 'lk_amt', fieldId: 'f_amount', access: 'read', when: 'after', afterNodeId: 'n_amount', exemptGroupIds: ['g_finlead'] },
       { id: 'lk_vendor', fieldId: 'f_vendor', access: 'read', when: 'after', afterNodeId: 'n_pocheck', exemptGroupIds: ['g_exceptions', 'g_finlead'] },
@@ -271,7 +309,7 @@ function invoiceApp(): App {
           avgMinutes: 16,
           slaHours: 24,
           escalateAfterHours: 16,
-          escalation: { raisePriority: true, toDistributors: true, notify: 'AP Supervisor' },
+          escalation: { raisePriority: true, toDistributors: true, notifySupervisors: true },
           outcomes: [
             outcome('o_m_ok', 'Approve', 84, { actions: approveSetsApprover }),
             outcome('o_m_no', 'Reject', 10, { requireComment: true }),
@@ -288,6 +326,7 @@ function invoiceApp(): App {
           description: 'Small invoices are load balanced evenly across the AP clerks.',
           distribution: 'load-balance',
           groupId: 'g_clerks',
+          supervisors: { userIds: ['u_carla'] },
           autoDistribute: true,
           distributeEveryMinutes: 30,
           avgMinutes: 11,
@@ -384,12 +423,29 @@ function invoiceApp(): App {
       { id: 'e_5', source: 'n_exception', target: 'n_capture', sourceHandle: 'l', targetHandle: 'b', data: { outcomeId: 'Resolved' } },
       { id: 'e_6', source: 'n_exception', target: 'n_notify', sourceHandle: 'b', targetHandle: 'l', data: { outcomeId: 'Rejected' } },
       {
+        id: 'e_fast',
+        source: 'n_amount',
+        target: 'n_clerk',
+        sourceHandle: 'b',
+        targetHandle: 't',
+        data: {
+          order: 0,
+          condition: {
+            match: 'all',
+            rules: [
+              { id: 'r_fast1', fieldId: '$expedited', op: 'isTrue' },
+              { id: 'r_fast2', fieldId: 'f_amount', op: 'lte', value: 5000 },
+            ],
+          },
+        },
+      },
+      {
         id: 'e_7',
         source: 'n_amount',
         target: 'n_controller',
         sourceHandle: 't',
         targetHandle: 'l',
-        data: { order: 0, condition: { match: 'all', rules: [{ id: 'r_a1', fieldId: 'f_amount', op: 'gt', value: 10000 }] } },
+        data: { order: 1, condition: { match: 'all', rules: [{ id: 'r_a1', fieldId: 'f_amount', op: 'gt', value: 10000 }] } },
       },
       {
         id: 'e_8',
@@ -397,9 +453,9 @@ function invoiceApp(): App {
         target: 'n_manager',
         sourceHandle: 'r',
         targetHandle: 'l',
-        data: { order: 1, condition: { match: 'all', rules: [{ id: 'r_a2', fieldId: 'f_amount', op: 'gt', value: 1000 }] } },
+        data: { order: 2, condition: { match: 'all', rules: [{ id: 'r_a2', fieldId: 'f_amount', op: 'gt', value: 1000 }] } },
       },
-      { id: 'e_9', source: 'n_amount', target: 'n_clerk', sourceHandle: 'b', targetHandle: 'l', data: { isDefault: true, order: 2 } },
+      { id: 'e_9', source: 'n_amount', target: 'n_clerk', sourceHandle: 'b', targetHandle: 'l', data: { isDefault: true, order: 3 } },
       { id: 'e_10', source: 'n_controller', target: 'n_split', sourceHandle: 'r', targetHandle: 't', data: { outcomeId: 'o_c_ok' } },
       { id: 'e_11', source: 'n_controller', target: 'n_notify', sourceHandle: 'r', targetHandle: 't', data: { outcomeId: 'o_c_no' } },
       { id: 'e_12', source: 'n_manager', target: 'n_split', sourceHandle: 'r', targetHandle: 'l', data: { outcomeId: 'o_m_ok' } },
@@ -430,7 +486,7 @@ function invoiceApp(): App {
 
 /** The "Resolve exception" step, blown out into its own subflow. */
 function exceptionSubflow(allRead: Record<string, 'read'>): Workflow {
-  const fix = { ...allRead, f_po: 'edit' as const, f_vendor: 'edit' as const, f_amount: 'edit' as const, f_desc: 'edit' as const, f_email: 'edit' as const, f_bank: 'edit' as const }
+  const fix = { ...allRead, f_po: 'edit' as const, f_vendor: 'edit' as const, f_lines: 'edit' as const, f_desc: 'edit' as const, f_email: 'edit' as const, f_bank: 'edit' as const }
   return {
     id: 'w_exception',
     name: 'Exception Handling',
@@ -584,6 +640,8 @@ function fleetApp(): App {
     objectTypeId: 't_vehicle',
     arrivalsPerHour: 3,
     targetHours: 120,
+    supervisors: { userIds: ['u_dana'], groupIds: ['g_fleetlead'] },
+    expedite: { who: 'supervisors', slaFactor: 0.5, simulateRate: 0.03, requireReason: true },
     fieldLocks: [
       { id: 'lk_y', fieldId: 'v_year', access: 'read', when: 'after', afterNodeId: 'v_review', exemptGroupIds: ['g_fleetlead'] },
       { id: 'lk_mk', fieldId: 'v_make', access: 'read', when: 'after', afterNodeId: 'v_review', exemptGroupIds: ['g_fleetlead'] },

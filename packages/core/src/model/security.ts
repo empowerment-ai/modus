@@ -80,6 +80,18 @@ export function fieldVerdicts(input: AccessInput): Record<Id, FieldVerdict> {
     if (creating && f.system) tighten('hidden', 'Set by the workflow')
     out[f.id] = v
   }
+  // Totals are computed; a table that feeds a read-only total can't be edited either,
+  // or the total could be changed through its rows.
+  for (const f of type.fields) {
+    if (!f.total) continue
+    const total = out[f.id]
+    const table = out[f.total.tableFieldId]
+    if (!total || !table) continue
+    if (total.access !== 'edit' && RANK[total.access] > RANK[table.access]) {
+      out[f.total.tableFieldId] = { access: total.access === 'hidden' ? 'read' : total.access, reason: `Feeds ${f.label}, which is ${total.reason?.toLowerCase() ?? 'locked'}` }
+    }
+    if (total.access === 'edit') out[f.id] = { access: 'read', reason: `Calculated from ${type.fields.find((x) => x.id === f.total!.tableFieldId)?.label ?? 'a table'}` }
+  }
   return out
 }
 

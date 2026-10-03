@@ -28,7 +28,7 @@ production are in [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md).
 # A person creates an item
 curl -X POST localhost:8787/api/apps/app_invoice/items -H 'x-user-id: u_maya' \
   -H 'content-type: application/json' \
-  -d '{"workflowId":"w_invoice","data":{"f_invno":"A-1","f_amount":420,"f_dept":"l_org_0","f_cc":"l_org_1"}}'
+  -d '{"workflowId":"w_invoice","data":{"f_invno":"A-1","f_lines":[{"c_desc":"Toner","c_qty":4,"c_price":105}],"f_dept":"l_org_0","f_cc":"l_org_1"}}'
 
 # A worker for the ERP service picks up the job and completes it
 curl -X POST localhost:8787/api/jobs/poll -H 'content-type: application/json' \

@@ -39,7 +39,7 @@ describe('the API runs the same engine live', () => {
       method: 'POST',
       url: '/api/apps/app_invoice/items',
       headers: as('u_maya'),
-      payload: { workflowId: 'w_invoice', data: { f_invno: 'INV-API-1', f_vendor: 'l_vendors_0', f_amount: 420, f_dept: 'l_org_0', f_cc: 'l_org_1', f_invdate: '2026-09-28' } },
+      payload: { workflowId: 'w_invoice', data: { f_invno: 'INV-API-1', f_vendor: 'l_vendors_0', f_lines: [{ id: 'row_1', c_desc: 'Toner cartridge', c_qty: 4, c_price: 105 }], f_dept: 'l_org_0', f_cc: 'l_org_1', f_invdate: '2026-09-28' } },
     })
     expect(created.statusCode).toBe(201)
     const item = created.json().value as { id: string; number: string }
@@ -59,7 +59,7 @@ describe('the API runs the same engine live', () => {
     const approve = basket[0]!.outcomes.find((o) => o.label === 'Approve')!
 
     // Field security is the engine's: the amount is locked once routed by amount.
-    const locked = await api.inject({ method: 'POST', url: `/api/apps/app_invoice/work/${encodeURIComponent(basket[0]!.id)}/save`, headers: as(clerk), payload: { patch: { f_amount: 1 } } })
+    const locked = await api.inject({ method: 'POST', url: `/api/apps/app_invoice/work/${encodeURIComponent(basket[0]!.id)}/save`, headers: as(clerk), payload: { patch: { f_lines: [{ id: 'row_1', c_desc: 'Toner cartridge', c_qty: 1, c_price: 1 }] } } })
     expect(locked.statusCode).toBe(409)
 
     const released = await api.inject({ method: 'POST', url: `/api/apps/app_invoice/work/${encodeURIComponent(basket[0]!.id)}/release`, headers: as(clerk), payload: { outcomeId: approve.id } })

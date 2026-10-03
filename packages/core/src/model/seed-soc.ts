@@ -92,6 +92,8 @@ export function socApp(): App {
     kind: 'process',
     objectTypeId: 't_event',
     arrivalsPerHour: 120,
+    supervisors: { groupIds: ['g_watch'] },
+    expedite: { who: 'anyone', slaFactor: 0.5, simulateRate: 0.04 },
     // Within a shift, including any incident report; the 30-minute response target is the dispatch step's SLA.
     targetHours: 8,
     fieldLocks: [{ id: 'lk_conf', fieldId: 'e_conf', access: 'read', when: 'always' }],
@@ -152,7 +154,7 @@ export function socApp(): App {
           avgMinutes: 14,
           slaHours: 0.5,
           escalateAfterHours: 0.25,
-          escalation: { raisePriority: true, toDistributors: true, notify: 'Watch Commander' },
+          escalation: { raisePriority: true, toDistributors: true, notifySupervisors: true },
           outcomes: [
             outcome('s_o_res', 'Resolved on scene', 55, {
               actions: [

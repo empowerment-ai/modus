@@ -129,6 +129,9 @@ const svc = (id: string, extra: Partial<ServiceDef> = {}, op: Partial<ServiceDef
   ...extra,
 })
 
+/** Invoice line items adding up to `amount` (the invoice Amount is their total). */
+const lines = (amount: number) => [{ id: 'row_1', c_desc: 'Consulting hours', c_qty: 1, c_price: amount }]
+
 // ---------- Routing on metadata (sample app) ----------
 
 describe('routing on object metadata', () => {
@@ -150,7 +153,7 @@ describe('routing on object metadata', () => {
       [4_500, 'n_manager'],
       [350, 'n_clerk'],
     ]
-    const objs = cases.map(([amount]) => createObject(sim, ctx, 'w_invoice', { f_amount: amount, f_po: 'PO-1' }, 'u_maya')!)
+    const objs = cases.map(([amount]) => createObject(sim, ctx, 'w_invoice', { f_lines: lines(amount), f_po: 'PO-1' }, 'u_maya')!)
     advance(sim, ctx, 30)
     objs.forEach((o, i) => expect(o.history.map((h) => h.nodeId)).toContain(cases[i]![1]))
   })
@@ -158,7 +161,7 @@ describe('routing on object metadata', () => {
   it('runs unmatched invoices through the exception subflow', () => {
     const ctx = invoiceCtx(false)
     const sim = quiet('app_invoice')
-    const o = createObject(sim, ctx, 'w_invoice', { f_amount: 500 }, 'u_maya')!
+    const o = createObject(sim, ctx, 'w_invoice', { f_lines: lines(500) }, 'u_maya')!
     advance(sim, ctx, 6)
     expect(o.tokens[0]!.calls.map((c) => c.nodeId)).toEqual(['n_exception'])
     expect(o.tokens[0]!.nodeId).toMatch(/^x_/)
@@ -722,7 +725,7 @@ describe('live mode', () => {
   it('turns service calls into jobs that workers poll, lease and complete', () => {
     const ctx = liveInvoice()
     const sim = newSim('app_invoice')
-    const o = createObject(sim, ctx, 'w_invoice', { f_invno: 'A-77', f_amount: 420, f_po: 'PO-9' }, 'u_maya')!
+    const o = createObject(sim, ctx, 'w_invoice', { f_invno: 'A-77', f_lines: lines(420), f_po: 'PO-9' }, 'u_maya')!
     advance(sim, ctx, 30)
     expect(o.tokens[0]!.nodeId).toBe('n_capture') // nothing happens until a worker shows up
     const [job] = pollJobs(sim, ctx, 'svc_erp', 'erp-worker-1')
@@ -741,7 +744,7 @@ describe('live mode', () => {
   it('a lease that runs out puts the job back up for grabs; failures retry, then fall back to people', () => {
     const ctx = liveInvoice()
     const sim = newSim('app_invoice')
-    const o = createObject(sim, ctx, 'w_invoice', { f_amount: 420 }, 'u_maya')!
+    const o = createObject(sim, ctx, 'w_invoice', { f_lines: lines(420) }, 'u_maya')!
     advance(sim, ctx, 1)
     const [first] = pollJobs(sim, ctx, 'svc_erp', 'w1', 1, 5)
     advance(sim, ctx, 6)
