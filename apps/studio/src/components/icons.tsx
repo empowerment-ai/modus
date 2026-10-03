@@ -17,6 +17,7 @@ import {
   Paperclip,
   Receipt,
   Scale,
+  Sheet,
   Shield,
   Type,
   User,
@@ -57,6 +58,7 @@ export const FIELD_ICONS: Record<FieldType, LucideIcon> = {
   user: User,
   email: Mail,
   attachment: Paperclip,
+  table: Sheet,
 }
 
 export const DISTRIBUTION: Record<Distribution, { label: string; short: string; icon: LucideIcon; help: string }> = {

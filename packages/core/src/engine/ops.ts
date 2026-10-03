@@ -4,6 +4,7 @@
 // later the API — can explain a refusal instead of failing silently.
 
 import { blockedFields, type FieldVerdict, fieldVerdicts } from '../model/security'
+import { normalizeData } from '../model/tables'
 import type { FieldAccess, Id, Priority, WfNode } from '../model/types'
 import {
   ADMIN,
@@ -13,6 +14,12 @@ import {
   audit,
   buildIndex,
   byUrgency,
+  canSuperviseToken,
+  clearExpedited,
+  hasRole,
+  markExpedited,
+  supervisesProcess,
+  supervisesStep,
   type Ctx,
   displayValue,
   distributorsOf,
@@ -195,12 +202,24 @@ export function adminUpdateData(sim: SimState, ctx: Ctx, objectId: Id, patch: Re
 
 function writeData(sim: SimState, idx: Index, obj: SimObject, patch: Record<string, unknown>, actor: string, nodeId?: Id) {
   const type = idx.type.get(obj.typeId)
+  // Computed totals are never written directly; they follow their table.
+  const computed = new Set(type?.fields.filter((f) => f.total).map((f) => f.id))
+  const before = { ...obj.data }
   for (const [k, v] of Object.entries(patch)) {
+    if (computed.has(k)) continue
     if (JSON.stringify(obj.data[k]) === JSON.stringify(v)) continue
     obj.data[k] = v
     const f = type?.fields.find((x) => x.id === k)
-    if (f && f.type !== 'attachment') audit(sim, obj, { kind: 'field', nodeId, actor, text: `${f.label} changed to ${displayValue(idx, type, k, v) || '(blank)'} by ${actor}` })
+    if (f && f.type === 'table') audit(sim, obj, { kind: 'field', nodeId, actor, text: `${f.label} updated by ${actor} (${Array.isArray(v) ? v.length : 0} rows)` })
+    else if (f && f.type !== 'attachment') audit(sim, obj, { kind: 'field', nodeId, actor, text: `${f.label} changed to ${displayValue(idx, type, k, v) || '(blank)'} by ${actor}` })
     else if (f) audit(sim, obj, { kind: 'field', nodeId, actor, text: `${f.label} updated by ${actor}` })
+  }
+  if (!type) return
+  obj.data = normalizeData(type, obj.data)
+  for (const id of computed) {
+    if (JSON.stringify(before[id]) === JSON.stringify(obj.data[id])) continue
+    const f = type.fields.find((x) => x.id === id)!
+    audit(sim, obj, { kind: 'field', nodeId, text: `${f.label} recalculated: ${displayValue(idx, type, id, obj.data[id])}` })
   }
 }
 
@@ -309,18 +328,20 @@ export function workSave(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id, patch
   const found = tokenAt(sim, tokenId)
   if (!found || found.tok.userId !== userId) return fail('It is not in your basket.')
   const { obj, tok } = found
-  const blocked = blockedFields(securityInput(idx, obj, tok, userId), changedOnly(obj, patch))
+  const type = idx.type.get(obj.typeId)
+  const blocked = blockedFields(securityInput(idx, obj, tok, userId), changedOnly(obj, patch, type))
   if (blocked.length) {
     audit(sim, obj, { kind: 'security', nodeId: tok.nodeId, tokenId, userId, text: `${userName(idx, userId)} tried to change ${blocked.map((b) => b.field.label).join(', ')} (${blocked[0]!.reason}); refused` })
     return fail(`You can’t change ${blocked.map((b) => `${b.field.label} (${b.reason.toLowerCase()})`).join(', ')}.`)
   }
-  writeData(sim, idx, obj, changedOnly(obj, patch), userName(idx, userId), tok.nodeId)
+  writeData(sim, idx, obj, changedOnly(obj, patch, type), userName(idx, userId), tok.nodeId)
   return ok(true)
 }
 
-function changedOnly(obj: SimObject, patch: Record<string, unknown>): Record<string, unknown> {
+function changedOnly(obj: SimObject, patch: Record<string, unknown>, type?: { fields: Array<{ id: Id; total?: unknown }> }): Record<string, unknown> {
+  const computed = new Set(type?.fields.filter((f) => f.total).map((f) => f.id))
   const out: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(patch)) if (JSON.stringify(obj.data[k]) !== JSON.stringify(v)) out[k] = v
+  for (const [k, v] of Object.entries(patch)) if (!computed.has(k) && JSON.stringify(obj.data[k]) !== JSON.stringify(v)) out[k] = v
   return out
 }
 
@@ -436,6 +457,91 @@ export function workSetPriority(sim: SimState, ctx: Ctx, objectId: Id, userId: I
   const was = obj.priority
   obj.priority = priority
   audit(sim, obj, { kind: 'priority', actor: userName(idx, userId), userId, text: `Priority changed from ${was} to ${priority} by ${userName(idx, userId)}` })
+  return ok(true)
+}
+
+// ---------- Supervisors (of a process or of a step) ----------
+// The same levers as an administrator, scoped: only work they supervise, and
+// reassignment only within the step's own group (administrators may go wider).
+
+function asSupervisor(sim: SimState, ctx: Ctx, tokenId: Id, byUserId: Id): { idx: Index; obj: SimObject; tok: Token; name: string; admin: boolean } | string {
+  const idx = buildIndex(ctx)
+  const found = tokenAt(sim, tokenId)
+  if (!found) return 'That work item is no longer active.'
+  if (!canSuperviseToken(idx, found.obj, found.tok, byUserId)) return `${userName(idx, byUserId)} doesn’t supervise this work.`
+  return { idx, ...found, name: userName(idx, byUserId), admin: hasRole(idx, byUserId, 'admin') }
+}
+
+export function superviseAssign(sim: SimState, ctx: Ctx, tokenId: Id, toUserId: Id, byUserId: Id): Result {
+  const s = asSupervisor(sim, ctx, tokenId, byUserId)
+  if (typeof s === 'string') return fail(s)
+  return adminAssign(sim, ctx, tokenId, toUserId, s.name, { sameGroupOnly: !s.admin })
+}
+
+export function superviseReturn(sim: SimState, ctx: Ctx, tokenId: Id, byUserId: Id): Result {
+  const s = asSupervisor(sim, ctx, tokenId, byUserId)
+  if (typeof s === 'string') return fail(s)
+  return adminReturnToPool(sim, ctx, tokenId, s.name)
+}
+
+export function superviseRelease(sim: SimState, ctx: Ctx, tokenId: Id, outcomeId: Id, comment: string, byUserId: Id): Result {
+  const s = asSupervisor(sim, ctx, tokenId, byUserId)
+  if (typeof s === 'string') return fail(s)
+  return adminRelease(sim, ctx, tokenId, outcomeId, comment, s.name)
+}
+
+export function superviseRetry(sim: SimState, ctx: Ctx, tokenId: Id, byUserId: Id): Result {
+  const s = asSupervisor(sim, ctx, tokenId, byUserId)
+  if (typeof s === 'string') return fail(s)
+  return adminRetry(sim, ctx, tokenId, s.name)
+}
+
+export function superviseRedistribute(sim: SimState, ctx: Ctx, nodeId: Id, byUserId: Id): Result<number> {
+  const idx = buildIndex(ctx)
+  if (!supervisesStep(idx, nodeId, byUserId)) return fail(`${userName(idx, byUserId)} doesn’t supervise “${idx.node.get(nodeId)?.node.data.label ?? 'that step'}”.`)
+  return ok(adminRedistribute(sim, ctx, nodeId, userName(idx, byUserId)))
+}
+
+export function superviseSetPriority(sim: SimState, ctx: Ctx, objectId: Id, priority: Priority, byUserId: Id): Result {
+  const idx = buildIndex(ctx)
+  const obj = sim.objects[objectId]
+  if (!obj || obj.status !== 'active') return fail('That item is no longer active.')
+  if (!supervisesItem(idx, obj, byUserId)) return fail(`${userName(idx, byUserId)} doesn’t supervise ${obj.number}.`)
+  return adminSetPriority(sim, ctx, objectId, priority, userName(idx, byUserId))
+}
+
+function supervisesItem(idx: Index, obj: SimObject, userId: Id): boolean {
+  return supervisesProcess(idx, obj.workflowId, userId) || obj.tokens.some((t) => canSuperviseToken(idx, obj, t, userId))
+}
+
+// ---------- Expedite ----------
+
+/** May this person flag (or unflag) the item as expedited, under its workflow's policy? */
+export function canExpedite(sim: SimState, ctx: Ctx, objectId: Id, userId: Id): boolean {
+  const idx = buildIndex(ctx)
+  const obj = sim.objects[objectId]
+  if (!obj || obj.status !== 'active') return false
+  if (hasRole(idx, userId, 'admin') || supervisesItem(idx, obj, userId)) return true
+  const who = idx.wf.get(obj.workflowId)?.expedite?.who ?? 'supervisors'
+  if (who === 'supervisors') return false
+  if (obj.createdBy === userId) return true
+  return who === 'anyone' && obj.tokens.some((t) => t.userId === userId)
+}
+
+/** Flag an item as expedited (or take the flag off). Expedited work goes to the front of every queue. */
+export function setExpedite(sim: SimState, ctx: Ctx, objectId: Id, userId: Id, on: boolean, reason = ''): Result {
+  const idx = buildIndex(ctx)
+  const obj = sim.objects[objectId]
+  if (!obj || obj.status !== 'active') return fail('That item is no longer active.')
+  if (!canExpedite(sim, ctx, objectId, userId)) {
+    const who = idx.wf.get(obj.workflowId)?.expedite?.who ?? 'supervisors'
+    return fail(who === 'supervisors' ? 'Only supervisors can expedite items in this process.' : 'Only the requester or a supervisor can expedite this item.')
+  }
+  if (on && obj.expedite) return fail(`${obj.number} is already expedited.`)
+  if (!on && !obj.expedite) return fail(`${obj.number} isn’t expedited.`)
+  if (on && idx.wf.get(obj.workflowId)?.expedite?.requireReason && !reason.trim()) return fail('Say why it needs to go faster.')
+  if (on) markExpedited(sim, idx, obj, userName(idx, userId), reason)
+  else clearExpedited(sim, idx, obj, userName(idx, userId))
   return ok(true)
 }
 

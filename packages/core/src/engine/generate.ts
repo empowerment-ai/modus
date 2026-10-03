@@ -1,5 +1,6 @@
-import type { FieldDef, ListDef, ObjectType, User } from '../model/types'
+import type { ColumnDef, FieldDef, ListDef, ObjectType, TableRow, User } from '../model/types'
 import { optionsForField } from '../model/lists'
+import { normalizeData } from '../model/tables'
 import { isoDay, simDate } from '../model/util'
 import { type HasRng, pick, rand, randInt } from './rng'
 
@@ -23,6 +24,23 @@ const JUSTIFICATIONS = [
   'Crew truck needed for the new water main replacement program.',
   'Current vehicle is out of warranty and repair costs exceed its value.',
   'Electric replacement supports the fleet emissions reduction goal.',
+]
+
+const LINE_DESCRIPTIONS = [
+  'Laptop, 14-inch business model',
+  'Docking station',
+  'Janitorial service, weekly',
+  'HVAC filter set',
+  'Cloud compute hours',
+  'Software license seat (annual)',
+  'Freight, pallet transfer',
+  'Electrical repair labor (hours)',
+  'Consulting hours',
+  'Printer paper, case',
+  'Catering, per person',
+  'Toner cartridge',
+  'Network switch, 24-port',
+  'Safety vests, box of 10',
 ]
 
 const GENERIC = ['Routine request.', 'See attached details.', 'Requested by the department lead.', 'Follow-up to last month’s request.']
@@ -115,6 +133,8 @@ export function generateData(
         data[f.id] = `billing@${slug(vendor ?? 'example')}.com`
         break
       }
+      case 'table':
+        break // filled in after the loop, so a total (an invoice's Amount) can drive the rows
       case 'attachment':
         if (rand(s) < 0.92) {
           const ext = rand(s) < 0.8 ? 'pdf' : 'png'
@@ -123,7 +143,66 @@ export function generateData(
         break
     }
   }
-  return data
+  for (const f of type.fields) {
+    if (f.type !== 'table' || f.system) continue
+    const totalField = type.fields.find((t) => t.total?.tableFieldId === f.id)
+    const target = totalField ? Number(data[totalField.id]) || undefined : undefined
+    data[f.id] = generateRows(s, f, lists, users, today, target, totalField?.total?.columnId)
+  }
+  return normalizeData(type, data)
+}
+
+/**
+ * Plausible rows for a table field. When a total drives it (Amount = sum of
+ * Line Total), the target is split across the rows: quantities are whole
+ * numbers and unit prices make up the rest.
+ */
+function generateRows(s: HasRng, f: FieldDef, lists: ListDef[], users: User[], today: Date, target?: number, totalColumnId?: string): TableRow[] {
+  const cols = f.columns ?? []
+  const n = randInt(s, Math.max(1, f.minRows ?? 1), Math.max(1, Math.min(f.maxRows ?? 5, 5)))
+  const totalCol = cols.find((c) => c.id === totalColumnId)
+  const factors = new Set(totalCol?.formula?.of ?? [])
+  const weights = Array.from({ length: n }, () => 0.3 + rand(s))
+  const sum = weights.reduce((a, b) => a + b, 0)
+  const shares = target !== undefined ? weights.map((w) => (target * w) / sum) : undefined
+  const qtyCol = cols.find((c) => factors.has(c.id) && c.type === 'number')
+  return Array.from({ length: n }, (_, i) => {
+    const row: TableRow = { id: `row_${i + 1}` }
+    const qty = qtyCol ? randInt(s, Math.max(1, qtyCol.min ?? 1), Math.min(qtyCol.max ?? 12, 12)) : 1
+    for (const c of cols) {
+      if (c.formula) continue
+      if (shares && c === qtyCol) row[c.id] = qty
+      else if (shares && factors.has(c.id)) row[c.id] = Math.max(0.01, Math.round((shares[i]! / qty) * 100) / 100)
+      else if (shares && c.id === totalColumnId) row[c.id] = Math.round(shares[i]! * 100) / 100
+      else row[c.id] = cellValue(s, c, lists, users, today)
+    }
+    return row
+  })
+}
+
+function cellValue(s: HasRng, c: ColumnDef, lists: ListDef[], users: User[], today: Date): unknown {
+  const label = c.label.toLowerCase()
+  switch (c.type) {
+    case 'text':
+      return label.includes('desc') || label.includes('item') ? pick(s, LINE_DESCRIPTIONS) : `${c.label} ${randInt(s, 100, 999)}`
+    case 'number':
+      return randInt(s, c.min ?? 1, c.max ?? 10)
+    case 'currency': {
+      const min = Math.max(1, c.min ?? 20)
+      const max = Math.max(min + 1, c.max ?? 2000)
+      return Math.round(Math.exp(Math.log(min) + rand(s) * (Math.log(max) - Math.log(min))) * 100) / 100
+    }
+    case 'date':
+      return isoDay(new Date(today.getTime() + randInt(s, -10, 20) * 86_400_000))
+    case 'boolean':
+      return rand(s) < 0.5
+    case 'choice':
+      return pick(s, (lists.find((l) => l.id === c.listId)?.items ?? []).filter((i) => i.parentId === null))?.id
+    case 'user':
+      return pick(s, users)?.id
+    case 'email':
+      return `contact${randInt(s, 1, 99)}@example.com`
+  }
 }
 
 const COMMENT_BANK: Array<[RegExp, string[]]> = [

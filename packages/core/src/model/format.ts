@@ -1,4 +1,5 @@
 import { itemLabel } from './lists'
+import { tableErrors } from './tables'
 import type { FieldDef, FieldType, ListDef, ObjectType, User } from './types'
 import { currencyFmt } from './util'
 
@@ -13,6 +14,7 @@ export const FIELD_TYPE_LABEL: Record<FieldType, string> = {
   user: 'Person',
   email: 'Email',
   attachment: 'File upload',
+  table: 'Table (rows)',
 }
 
 export interface AttachmentValue {
@@ -46,6 +48,10 @@ export function formatFieldValue(field: FieldDef, value: unknown, lists: ListDef
       const files = Array.isArray(value) ? (value as AttachmentValue[]) : []
       return files.map((f) => f.name).join(', ')
     }
+    case 'table': {
+      const n = Array.isArray(value) ? value.length : 0
+      return n ? `${n} ${n === 1 ? 'row' : 'rows'}` : ''
+    }
     default:
       return String(value)
   }
@@ -71,6 +77,13 @@ export function validateRequired(type: ObjectType, values: Record<string, unknow
     const v = values[f.id]
     const empty = v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0)
     if (empty) errors[f.id] = `${f.label} is required`
+  }
+  // Tables: row count limits and required cells, whether or not the table itself is required.
+  for (const f of type.fields) {
+    if (f.type !== 'table' || errors[f.id] || (f.system && !includeSystem)) continue
+    if (!f.required && (values[f.id] === undefined || (Array.isArray(values[f.id]) && !(values[f.id] as unknown[]).length))) continue
+    const e = tableErrors(f, values[f.id])
+    if (e) errors[f.id] = e
   }
   return errors
 }

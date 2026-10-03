@@ -8,7 +8,8 @@
 // reads the design on every call (so live edits apply), and is deterministic
 // for a given seed.
 
-import { describeCondition, evaluateCondition } from '../model/conditions'
+import { describeCondition, evaluateCondition, withMeta } from '../model/conditions'
+import { normalizeData } from '../model/tables'
 import type {
   ActionDef,
   App,
@@ -219,13 +220,14 @@ export function createObject(
   data: Record<string, unknown> | ((number: string) => Record<string, unknown>),
   createdBy: string,
   idx: Index = buildIndex(ctx),
+  opts: { expedite?: { reason?: string } } = {},
 ): SimObject | undefined {
   const wf = idx.wf.get(workflowId)
   const type = wf && idx.type.get(wf.objectTypeId)
   if (!wf || !type) return undefined
   const number = nextNumber(sim, type)
   sim.seq++
-  const values = typeof data === 'function' ? data(number) : { ...data }
+  const values = normalizeData(type, typeof data === 'function' ? data(number) : { ...data })
   const obj: SimObject = {
     id: `o${sim.seq}`,
     number,
@@ -247,6 +249,7 @@ export function createObject(
   sim.created++
   const byName = idx.user.get(createdBy)?.name ?? createdBy
   audit(sim, obj, { kind: 'created', userId: idx.user.has(createdBy) ? createdBy : undefined, text: `${type.name} created by ${byName}` })
+  if (opts.expedite) markExpedited(sim, idx, obj, byName, opts.expedite.reason)
   const start = wf.nodes.find((n) => n.type === 'start')
   const tok = newToken(sim, obj, { workflowId, nodeId: start?.id ?? '', forks: [], calls: [] })
   if (!start) {
@@ -330,7 +333,8 @@ function ruleBranches(idx: Index, obj: SimObject, out: WfEdge[]): { matches: WfE
   const conditional = out
     .filter((e) => !e.data.isDefault && e.data.condition && e.data.condition.rules.length > 0)
     .sort((a, b) => (a.data.order ?? 0) - (b.data.order ?? 0))
-  const matches = type ? conditional.filter((e) => evaluateCondition(e.data.condition, type, obj.data)) : []
+  const data = withMeta(obj.data, { priority: obj.priority, expedited: !!obj.expedite })
+  const matches = type ? conditional.filter((e) => evaluateCondition(e.data.condition, type, data)) : []
   const fallback = out.find((e) => e.data.isDefault) ?? out.find((e) => !e.data.condition || e.data.condition.rules.length === 0)
   return { matches, fallback, conditional }
 }
@@ -666,6 +670,10 @@ function finishScope(
   if (result === 'completed') sim.completed++
   else sim.rejected++
   sim.cycleTotal += sim.clock - obj.createdAt
+  if (obj.expedite) {
+    sim.expFinished = (sim.expFinished ?? 0) + 1
+    sim.expCycleTotal = (sim.expCycleTotal ?? 0) + (sim.clock - obj.createdAt)
+  }
   for (const [id, f] of Object.entries(sim.forks)) if (f.objectId === obj.id) delete sim.forks[id]
   audit(sim, obj, { kind: 'completed', nodeId: endNodeId, tokenId: tok.id, text: `Finished: ${label}` })
 }
@@ -760,6 +768,7 @@ function storeOutput(idx: Index, obj: SimObject, fieldId: Id, value: unknown) {
     const item = list?.items.find((i) => i.label.toLowerCase() === String(value).toLowerCase())
     if (item) obj.data[f.id] = item.id
   } else obj.data[f.id] = String(value)
+  if (type) obj.data = normalizeData(type, obj.data)
 }
 
 /** A service call returned: store its outputs, run the step's actions, take the success path. */
@@ -1092,11 +1101,15 @@ function arrivals(sim: SimState, idx: Index) {
   }
 }
 
+const RUSH_REASONS = ['Customer escalation', 'Executive request', 'Payment deadline today', 'Safety concern', 'Regulatory deadline']
+
 function generateObject(sim: SimState, idx: Index, wf: Workflow): SimObject | undefined {
   const type = idx.type.get(wf.objectTypeId)
   if (!type) return undefined
   const creator = creatorFor(sim, idx, type, wf)
-  return createObject(sim, idx.ctx, wf.id, (number) => generateData(sim, type, idx.ctx.app.lists, idx.ctx.users, sim.clock, number), creator, idx)
+  const rate = wf.expedite?.simulateRate ?? 0
+  const rush = rate > 0 && rand(sim) < rate ? { reason: pick(sim, RUSH_REASONS) } : undefined
+  return createObject(sim, idx.ctx, wf.id, (number) => generateData(sim, type, idx.ctx.app.lists, idx.ctx.users, sim.clock, number), creator, idx, { expedite: rush })
 }
 
 /** Create `count` random objects right now (a "burst" of arrivals). */
@@ -1123,7 +1136,7 @@ function timers(sim: SimState, idx: Index) {
       const node = idx.node.get(tok.nodeId)?.node
       if (node?.type !== 'user' || tok.escalated || !node.data.escalateAfterHours) continue
       if (tok.state !== 'unassigned' && tok.state !== 'assigned' && tok.state !== 'working') continue
-      if (sim.clock - tok.enteredAt < node.data.escalateAfterHours * 60) continue
+      if (sim.clock - tok.enteredAt < node.data.escalateAfterHours * 60 * speedFactor(idx, obj)) continue
       escalate(sim, idx, obj, tok, node)
     }
   }
@@ -1151,6 +1164,10 @@ function escalate(sim: SimState, idx: Index, obj: SimObject, tok: Token, node: N
     }
   }
   if (esc.notify) did.push(`${esc.notify} notified`)
+  if (esc.notifySupervisors) {
+    const names = [...supervisorsOf(idx, obj, tok)].map((id) => userName(idx, id))
+    if (names.length) did.push(`supervisors notified (${names.join(', ')})`)
+  }
   audit(sim, obj, {
     kind: 'escalated',
     nodeId: node.id,
@@ -1441,6 +1458,7 @@ export function applyActions(sim: SimState, idx: Index, obj: SimObject, actions:
       if (!f) continue
       const value = resolveValue(sim, idx, obj, a.value, f.type, currentUser)
       obj.data[f.id] = value
+      obj.data = normalizeData(type!, obj.data)
       audit(sim, obj, { kind: 'field', nodeId, text: `${f.label} set to ${displayValue(idx, type, f.id, value)}` })
     } else if (a.kind === 'notify') {
       const msg = String(resolveValue(sim, idx, obj, a.message, 'text', currentUser))
@@ -1457,6 +1475,113 @@ export function applyActions(sim: SimState, idx: Index, obj: SimObject, actions:
 }
 
 // Internal hooks for the operations module (admin + workbasket).
+/** Short "where is it" text for a branch, e.g. "Manager approval (with Marcus Hale)". */
+export function describeTokenText(idx: Index, t: Token): string {
+  const label = idx.node.get(t.nodeId)?.node.data.label ?? 'a removed step'
+  const who = t.userId ? (idx.user.get(t.userId)?.name ?? 'someone') : undefined
+  const state: Record<Token['state'], string> = {
+    working: `${who} working`,
+    assigned: `with ${who}`,
+    unassigned: 'waiting',
+    queued: 'queued for a service',
+    joining: 'waiting for other branches',
+    waiting: 'on a timer',
+    stuck: 'stuck',
+    auto: 'in progress',
+  }
+  return `${label} (${state[t.state]})`
+}
+
+// ---------- Expedite ----------
+
+/** Due-date / escalation multiplier for an item: the workflow's expedite factor when expedited, else 1. */
+export function speedFactor(idx: Index, obj: SimObject): number {
+  if (!obj.expedite) return 1
+  const f = idx.wf.get(obj.workflowId)?.expedite?.slaFactor ?? 0.5
+  return Math.min(1, Math.max(0.05, f))
+}
+
+/** Flag an item as expedited: front of every queue, tighter due date. */
+export function markExpedited(sim: SimState, idx: Index, obj: SimObject, by: string, reason?: string) {
+  if (obj.expedite) return
+  obj.expedite = { by, at: sim.clock, reason: reason?.trim() || undefined }
+  const wf = idx.wf.get(obj.workflowId)
+  if (wf?.targetHours) obj.dueBy = Math.min(obj.dueBy ?? Infinity, obj.createdAt + wf.targetHours * 60 * speedFactor(idx, obj))
+  audit(sim, obj, { kind: 'priority', actor: by, text: `Expedited by ${by}${obj.expedite.reason ? `: ${obj.expedite.reason}` : ''}`, comment: obj.expedite.reason })
+}
+
+export function clearExpedited(sim: SimState, idx: Index, obj: SimObject, by: string) {
+  if (!obj.expedite) return
+  obj.expedite = undefined
+  const wf = idx.wf.get(obj.workflowId)
+  if (wf?.targetHours) obj.dueBy = obj.createdAt + wf.targetHours * 60
+  audit(sim, obj, { kind: 'priority', actor: by, text: `No longer expedited (by ${by})` })
+}
+
+// ---------- Roles and supervisors ----------
+
+function inAudience(idx: Index, a: { userIds?: Id[]; groupIds?: Id[] } | undefined, userId: Id): boolean {
+  if (!a) return false
+  if (a.userIds?.includes(userId)) return true
+  return !!a.groupIds?.some((g) => idx.group.get(g)?.memberIds.includes(userId))
+}
+
+function audienceMembers(idx: Index, a: { userIds?: Id[]; groupIds?: Id[] } | undefined): Id[] {
+  if (!a) return []
+  return [...new Set([...(a.userIds ?? []), ...(a.groupIds ?? []).flatMap((g) => idx.group.get(g)?.memberIds ?? [])])]
+}
+
+export function hasRole(idx: Index, userId: Id, role: 'admin' | 'designer' | 'auditor'): boolean {
+  return !!idx.user.get(userId)?.roles?.includes(role)
+}
+
+/**
+ * Who supervises a work item: the supervisors of its step, the supervisor of the
+ * step's work group, and the process supervisors of its workflow and of every
+ * workflow it was called from (a subflow's work is also its parent process's work).
+ */
+export function supervisorsOf(idx: Index, obj: SimObject, tok: Token): Set<Id> {
+  const out = new Set<Id>()
+  const node = idx.node.get(tok.nodeId)?.node
+  if (node?.type === 'user') {
+    for (const id of audienceMembers(idx, node.data.supervisors)) out.add(id)
+    const sup = node.data.groupId ? idx.group.get(node.data.groupId)?.supervisorId : undefined
+    if (sup) out.add(sup)
+  }
+  if (node?.type === 'auto' && node.data.fallbackGroupId) {
+    const sup = idx.group.get(node.data.fallbackGroupId)?.supervisorId
+    if (sup) out.add(sup)
+  }
+  const flows = new Set<Id>([tok.workflowId, obj.workflowId, ...tok.calls.map((c) => c.workflowId)])
+  for (const wfId of flows) for (const id of audienceMembers(idx, idx.wf.get(wfId)?.supervisors)) out.add(id)
+  return out
+}
+
+/** May this person supervise this work item? Administrators may supervise anything. */
+export function canSuperviseToken(idx: Index, obj: SimObject, tok: Token, userId: Id): boolean {
+  return hasRole(idx, userId, 'admin') || supervisorsOf(idx, obj, tok).has(userId)
+}
+
+/** Process supervisors of a workflow (named users and group members). */
+export function processSupervisors(idx: Index, workflowId: Id): Id[] {
+  return audienceMembers(idx, idx.wf.get(workflowId)?.supervisors)
+}
+
+/** Does this person supervise the process (or is an administrator)? */
+export function supervisesProcess(idx: Index, workflowId: Id, userId: Id): boolean {
+  return hasRole(idx, userId, 'admin') || inAudience(idx, idx.wf.get(workflowId)?.supervisors, userId)
+}
+
+/** Does this person supervise this step (step supervisors, its group's supervisor, or its process)? */
+export function supervisesStep(idx: Index, nodeId: Id, userId: Id): boolean {
+  const found = idx.node.get(nodeId)
+  if (!found) return false
+  const n = found.node
+  if (hasRole(idx, userId, 'admin') || inAudience(idx, found.wf.supervisors, userId)) return true
+  if (n.type === 'user') return inAudience(idx, n.data.supervisors, userId) || (!!n.data.groupId && idx.group.get(n.data.groupId)?.supervisorId === userId)
+  return false
+}
+
 // ---------- Live mode: external workers (the "device" protocol) ----------
 
 export interface Job {

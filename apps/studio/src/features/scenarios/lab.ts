@@ -30,6 +30,7 @@ function names(idx: Index, c: ScenarioChange) {
     case 'distribution':
       return nodeLabel(idx, c.nodeId)
     case 'arrivals':
+    case 'expedite-rate':
       return idx.wf.get(c.workflowId)?.name ?? 'a removed workflow'
     default:
       return idx.service.get(c.serviceId)?.name ?? 'a removed service'
@@ -54,6 +55,8 @@ export function describeChange(idx: Index, c: ScenarioChange): string {
     }
     case 'service-status':
       return c.status === 'online' ? `Bring ${name} online` : c.status === 'offline' ? `Take ${name} offline` : `Degrade ${name}`
+    case 'expedite-rate':
+      return `Expedite ${Math.round(c.rate * 100)}% of new items in ${name}`
   }
 }
 
@@ -75,6 +78,8 @@ function gerund(idx: Index, c: ScenarioChange): string {
     }
     case 'service-status':
       return c.status === 'online' ? `bringing ${name} back online` : c.status === 'offline' ? `taking ${name} offline` : `degrading ${name}`
+    case 'expedite-rate':
+      return `expediting ${Math.round(c.rate * 100)}% of new items in ${name}`
   }
 }
 

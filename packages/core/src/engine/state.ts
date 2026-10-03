@@ -135,6 +135,11 @@ export interface SimObject {
   priority: Priority
   /** Due date for the whole item (sim minute), from the workflow's target time. */
   dueBy?: number
+  /**
+   * Flagged to go faster: ahead of every queue and basket (even urgent work),
+   * tighter due dates and escalations, and routable via the `$expedited` rule attribute.
+   */
+  expedite?: { by: string; at: number; reason?: string }
   /** Active threads of execution (one per parallel branch). Empty once finished. */
   tokens: Token[]
   tokenSeq: number
@@ -227,6 +232,9 @@ export interface SimState {
   completed: number
   rejected: number
   cycleTotal: number
+  /** Expedited items finished, and their total cycle time (to compare with normal work). */
+  expFinished?: number
+  expCycleTotal?: number
 }
 
 /** Everything the engine needs from the design to run one application. */
@@ -280,13 +288,17 @@ export function newSim(appId: Id, seed = 20261005): SimState {
 }
 
 export const PRIORITY_RANK: Record<Priority, number> = { low: 0, normal: 1, high: 2, urgent: 3 }
+
+/** How urgent an item is for ordering work: expedited items outrank even urgent ones. */
+export function urgencyRank(obj: Pick<SimObject, 'priority' | 'expedite'> | undefined): number {
+  if (!obj) return PRIORITY_RANK.normal
+  return obj.expedite ? 4 : PRIORITY_RANK[obj.priority]
+}
 export const PRIORITIES: Priority[] = ['low', 'normal', 'high', 'urgent']
 
 /** Work order everywhere: most urgent first, then oldest. */
 export function byUrgency(when: (t: Token) => number, objectOf: (t: Token) => SimObject | undefined) {
   return (a: Token, b: Token) => {
-    const pa = PRIORITY_RANK[objectOf(a)?.priority ?? 'normal']
-    const pb = PRIORITY_RANK[objectOf(b)?.priority ?? 'normal']
-    return pb - pa || when(a) - when(b)
+    return urgencyRank(objectOf(b)) - urgencyRank(objectOf(a)) || when(a) - when(b)
   }
 }

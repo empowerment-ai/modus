@@ -12,6 +12,8 @@ import {
   type Index,
   queueStepsByUser,
   serviceOf,
+  speedFactor,
+  supervisesStep,
   type SimObject,
   type SimState,
   type Token,
@@ -74,6 +76,11 @@ export interface SimView {
   branches: number
   avgCycle: number
   overdue: number
+  /** Expedited items in flight. */
+  expedited: number
+  /** Average cycle time (minutes) of finished expedited items, and of everything else. */
+  expeditedCycle: number
+  normalCycle: number
   bottleneckId?: Id
 }
 
@@ -112,17 +119,19 @@ export function computeView(sim: SimState, ctx: Ctx): SimView {
   let stuck = 0
   let branches = 0
   let overdue = 0
+  let expedited = 0
   const queuedBySvc = new Map<Id, number>()
   const insideSeen = new Set<string>()
   for (const obj of activeObjects(sim)) {
     if (obj.dueBy !== undefined && sim.clock > obj.dueBy) overdue++
+    if (obj.expedite) expedited++
     if (obj.tokens.length > 1) branches += obj.tokens.length
     for (const t of obj.tokens) {
       const m = (nodes[t.nodeId] ??= blank())
       m.total++
       m.oldestAge = Math.max(m.oldestAge, sim.clock - t.enteredAt)
       const node = idx.node.get(t.nodeId)?.node
-      if (node?.type === 'user' && node.data.slaHours && sim.clock - t.enteredAt > node.data.slaHours * 60) m.slaBreaches++
+      if (node?.type === 'user' && node.data.slaHours && sim.clock - t.enteredAt > node.data.slaHours * 60 * speedFactor(idx, obj)) m.slaBreaches++
       // Subflow steps count the items running inside them, at every level (once per item, however many branches).
       for (const c of t.calls) {
         const key = `${c.nodeId}|${obj.id}`
@@ -241,6 +250,9 @@ export function computeView(sim: SimState, ctx: Ctx): SimView {
     branches,
     avgCycle: finished ? sim.cycleTotal / finished : 0,
     overdue,
+    expedited,
+    expeditedCycle: sim.expFinished ? (sim.expCycleTotal ?? 0) / sim.expFinished : 0,
+    normalCycle: finished - (sim.expFinished ?? 0) > 0 ? (sim.cycleTotal - (sim.expCycleTotal ?? 0)) / (finished - (sim.expFinished ?? 0)) : 0,
     bottleneckId,
   }
 }
@@ -265,6 +277,8 @@ export interface WorkItem {
   age: number
   /** "Workflow › Subflow" when the step runs inside a subflow. */
   path: string
+  /** Flagged to go faster (ahead of urgent work). */
+  expedited: boolean
 }
 
 function toItem(sim: SimState, idx: Index, t: Token): WorkItem | undefined {
@@ -272,7 +286,7 @@ function toItem(sim: SimState, idx: Index, t: Token): WorkItem | undefined {
   const found = idx.node.get(t.nodeId)
   const step = workStepOf(idx, t)
   if (!obj || !found || !step) return undefined
-  const stepDue = step.slaHours ? t.enteredAt + step.slaHours * 60 : undefined
+  const stepDue = step.slaHours ? t.enteredAt + step.slaHours * 60 * speedFactor(idx, obj) : undefined
   const caseDue = obj.dueBy
   const due = stepDue !== undefined && caseDue !== undefined ? Math.min(stepDue, caseDue) : (stepDue ?? caseDue)
   const parents = t.calls.map((c) => idx.wf.get(c.workflowId)?.name).filter(Boolean)
@@ -289,6 +303,7 @@ function toItem(sim: SimState, idx: Index, t: Token): WorkItem | undefined {
     overdue: due !== undefined && sim.clock > due,
     age: sim.clock - t.enteredAt,
     path: [...parents, found.wf.name].join(' › '),
+    expedited: !!obj.expedite,
   }
 }
 
@@ -388,6 +403,57 @@ export function requestsBy(sim: SimState, ctx: Ctx, userId: Id): RequestSummary[
       due: obj.dueBy,
       overdue: obj.status === 'active' && obj.dueBy !== undefined && sim.clock > obj.dueBy,
     }))
+}
+
+export interface SupervisedStep {
+  nodeId: Id
+  label: string
+  /** "Invoice Approval" or "Invoice Approval › Exception Handling". */
+  path: string
+  workflowId: Id
+  groupId?: Id
+  /** Everything at the step right now, most urgent first. */
+  items: WorkItem[]
+  /** Work items that escalated here and are still waiting. */
+  escalated: WorkItem[]
+}
+
+export interface Supervision {
+  /** Processes this person supervises (or all, for administrators). */
+  processes: Array<{ id: Id; name: string }>
+  steps: SupervisedStep[]
+}
+
+/** What a person supervises: their processes and every people step they oversee, with the work there now. */
+export function supervisionFor(sim: SimState, ctx: Ctx, userId: Id): Supervision {
+  const idx = buildIndex(ctx)
+  const admin = !!idx.user.get(userId)?.roles?.includes('admin')
+  const processes = ctx.app.workflows
+    .filter((w) => w.kind !== 'subflow' && (admin || (w.supervisors && [...(w.supervisors.userIds ?? []), ...(w.supervisors.groupIds ?? []).flatMap((g) => idx.group.get(g)?.memberIds ?? [])].includes(userId))))
+    .map((w) => ({ id: w.id, name: w.name }))
+  const tokens = activeTokens(sim)
+  const steps: SupervisedStep[] = []
+  for (const wf of ctx.app.workflows) {
+    for (const node of wf.nodes) {
+      if (node.type !== 'user' || !supervisesStep(idx, node.id, userId)) continue
+      const here = tokens
+        .filter((t) => t.nodeId === node.id)
+        .sort(urgent(sim))
+        .map((t) => toItem(sim, idx, t))
+        .filter((x): x is WorkItem => !!x)
+      const callers = ctx.app.workflows.filter((w) => w.nodes.some((n) => n.type === 'subflow' && n.data.workflowId === wf.id)).map((w) => w.name)
+      steps.push({
+        nodeId: node.id,
+        label: node.data.label,
+        path: wf.kind === 'subflow' && callers.length ? `${callers[0]} › ${wf.name}` : wf.name,
+        workflowId: wf.id,
+        groupId: node.data.groupId,
+        items: here,
+        escalated: here.filter((i) => i.token.escalated),
+      })
+    }
+  }
+  return { processes, steps }
 }
 
 /** One work item, by token id. */
