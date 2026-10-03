@@ -26,7 +26,24 @@ export function workflowReferences(app: App, type: ObjectType, fieldId: Id): str
 /** Every reference that should block deleting the field. */
 export function blockingReferences(app: App, type: ObjectType, fieldId: Id): string[] {
   const children = type.fields.filter((f) => f.parentFieldId === fieldId).map((f) => `the linked field “${f.label}”`)
-  return [...children, ...workflowReferences(app, type, fieldId)]
+  const totals = type.fields.filter((f) => f.total?.tableFieldId === fieldId).map((f) => `the total “${f.label}”`)
+  return [...children, ...totals, ...workflowReferences(app, type, fieldId)]
+}
+
+/** Places that use one column of a table field: rules, totals, and other columns' formulas. */
+export function columnReferences(app: App, type: ObjectType, tableId: Id, columnId: Id): string[] {
+  const refs: string[] = []
+  const table = type.fields.find((f) => f.id === tableId)
+  for (const c of table?.columns ?? []) if (c.id !== columnId && c.formula?.of.includes(columnId)) refs.push(`the calculated column “${c.label}”`)
+  for (const f of type.fields) if (f.total?.tableFieldId === tableId && f.total.columnId === columnId) refs.push(`the total “${f.label}”`)
+  for (const wf of app.workflows) {
+    if (wf.objectTypeId !== type.id) continue
+    const label = (id: Id) => wf.nodes.find((n) => n.id === id)?.data.label ?? 'a step'
+    for (const e of wf.edges) {
+      if (e.data.condition?.rules.some((r) => r.fieldId === tableId && r.columnId === columnId)) refs.push(`the rule on ${label(e.source)} → ${label(e.target)}`)
+    }
+  }
+  return refs
 }
 
 export function describeRefs(refs: string[]): string {
@@ -64,4 +81,4 @@ export const FIELD_TYPE_HELP: Record<FieldType, string> = {
   attachment: 'Upload documents or images',
 }
 
-export const FIELD_TYPE_ORDER: FieldType[] = ['text', 'textarea', 'number', 'currency', 'date', 'boolean', 'choice', 'user', 'email', 'attachment']
+export const FIELD_TYPE_ORDER: FieldType[] = ['text', 'textarea', 'number', 'currency', 'date', 'boolean', 'choice', 'user', 'email', 'attachment', 'table']

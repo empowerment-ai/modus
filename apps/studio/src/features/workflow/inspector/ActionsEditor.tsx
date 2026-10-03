@@ -27,7 +27,8 @@ export function ActionsEditor({
 }) {
   const set = (i: number, patch: Partial<ActionDef>) => onChange(actions.map((a, j) => (j === i ? ({ ...a, ...patch } as ActionDef) : a)))
   const remove = (i: number) => onChange(actions.filter((_, j) => j !== i))
-  const fields = type?.fields ?? []
+  // A single value can't fill a table, a file upload or a calculated total.
+  const fields = (type?.fields ?? []).filter((f) => f.type !== 'table' && f.type !== 'attachment' && !f.total)
 
   return (
     <div className="space-y-2">
@@ -43,6 +44,7 @@ export function ActionsEditor({
           {a.kind === 'setField' && (
             <div className="grid grid-cols-2 gap-2">
               <Select value={a.fieldId} onChange={(e) => set(i, { fieldId: e.target.value })}>
+                {!fields.some((f) => f.id === a.fieldId) && <option value={a.fieldId}>{type?.fields.find((f) => f.id === a.fieldId)?.label ?? 'Removed field'}</option>}
                 {fields.map((f) => (
                   <option key={f.id} value={f.id}>
                     {f.label}
