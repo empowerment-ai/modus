@@ -14,6 +14,7 @@ earlier-generation BPM tools will recognize most of these under older names.
 | **Subflow** | A step that runs a whole reusable process on the same item and continues on the way it ended. | Subflow / sub-process | Call activity · reusable sub-process |
 | **Template** | A saved subflow (with the fields it uses) that can be stamped into any application. | — | Process template / marketplace asset |
 | **Item** | One business object moving through a process (an invoice, a request, a camera event). | Object | Case / process instance |
+| **Line items** (table field) | Rows inside an item — an invoice's lines, a request's requested items — with typed columns, calculated columns (*Quantity × Unit Price*) and a **total** field that sums a column. | Multi-row / repeating group | Repeating section · child records · data object collection |
 | **Branch** (token) | One thread of an item. An item has one per active parallel branch. | — | Token |
 | **Work item** | A branch waiting at a people step. | Work item | Work item / task |
 | **Basket** | A person's own work items. | Work basket | Worklist · task inbox |
@@ -28,6 +29,12 @@ earlier-generation BPM tools will recognize most of these under older names.
 | **Field security** | Who can edit, read or not see each field — by sensitive-data group, by workflow lock, by step. The strictest wins. | Field security per step | Attribute- and step-level access control |
 | **Field lock** | A workflow rule: a field becomes read-only or hidden everywhere, or once the item passed a step (exempt groups allowed). | — | — |
 | **Priority / due date** | Low · Normal · High · Urgent, from a field or raised by escalation; due dates from step service levels and the workflow's target time. Queues and baskets are ordered by them. | — | Work item priority · SLA |
+| **Expedite** | Flag an item to go faster: it moves ahead of everything (even urgent work), its clocks shrink (e.g. twice as fast), and rules can send it down a fast lane. Each process says who may expedite and whether a reason is required. | Rush / hot item | Priority escalation · expedited handling |
+| **Task supervisor** | Oversees one people step: sees all its work and can reassign, return, release on behalf, retry, set priority, expedite and redistribute. Named on the step; the work group's supervisor always counts. | Supervisor | Task/activity owner · WRP-30 (supervisor reallocation) |
+| **Process supervisor** | The same powers on every step of a process, including its subflows. | Process owner | Process owner |
+| **Roles** | Organization-wide powers: **Administrator** (all work and settings), **Designer** (change designs), **Auditor** (read everything, change nothing). | Administrator | RBAC roles |
+| **Search** | Find any item you may see by number, words (in any field, line item or comment) and filters such as `is:overdue`, `priority:urgent`, `amount>10k`, `step:"manager approval"`. | Search | Case search |
+| **Ask Modus** | Ask in plain words ("urgent invoices over 10k", "what's waiting on me?"); it shows the search it ran and the results. Runs offline; a server can add an AI model with the same permissions as you. | — | Conversational assistant |
 | **Simulation** | The engine running the design with simulated people, arrivals and services, live on the map. | — | Process simulation |
 | **What-if** | Run the live state forward twice — as is and with a change — and compare. | — | Scenario simulation / digital twin |
 | **Stuck** | Work that can't continue (no matching path, a failed call). It resumes on its own when the map is fixed, or an administrator moves or retries it. | — | Incident |
@@ -50,6 +57,11 @@ earlier-generation BPM tools will recognize most of these under older names.
 | Build cascading choices (Model Year → Make → Model) | Lists |
 | Draw or change a process, add parallel steps, subflows, timers | Workflows |
 | Decide who does the work and how it is handed out | Workflows › select a people step |
+| Add line items (a table) to a form, with totals | Object Types › add a field › Table |
+| Name supervisors; set who may expedite | Workflows › the process overview (process supervisors, expedite) · select a people step (task supervisors) |
+| Give someone the Administrator, Designer or Auditor role | People & Security › Roles |
+| Find an item, or ask a question | Workspace › Search (⌘K) · Ask Modus |
+| Oversee steps you supervise | Workspace › Supervise |
 | Register a REST API, an MCP server, a worker pool or an AI agent | Integrations |
 | Reuse a process someone already built | Templates · Workflows › From template… |
 | Lock a field after approval, see the security matrix | People & Security › Field security |
