@@ -6,6 +6,7 @@ import type { App, FieldDef, FieldType, ObjectType } from '@modus-bpm/core/model
 import { uid } from '@modus-bpm/core/model/util'
 import { useDesign } from '../../store/design'
 import { useUi } from '../../store/ui'
+import { ColumnsEditor, newColumns } from './ColumnsEditor'
 import { blockingReferences, describeRefs, FIELD_TYPE_ORDER, parentCandidates, sanitizeParents, workflowReferences } from './references'
 import { TITLE_TYPES } from './TypeHeader'
 
@@ -30,6 +31,10 @@ export function FieldEditor({ app, type, field, onSelect }: Props) {
     })
 
   const list = app.lists.find((l) => l.id === field.listId)
+  // Totals that add up one of this table's columns (an invoice's Amount).
+  const totalsOfThis = type.fields.filter((f) => f.total?.tableFieldId === field.id)
+  // Numeric columns of the type's tables this field can be the total of.
+  const totalSources = type.fields.flatMap((t) => (t.type === 'table' ? (t.columns ?? []).filter((c) => c.type === 'number' || c.type === 'currency').map((c) => ({ table: t, column: c })) : []))
   const level = field.level ?? 0
   const candidates = parentCandidates(type.fields, field)
   const children = type.fields.filter((f) => f.parentFieldId === field.id)
@@ -40,6 +45,13 @@ export function FieldEditor({ app, type, field, onSelect }: Props) {
       toast(`“${field.label}” is the parent of ${children.map((c) => `“${c.label}”`).join(', ')}. Unlink those fields first.`, 'warn')
       return
     }
+    if (totalsOfThis.length) {
+      toast(
+        `${totalsOfThis.map((f) => `“${f.label}”`).join(', ')} ${totalsOfThis.length === 1 ? 'is' : 'are'} the total of a column in “${field.label}”. Change ${totalsOfThis.length === 1 ? 'that field' : 'those fields'} first.`,
+        'warn',
+      )
+      return
+    }
     const refs = workflowReferences(app, type, field.id)
     update((f) => {
       f.type = next
@@ -48,11 +60,16 @@ export function FieldEditor({ app, type, field, onSelect }: Props) {
       delete f.parentFieldId
       delete f.min
       delete f.max
+      delete f.columns
+      delete f.minRows
+      delete f.maxRows
+      if (next !== 'number' && next !== 'currency') delete f.total
       if (next === 'choice') {
         f.listId = app.lists[0]?.id
         f.level = 0
       }
-      if (next === 'textarea') f.width = 'full'
+      if (next === 'table') f.columns = newColumns()
+      if (next === 'textarea' || next === 'table') f.width = 'full'
     })
     if (type.titleFieldId === field.id && !TITLE_TYPES.has(next)) useDesign.getState().updateType(app.id, type.id, (t) => void (t.titleFieldId = undefined))
     if (refs.length) toast(`“${field.label}” is used by ${describeRefs(refs)}. Check those rules still make sense for a ${FIELD_TYPE_LABEL[next]} field.`, 'warn')
@@ -144,6 +161,42 @@ export function FieldEditor({ app, type, field, onSelect }: Props) {
           </>
         )}
 
+        {(field.type === 'number' || field.type === 'currency') && (
+          <div className="col-span-2">
+            <Field
+              label="Total of a table column"
+              hint={
+                field.total
+                  ? 'Calculated: it always equals the sum of that column, and nobody can type in it.'
+                  : totalSources.length
+                    ? 'Keep this field equal to the sum of a column, like an invoice’s Amount from its line items.'
+                    : 'Add a table field with a number or currency column to total it here.'
+              }
+            >
+              <Select
+                value={field.total ? `${field.total.tableFieldId}:${field.total.columnId}` : ''}
+                disabled={!totalSources.length && !field.total}
+                onChange={(e) => {
+                  const [tableFieldId, columnId] = e.target.value.split(':')
+                  update((f) => void (f.total = tableFieldId && columnId ? { tableFieldId, columnId } : undefined))
+                }}
+              >
+                <option value="">Not a total: typed in or set by the workflow</option>
+                {totalSources.map(({ table, column }) => (
+                  <option key={`${table.id}:${column.id}`} value={`${table.id}:${column.id}`}>
+                    {`Sum of ${table.label} › ${column.label}`}
+                  </option>
+                ))}
+                {field.total && !totalSources.some((s) => s.table.id === field.total!.tableFieldId && s.column.id === field.total!.columnId) && (
+                  <option value={`${field.total.tableFieldId}:${field.total.columnId}`}>A removed table column</option>
+                )}
+              </Select>
+            </Field>
+          </div>
+        )}
+
+        {field.type === 'table' && <ColumnsEditor app={app} type={type} field={field} update={update} />}
+
         {field.type === 'choice' && (
           <div className="col-span-2 rounded-lg border border-slate-200 bg-slate-50/70 p-3">
             <div className="grid grid-cols-2 gap-x-3 gap-y-3">
@@ -217,18 +270,20 @@ export function FieldEditor({ app, type, field, onSelect }: Props) {
         )}
 
         <div className="col-span-2 flex flex-wrap items-center gap-x-5 gap-y-2.5 pt-0.5">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-medium text-slate-600">Width</span>
-            <Segmented
-              size="sm"
-              value={field.width}
-              onChange={(w) => update((f) => void (f.width = w))}
-              options={[
-                { value: 'half', label: 'Half' },
-                { value: 'full', label: 'Full' },
-              ]}
-            />
-          </div>
+          {field.type !== 'table' && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-slate-600">Width</span>
+              <Segmented
+                size="sm"
+                value={field.width}
+                onChange={(w) => update((f) => void (f.width = w))}
+                options={[
+                  { value: 'half', label: 'Half' },
+                  { value: 'full', label: 'Full' },
+                ]}
+              />
+            </div>
+          )}
           <Toggle checked={!!field.required} onChange={(v) => update((f) => void (f.required = v || undefined))} label={<span className="text-xs">Required</span>} />
           <Toggle checked={!!field.summary} onChange={(v) => update((f) => void (f.summary = v || undefined))} label={<span className="text-xs">Show in summaries</span>} />
           <Toggle checked={!!field.system} onChange={(v) => update((f) => void (f.system = v || undefined))} label={<span className="text-xs">Set by workflow</span>} />

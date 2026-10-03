@@ -3,7 +3,9 @@ import { useMemo, useRef, useState } from 'react'
 import { TypeIcon } from '../../components/icons'
 import { Avatar, Badge, cx, EmptyState, Input, Select } from '../../components/ui'
 import type { SimObject, SimState } from '@modus-bpm/core'
+import { columnAsField } from '@modus-bpm/core/model/conditions'
 import { formatFieldValue, objectTitle } from '@modus-bpm/core/model/format'
+import { rowsOf, rowText } from '@modus-bpm/core/model/tables'
 import type { App, Id, ObjectType, User, WfNode } from '@modus-bpm/core/model/types'
 import { formatDuration } from '@modus-bpm/core/model/util'
 import { useSim } from '../../store/sim'
@@ -63,6 +65,8 @@ export function ObjectExplorer({ app, users, sim, version }: { app: App; users: 
     for (const f of type?.fields ?? []) {
       const v = formatFieldValue(f, o.data[f.id], app.lists, users)
       if (v) parts.push(v)
+      // Line items are searchable by their contents, not just "3 rows".
+      if (f.type === 'table') for (const r of rowsOf(o.data[f.id])) parts.push(rowText(f, r, (c, cv) => formatFieldValue(columnAsField(c), cv, app.lists, users)))
     }
     const text = parts.join(' \u0001 ').toLowerCase()
     searchCache.current.set(o.id, { len: o.history.length, text })

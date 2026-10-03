@@ -10,6 +10,7 @@ import { useDesign } from '../../../store/design'
 import { useSimView } from '../../../store/sim'
 import { useUi } from '../../../store/ui'
 import { ActionsEditor } from './ActionsEditor'
+import { AudiencePicker, audienceSize, audienceText } from './AudiencePicker'
 import { deleteNode, NumberInput, PanelHeader, Section, useNodeUpdater } from './common'
 import { ExpandToSubflow } from './ExpandToSubflow'
 import { WorkPanel } from './WorkPanel'
@@ -61,6 +62,16 @@ function DesignTab({ app, wf, node }: { app: App; wf: Workflow; node: UserStep }
   const dispatchers = groups.find((g) => g.id === d.distributorGroupId)
   const personFields = type?.fields.filter((f) => f.type === 'user') ?? []
   const escalation = d.escalation ?? { raisePriority: true, toDistributors: false }
+  const groupSupervisor = users.find((u) => u.id === group?.supervisorId)
+  const processSupervisors = audienceText(wf.supervisors, users, groups)
+  // Everyone "Notify supervisors" reaches, in plain words.
+  const notified = [
+    audienceSize(d.supervisors) ? 'the task supervisors' : '',
+    groupSupervisor ? `${groupSupervisor.name} (group supervisor)` : '',
+    processSupervisors ? `the process supervisors (${processSupervisors})` : '',
+  ]
+    .filter(Boolean)
+    .join(', ')
 
   const setEscalation = (patch: Partial<Escalation>) =>
     update((n) => {
@@ -214,6 +225,18 @@ function DesignTab({ app, wf, node }: { app: App; wf: Workflow; node: UserStep }
         </div>
       </Section>
 
+      <Section title="Task supervisors" hint="Oversee the work at this step: reassign it within the group, release it on someone’s behalf, and hear about escalations.">
+        <AudiencePicker value={d.supervisors} onChange={(a) => update((n) => void (n.data.supervisors = a))} users={users} groups={groups} />
+        <p className="mt-1.5 text-[11px] leading-snug text-slate-500">
+          {groupSupervisor
+            ? `${groupSupervisor.name}, the ${group?.name} supervisor, always counts`
+            : group
+              ? `${group.name} has no supervisor of its own`
+              : 'The work group’s supervisor always counts'}
+          {processSupervisors ? `, and so do the process supervisors (${processSupervisors}).` : '. This process has no supervisors of its own.'}
+        </p>
+      </Section>
+
       <Section title="Timing (simulation)">
         <div className="grid grid-cols-2 gap-2.5">
           <Field label="Average handling time">
@@ -246,7 +269,9 @@ function DesignTab({ app, wf, node }: { app: App; wf: Workflow; node: UserStep }
             {escalation.toDistributors && (
               <p className="-mt-1 pl-11 text-[11px] text-slate-500">Takes it out of the person’s basket so a dispatcher (or the supervisor) can give it to someone else.</p>
             )}
-            <Field label="Notify" hint="Who hears about it, e.g. the AP Supervisor. Leave empty for no message.">
+            <Toggle checked={!!escalation.notifySupervisors} onChange={(on) => setEscalation({ notifySupervisors: on || undefined })} label={<span className="text-xs">Notify supervisors</span>} />
+            {escalation.notifySupervisors && <p className="-mt-1 pl-11 text-[11px] text-slate-500">{notified ? `Tells ${notified}.` : 'No supervisors are set for this step or process yet.'}</p>}
+            <Field label="Also notify" hint="Anyone else who should hear about it, e.g. the AP Manager. Leave empty for no extra message.">
               <Input value={escalation.notify ?? ''} placeholder="Nobody" onChange={(e) => setEscalation({ notify: e.target.value || undefined })} />
             </Field>
           </div>
@@ -318,13 +343,14 @@ function DesignTab({ app, wf, node }: { app: App; wf: Workflow; node: UserStep }
                   {f.label}
                   {f.system && <span className="ml-1 text-[10px] text-slate-400">(workflow)</span>}
                 </span>
+                {/* Calculated totals are never typed in: they can only be shown or hidden. */}
                 <Segmented<FieldAccess>
                   size="sm"
-                  value={d.fieldAccess[f.id] ?? 'edit'}
+                  value={f.total && (d.fieldAccess[f.id] ?? 'edit') === 'edit' ? 'read' : (d.fieldAccess[f.id] ?? 'edit')}
                   onChange={(v) => update((n) => void (n.data.fieldAccess[f.id] = v))}
                   options={[
-                    { value: 'edit', label: 'Edit' },
-                    { value: 'read', label: 'Read' },
+                    ...(f.total ? [] : [{ value: 'edit' as const, label: 'Edit' }]),
+                    { value: 'read', label: f.total ? 'Calculated' : 'Read' },
                     { value: 'hidden', label: 'Hidden' },
                   ]}
                 />

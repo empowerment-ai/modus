@@ -9,6 +9,7 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | Capability | Status |
 | --- | --- |
 | Dynamic object types, generated forms, numbering, title and summary fields | Prototype |
+| Line items (table fields): typed columns, calculated columns, totals, row limits; rules on rows (count, sum, any/every row) | Prototype |
 | Linked (cascading) lists | Prototype |
 | Visual workflow designer with live counts on every step | Prototype |
 | Decisions on object metadata (ordered rules + Otherwise) | Prototype |
@@ -30,6 +31,10 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | --- | --- |
 | Load balanced, queue (claim / get next), distribution groups (dispatchers), direct, from a field (retain familiar) | Prototype |
 | Priority and due dates; urgency-ordered queues and baskets | Prototype |
+| Expedite: ahead of urgent work, faster clocks, fast-lane rules, per-process policy (who, reason, factor), simulated rate | Prototype |
+| Expedite budget per process (cap the share of expedited work) | Planned |
+| Task and process supervisors (Supervise page: reassign, return, release on behalf, retry, priority, expedite, redistribute); escalations notify supervisors | Prototype |
+| Organization roles: administrator, designer, auditor | Prototype |
 | Escalation (raise priority, notify, return to dispatchers) | Prototype |
 | Reassign within group, delegate, return, redistribute evenly, move, release on behalf, cancel | Prototype |
 | End-user Workspace: home, basket, queues, dispatch board, my requests, new request, work form | Prototype |
@@ -37,6 +42,10 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | Separation of duties ("not the same person as step X"), enforced in allocation, claims, delegation and dispatch | Prototype (engine) |
 | Capability / skills-based allocation, shifts and business calendars | Planned |
 | Mobile Workspace (PWA) for field users such as officers | Planned |
+| Search: one query language (words, phrases, filters on any field or line-item column), ranking, snippets, facets, field security | Prototype |
+| Ask Modus: built-in plain-language search and help (offline) | Prototype |
+| Ask Modus with an AI model (Claude, tool use scoped to the person) | Skeleton (server) |
+| Database-backed search (Postgres full-text, trigram, field/row indexes); similar items (pgvector); OpenSearch for very large tenants | Planned (M3+) |
 
 ## Automation and integration
 
@@ -73,6 +82,9 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | OIDC / SAML sign-in, SCIM group sync | Planned (M2–M6) |
 | SQL Server adapter (certified) | Planned (M6) |
 | Oracle adapter (certified) | Planned (v1.1) |
-| Multi-tenancy, Helm chart, air-gapped bundle, SBOM and signed images | Planned (M5–M6) |
+| One container image (server + studio), Docker Compose, Helm chart, GHCR images | Done (in-memory storage) |
+| Multi-tenancy (pooled with row-level security, database per tenant, dedicated cells), SaaS control plane | Planned (M6) |
+| Air-gapped bundle, SBOM and signed images | Planned (M5–M6) |
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#from-prototype-to-production-milestones) for the milestone plan.
+See [ARCHITECTURE.md](ARCHITECTURE.md#from-prototype-to-production-milestones) for the milestone plan and
+[TECH-STACK.md](TECH-STACK.md) for the full technology stack.

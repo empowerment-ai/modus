@@ -1,0 +1,161 @@
+# Modus Helm chart.
+#
+#   helm install modus deploy/helm/modus --set image.tag=main
+#
+# What is real today and what is planned: docs/DEPLOYMENT.md. In short, storage
+# is in memory with JSON snapshots on a volume, so the chart runs one pod and
+# refuses settings that would need a shared SQL store.
+
+image:
+  repository: ghcr.io/empowerment-ai/modus
+  # Empty: the chart's appVersion. Until a release is tagged, use `main` or `sha-<commit>`.
+  tag: ''
+  # Pin an exact build for production (sha256:…); overrides tag.
+  digest: ''
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+nameOverride: ''
+fullnameOverride: ''
+
+# One Deployment per entry, all from the same image; `roles` says what each one does:
+#   api         REST edge, search, assistant, the studio's static files
+#   engine      commands against the process engine
+#   automation  outbox dispatch, connectors, worker job leases
+#   scheduler   the clock: timers, SLAs, escalations, retries
+#   ingest      stream intake and triage (NATS / MQTT / Kafka)
+#   realtime    the live event stream (SSE)
+# Today every process runs every role (MODUS_ROLES is accepted and logged) and
+# keeps state in memory, so keep the single all-in-one deployment at one replica.
+# Once a SQL store ships, split them, for example:
+#   all:        { enabled: false }
+#   api:        { enabled: true, roles: [api, realtime], replicas: 3 }
+#   engine:     { enabled: true, roles: [engine, scheduler], replicas: 2 }
+#   automation: { enabled: true, roles: [automation], replicas: 2 }
+#   ingest:     { enabled: true, roles: [ingest], replicas: 2 }
+deployments:
+  all:
+    enabled: true
+    roles: [api, engine, automation, scheduler, ingest, realtime]
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 512Mi
+    podAnnotations: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+config:
+  logLevel: info
+  # Simulated minutes per real minute (1 = real time; demos may run faster).
+  timeScale: 1
+  # Serve the built studio from the image at `/`.
+  serveStudio: true
+  # Extra environment variables for every pod, as Kubernetes env entries.
+  extraEnv: []
+
+tenancy:
+  # single | multi. `multi` (tenant id in every key, Postgres row-level security) is planned;
+  # the server accepts it with a warning and runs as one tenant.
+  mode: single
+
+database:
+  # memory is implemented. postgres, mssql and oracle are planned: the server validates
+  # DATABASE_URL and then refuses to start until their adapters ship.
+  dialect: memory
+  # An existing Secret with the connection string (SQL dialects only).
+  existingSecret: ''
+  urlKey: DATABASE_URL
+
+assistant:
+  model: claude-opus-5-5
+  # low | medium | high | xhigh | max | off
+  effort: medium
+  # default | off (server-side refusal fallback; turn off for models or platforms without it)
+  fallbacks: default
+  # An existing Secret with the Anthropic API key. Empty: the built-in assistant answers.
+  existingSecret: ''
+  apiKeyKey: ANTHROPIC_API_KEY
+
+persistence:
+  # The memory store snapshots design, state and the event log to /data. Without a
+  # volume, every restart starts again from the sample design.
+  enabled: true
+  existingClaim: ''
+  storageClass: ''
+  accessModes: [ReadWriteOnce]
+  size: 1Gi
+
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ''
+  # The live stream (SSE) needs buffering off and long read timeouts, e.g. for ingress-nginx:
+  #   nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  #   nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+  annotations: {}
+  hosts:
+    - host: modus.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: modus-tls
+  #    hosts: [modus.example.com]
+
+autoscaling:
+  # Planned: needs a SQL store. The chart refuses it while database.dialect=memory.
+  enabled: false
+  deployment: all
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  # Useful with two or more replicas (a SQL store). With one replica it would block node drains.
+  enabled: false
+  maxUnavailable: 1
+
+serviceAccount:
+  create: true
+  name: ''
+  annotations: {}
+  # Modus never calls the Kubernetes API.
+  automount: false
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+probes:
+  liveness:
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  startup:
+    periodSeconds: 2
+    timeoutSeconds: 3
+    failureThreshold: 30
+
+terminationGracePeriodSeconds: 30

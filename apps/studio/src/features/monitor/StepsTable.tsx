@@ -1,9 +1,9 @@
-import { Bot, type LucideIcon, Merge, Shuffle, Timer, Workflow as WorkflowIcon } from 'lucide-react'
+import { Bot, type LucideIcon, Merge, Shuffle, Timer, Workflow as WorkflowIcon, Zap } from 'lucide-react'
 import { Fragment } from 'react'
 import { DISTRIBUTION } from '../../components/icons'
 import { Badge, cx, IconButton, Meter } from '../../components/ui'
 import { adminRedistribute, type NodeMetrics, type SimView } from '@modus-bpm/core'
-import type { App, ServiceDef, WfNode } from '@modus-bpm/core/model/types'
+import type { App, Id, ServiceDef, WfNode } from '@modus-bpm/core/model/types'
 import { formatDuration } from '@modus-bpm/core/model/util'
 import { useSim } from '../../store/sim'
 import { useUi } from '../../store/ui'
@@ -16,7 +16,8 @@ export const HEAT_LABEL = ['Idle', 'Flowing', 'Building up', 'Backed up'] as con
 type StepNode = Extract<WfNode, { type: 'user' | 'auto' | 'subflow' | 'join' | 'wait' }>
 const HOLDS = new Set(['user', 'auto', 'subflow', 'join', 'wait'])
 
-export function StepsTable({ app, view, services }: { app: App; view: SimView | undefined; services: ServiceDef[] }) {
+/** `expedited`: expedited items at each step right now, by step id. */
+export function StepsTable({ app, view, services, expedited }: { app: App; view: SimView | undefined; services: ServiceDef[]; expedited?: Record<Id, number> }) {
   const rows = app.workflows.map((wf) => ({ wf, steps: wf.nodes.filter((n): n is StepNode => HOLDS.has(n.type)) })).filter((r) => r.steps.length)
   const maxInStep = Math.max(1, ...rows.flatMap((r) => r.steps.map((s) => view?.nodes[s.id]?.total ?? 0)))
   const multi = rows.length > 1
@@ -74,6 +75,7 @@ export function StepsTable({ app, view, services }: { app: App; view: SimView | 
                   m={view?.nodes[node.id]}
                   max={maxInStep}
                   bottleneck={view?.bottleneckId === node.id}
+                  expedited={expedited?.[node.id] ?? 0}
                   services={services}
                   onOpen={() => openStep(app, wf.id, node.id)}
                 />
@@ -112,6 +114,7 @@ function StepRow({
   m,
   max,
   bottleneck,
+  expedited,
   services,
   onOpen,
 }: {
@@ -120,6 +123,7 @@ function StepRow({
   m: NodeMetrics | undefined
   max: number
   bottleneck: boolean
+  expedited: number
   services: ServiceDef[]
   onOpen: () => void
 }) {
@@ -152,6 +156,12 @@ function StepRow({
         <div className="flex items-center gap-2">
           <span className={cx('h-2 w-2 shrink-0 rounded-full', HEAT_DOT[heat])} title={HEAT_LABEL[heat]} />
           <span className="font-medium text-slate-800">{node.data.label}</span>
+          {expedited > 0 && (
+            <span className="inline-flex items-center gap-0.5 rounded bg-orange-50 px-1 text-[10px] font-semibold text-orange-700" title={`${expedited} expedited here`}>
+              <Zap size={10} fill="currentColor" />
+              {expedited}
+            </span>
+          )}
           {bottleneck && <Badge tone="red">Bottleneck</Badge>}
           {(m?.stuck ?? 0) > 0 && <Badge tone="red">{m!.stuck} stuck</Badge>}
         </div>

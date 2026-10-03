@@ -1,5 +1,6 @@
 // Workflow-designer helpers: new node defaults, connection rules, and validation.
 
+import { ruleField } from '@modus-bpm/core/model/conditions'
 import { subflowOutcomes } from '@modus-bpm/core/model/templates'
 import { AUTO_FAILURE, AUTO_SUCCESS } from '@modus-bpm/core/model/types'
 import type { App, Group, Id, NodeOf, ObjectType, ServiceDef, User, WfEdge, WfNode, WfNodeType, Workflow, XY } from '@modus-bpm/core/model/types'
@@ -220,7 +221,10 @@ function checkRules({ type, issues }: CheckCtx, n: NodeOf<'decision'> | NodeOf<'
   const label = n.data.label
   for (const e of out) {
     for (const r of e.data.condition?.rules ?? []) {
-      if (!type?.fields.some((f) => f.id === r.fieldId)) issues.push({ level: 'error', text: `A rule in “${label}” uses a field that no longer exists.`, edgeId: e.id })
+      const field = type ? ruleField(type, r.fieldId) : undefined
+      if (!field) issues.push({ level: 'error', text: `A rule in “${label}” uses a field that no longer exists.`, edgeId: e.id })
+      else if (field.type === 'table' && (r.aggregate ?? 'count') !== 'count' && !field.columns?.some((c) => c.id === r.columnId))
+        issues.push({ level: 'error', text: `A rule in “${label}” uses a column of “${field.label}” that no longer exists.`, edgeId: e.id })
     }
   }
   const unruled = out.filter((e) => !e.data.isDefault && !e.data.condition?.rules.length)

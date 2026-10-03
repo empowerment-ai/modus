@@ -1,0 +1,17 @@
+apiVersion: v2
+name: modus
+description: Modus, the open-source process manager - studio, API and engine in one image.
+type: application
+# The chart's own version; bump on every chart change.
+version: 0.2.0
+# The image tag used when image.tag is empty.
+appVersion: '0.2.0'
+home: https://github.com/empowerment-ai/modus
+sources:
+  - https://github.com/empowerment-ai/modus
+keywords:
+  - bpm
+  - workflow
+  - process
+annotations:
+  artifacthub.io/license: Apache-2.0

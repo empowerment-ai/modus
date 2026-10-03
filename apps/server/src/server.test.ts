@@ -39,7 +39,17 @@ describe('the API runs the same engine live', () => {
       method: 'POST',
       url: '/api/apps/app_invoice/items',
       headers: as('u_maya'),
-      payload: { workflowId: 'w_invoice', data: { f_invno: 'INV-API-1', f_vendor: 'l_vendors_0', f_lines: [{ id: 'row_1', c_desc: 'Toner cartridge', c_qty: 4, c_price: 105 }], f_dept: 'l_org_0', f_cc: 'l_org_1', f_invdate: '2026-09-28' } },
+      payload: {
+        workflowId: 'w_invoice',
+        data: {
+          f_invno: 'INV-API-1',
+          f_vendor: 'l_vendors_0',
+          f_lines: [{ id: 'row_1', c_desc: 'Toner cartridge', c_qty: 4, c_price: 105 }],
+          f_dept: 'l_org_0',
+          f_cc: 'l_org_1',
+          f_invdate: '2026-09-28',
+        },
+      },
     })
     expect(created.statusCode).toBe(201)
     const item = created.json().value as { id: string; number: string }
@@ -52,14 +62,19 @@ describe('the API runs the same engine live', () => {
     expect(await completeAll('svc_erp', { matched: true })).toBe(1)
 
     // Load balanced to a clerk, who sees it in their basket and releases it.
-    const got = (await api.inject({ method: 'GET', url: `/api/apps/app_invoice/items/${item.id}` })).json() as { branches: Array<{ assignee: string; workItemId: string }> }
+    const got = (await api.inject({ method: 'GET', url: `/api/apps/app_invoice/items/${item.id}`, headers: as('u_maya') })).json() as { branches: Array<{ assignee: string; workItemId: string }> }
     const clerk = got.branches[0]!.assignee
     const basket = (await api.inject({ method: 'GET', url: '/api/apps/app_invoice/my/basket', headers: as(clerk) })).json() as Array<{ id: string; outcomes: Array<{ id: string; label: string }> }>
     expect(basket).toHaveLength(1)
     const approve = basket[0]!.outcomes.find((o) => o.label === 'Approve')!
 
     // Field security is the engine's: the amount is locked once routed by amount.
-    const locked = await api.inject({ method: 'POST', url: `/api/apps/app_invoice/work/${encodeURIComponent(basket[0]!.id)}/save`, headers: as(clerk), payload: { patch: { f_lines: [{ id: 'row_1', c_desc: 'Toner cartridge', c_qty: 1, c_price: 1 }] } } })
+    const locked = await api.inject({
+      method: 'POST',
+      url: `/api/apps/app_invoice/work/${encodeURIComponent(basket[0]!.id)}/save`,
+      headers: as(clerk),
+      payload: { patch: { f_lines: [{ id: 'row_1', c_desc: 'Toner cartridge', c_qty: 1, c_price: 1 }] } },
+    })
     expect(locked.statusCode).toBe(409)
 
     const released = await api.inject({ method: 'POST', url: `/api/apps/app_invoice/work/${encodeURIComponent(basket[0]!.id)}/release`, headers: as(clerk), payload: { outcomeId: approve.id } })
@@ -71,7 +86,7 @@ describe('the API runs the same engine live', () => {
     expect(await completeAll('svc_records')).toBe(1)
     await rt.tick()
 
-    const done = (await api.inject({ method: 'GET', url: `/api/apps/app_invoice/items/${item.number}` })).json() as { status: string; history: Array<{ kind: string }> }
+    const done = (await api.inject({ method: 'GET', url: `/api/apps/app_invoice/items/${item.number}`, headers: as('u_maya') })).json() as { status: string; history: Array<{ kind: string }> }
     expect(done.status).toBe('completed')
     expect(done.history.filter((h) => h.kind === 'split' || h.kind === 'joined').length).toBeGreaterThanOrEqual(2)
   })
