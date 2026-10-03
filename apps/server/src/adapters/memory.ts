@@ -2,7 +2,7 @@
 // a restart picks up where it left off. Good for development, demos and tests;
 // not for production (no transactions, one process only).
 
-import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Design, Id, SimState } from '@modus-bpm/core'
 import type { DesignStore, EventLog, LoggedEvent, StateStore, Storage } from '../ports'
@@ -13,6 +13,15 @@ async function readJson<T>(path: string): Promise<T | undefined> {
   } catch {
     return undefined
   }
+}
+
+let writes = 0
+
+/** Write via a temporary file and rename, so a crash or a backup never sees half a snapshot. */
+async function writeAtomic(path: string, text: string) {
+  const tmp = `${path}.${process.pid}-${++writes}.tmp`
+  await writeFile(tmp, text)
+  await rename(tmp, path)
 }
 
 export function memoryStorage(dataDir?: string): Storage {
@@ -32,7 +41,7 @@ export function memoryStorage(dataDir?: string): Storage {
       design = d
       if (dataDir) {
         await ready
-        await writeFile(join(dataDir, 'design.json'), JSON.stringify(d, null, 2))
+        await writeAtomic(join(dataDir, 'design.json'), JSON.stringify(d, null, 2))
       }
     },
   }
@@ -50,7 +59,7 @@ export function memoryStorage(dataDir?: string): Storage {
       states.set(appId, s)
       if (dataDir) {
         await ready
-        await writeFile(join(dataDir, `state-${appId}.json`), JSON.stringify(s))
+        await writeAtomic(join(dataDir, `state-${appId}.json`), JSON.stringify(s))
       }
     },
   }
