@@ -1,0 +1,20 @@
+{{- include "modus.validate" . -}}
+# Settings shared by every Modus pod. Secrets are referenced from existing Secrets in deployment.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "modus.fullname" . }}
+  labels:
+    {{- include "modus.labels" . | nindent 4 }}
+data:
+  HOST: "0.0.0.0"
+  PORT: "8787"
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  TIME_SCALE: {{ .Values.config.timeScale | quote }}
+  STATIC_DIR: {{ ternary "/app/public" "" .Values.config.serveStudio | quote }}
+  DATA_DIR: "/data"
+  DB_DIALECT: {{ .Values.database.dialect | quote }}
+  TENANT_MODE: {{ .Values.tenancy.mode | quote }}
+  MODUS_ASSISTANT_MODEL: {{ .Values.assistant.model | quote }}
+  MODUS_ASSISTANT_EFFORT: {{ .Values.assistant.effort | quote }}
+  MODUS_ASSISTANT_FALLBACKS: {{ .Values.assistant.fallbacks | quote }}

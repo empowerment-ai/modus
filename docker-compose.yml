@@ -1,0 +1,83 @@
+# Modus with Docker Compose.
+#
+#   docker compose up --build                  # Modus on http://localhost:8787
+#   docker compose --profile postgres up       # also start the optional services you name
+#
+# Only `modus` starts by default and it is all you need today: storage is in
+# memory, snapshotted to the modus-data volume. The profiles below are the
+# infrastructure the roadmap adds (docs/DEPLOYMENT.md); Modus does not use any
+# of them yet, so starting them changes nothing about how it runs.
+#
+# Secrets come from your shell or an untracked .env file next to this one,
+# never from this file: ANTHROPIC_API_KEY=... docker compose up
+
+name: modus
+
+services:
+  modus:
+    build: .
+    image: modus:local
+    ports:
+      - '${MODUS_PORT:-8787}:8787'
+    environment:
+      TIME_SCALE: ${TIME_SCALE:-1}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Optional: turns on the language-model assistant (built-in assistant otherwise).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      MODUS_ASSISTANT_MODEL: ${MODUS_ASSISTANT_MODEL:-claude-opus-5-5}
+    volumes:
+      - modus-data:/data
+    restart: unless-stopped
+
+  # ----- Optional, planned: not used by Modus yet -----
+
+  # PostgreSQL 18, the first SQL storage adapter (milestone M2). The server
+  # refuses DB_DIALECT=postgres until that adapter ships.
+  postgres:
+    profiles: [postgres]
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: modus
+      POSTGRES_USER: modus
+      # Development only; set your own in .env.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-modus-dev-only}
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      # Postgres 18 images keep data under /var/lib/postgresql/18/docker.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U modus -d modus']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # NATS JetStream with its MQTT listener: event ingest for high-volume signals (milestone M5).
+  nats:
+    profiles: [nats]
+    image: nats:2.14-alpine
+    command: ['-c', '/etc/nats/nats.conf']
+    ports:
+      - '127.0.0.1:4222:4222' # NATS clients
+      - '127.0.0.1:1883:1883' # MQTT devices
+      - '127.0.0.1:8222:8222' # monitoring
+    volumes:
+      - ./deploy/compose/nats.conf:/etc/nats/nats.conf:ro
+      - nats-data:/data
+
+  # Keycloak as the OIDC provider that will replace the x-user-id header (milestone M2).
+  keycloak:
+    profiles: [keycloak]
+    image: quay.io/keycloak/keycloak:26.6
+    command: ['start-dev']
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      # Development only; set your own in .env.
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-modus-dev-only}
+    ports:
+      - '127.0.0.1:8180:8080'
+
+volumes:
+  modus-data:
+  postgres-data:
+  nats-data:
