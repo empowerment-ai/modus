@@ -93,7 +93,7 @@ const STARTERS = ['What should I work on next?', 'Show urgent items that are ove
 // ---------- Understanding a question ----------
 
 const STOP = new Set(
-  'a an the me my mine i we our us show find list get give search for of in on at to with and or all any some please can you could would which what that are is be there have has items item things ones stuff look looking up about from by over under above below more less than greater fewer created assigned waiting due today this week ago days day hours hour status where how many much count number who whom whose most least'.split(
+  'a an the me my mine i we our us show find list get give search for of in on at to with and or all any some please can you could would which what that are is be there have has items item things ones stuff look looking up about from by over under above below more less than greater fewer created assigned waiting due today this week ago days day hours hour status where how many much count number who whom whose most least only just'.split(
     ' ',
   ),
 )
@@ -146,7 +146,7 @@ export function translateQuestion(question: string, ctx: Ctx, userId?: Id): { qu
   }
   if (userId) {
     if (!take(/\b(i created|i submitted|i requested|my requests?|i started)\b/, 'creator:me', 'that you created')) {
-      take(/\b(assigned to me|in my basket|my work|my items|mine|on my plate|i have|i'm working)\b/, 'is:mine', 'in your basket')
+      take(/\b(assigned to me|in my basket|my work|my items|mine|on my plate|i have|i'm working)\b|\bmy\b(?! team)/, 'is:mine', 'in your basket')
     }
   }
   take(/\b(created|submitted|new|received) today\b|\btoday's\b/, 'created:<1d', 'created today')
