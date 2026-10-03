@@ -310,9 +310,10 @@ export function ask(sim: SimState, ctx: Ctx, question: string, opts: { userId?: 
   const res = searchItems(sim, ctx, query, { userId: opts.userId, sort: query.includes('is:') || !query ? 'priority' : 'relevance', limit: 8 })
   const noun = ctx.app.objectTypes.length === 1 ? ctx.app.objectTypes[0]!.pluralName.toLowerCase() : 'items'
   if (!res.total) {
+    const conditions = understood.filter((u) => u.toLowerCase() !== noun)
     return {
       kind: 'fallback',
-      text: `I didn’t find any ${noun}${understood.length ? ` ${understood.join(', ')}` : ''}. Try fewer conditions, or search by number.`,
+      text: `I didn’t find any ${noun}${conditions.length ? ` matching: ${conditions.join(' · ')}` : ''}. Try fewer conditions, or search by number.`,
       query,
       understood,
       hits: [],
