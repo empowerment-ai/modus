@@ -1,4 +1,4 @@
-import { Inbox, Play, Search, X } from 'lucide-react'
+import { Inbox, Play, Search, X, Zap } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, cx, EmptyState, Input, Segmented, Select, Toggle } from '../../components/ui'
 import { type Ctx, PRIORITIES, type SimState, type WorkItem } from '@modus-bpm/core'
@@ -31,7 +31,7 @@ const SORTS: Array<{ value: BasketSort; label: string; title: string }> = [
   { value: 'age', label: 'Age', title: 'Longest at its step first' },
 ]
 
-const GRID = 'grid-cols-[72px_88px_minmax(0,1.5fr)_minmax(0,1.3fr)_minmax(0,0.9fr)_64px_116px_84px]'
+const GRID = 'grid-cols-[80px_88px_minmax(0,1.5fr)_minmax(0,1.3fr)_minmax(0,0.9fr)_64px_116px_84px]'
 
 /** Your basket: everything assigned to you, with filters, keyboard navigation and the item view beside it. */
 export function MyWorkPage({ me, app, ctx, users, groups, sim, tick, data }: Props) {
@@ -56,6 +56,7 @@ export function MyWorkPage({ me, app, ctx, users, groups, sim, tick, data }: Pro
       if (filter.stepId && i.node.id !== filter.stepId) return false
       if (filter.priority && i.priority !== filter.priority) return false
       if (filter.overdueOnly && !i.overdue) return false
+      if (filter.expeditedOnly && !i.expedited) return false
       return !q || `${i.obj.number} ${titleOf(i)} ${i.step.label} ${i.wf.name}`.toLowerCase().includes(q)
     })
     return sortItems(kept, sort)
@@ -113,7 +114,8 @@ export function MyWorkPage({ me, app, ctx, users, groups, sim, tick, data }: Pro
     ws.openItem(next?.token.id ?? null)
   }
 
-  const filtered = filter.stepId || filter.priority || filter.overdueOnly || filter.query
+  const expedited = basket.filter((i) => i.expedited).length
+  const filtered = filter.stepId || filter.priority || filter.overdueOnly || filter.expeditedOnly || filter.query
   const open = !!tokenId && !!sim
 
   return (
@@ -166,6 +168,20 @@ export function MyWorkPage({ me, app, ctx, users, groups, sim, tick, data }: Pro
               ))}
             </Select>
             <Toggle checked={filter.overdueOnly} onChange={(v) => ws.setFilter({ overdueOnly: v })} label={<span className="text-xs text-slate-600">Overdue only</span>} />
+            <button
+              type="button"
+              aria-pressed={filter.expeditedOnly}
+              onClick={() => ws.setFilter({ expeditedOnly: !filter.expeditedOnly })}
+              title={filter.expeditedOnly ? 'Show everything again' : 'Only expedited items: they go before everything else'}
+              className={cx(
+                'inline-flex h-7 items-center gap-1 rounded-full border px-2.5 text-xs font-medium transition-colors',
+                filter.expeditedOnly ? 'border-orange-300 bg-orange-50 text-orange-800' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50',
+              )}
+            >
+              <Zap size={12} className={cx('text-orange-500', filter.expeditedOnly && 'fill-orange-500')} />
+              Expedited
+              <span className={cx('tabular-nums', filter.expeditedOnly ? 'text-orange-700' : 'text-slate-400')}>{expedited}</span>
+            </button>
             {filtered && (
               <button type="button" onClick={() => ws.setFilter(NO_FILTER)} className="ml-auto inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-slate-800">
                 <X size={12} /> Clear
@@ -273,7 +289,7 @@ function BasketRow({
       {/* Narrow: two lines */}
       <span className="block @3xl:hidden">
         <span className="flex items-center gap-2">
-          <PriorityBadge priority={i.priority} quietNormal />
+          <PriorityBadge priority={i.priority} expedited={i.expedited} reason={i.obj.expedite?.reason} quietNormal />
           <span className="font-mono text-[11px] font-medium text-brand-700">{i.obj.number}</span>
           <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-slate-900">{title || 'Untitled'}</span>
           <DueLabel due={i.due} clock={clock} className="text-[11px]" />
@@ -287,7 +303,7 @@ function BasketRow({
       {/* Wide: one line per item, table columns */}
       <span className={cx('hidden items-center gap-3 @3xl:grid', GRID)}>
         <span>
-          <PriorityBadge priority={i.priority} />
+          <PriorityBadge priority={i.priority} expedited={i.expedited} reason={i.obj.expedite?.reason} />
         </span>
         <span className="font-mono text-[11px] font-medium text-brand-700">{i.obj.number}</span>
         <span className="truncate text-[13px] font-medium text-slate-900">{title || <span className="text-slate-400">Untitled</span>}</span>

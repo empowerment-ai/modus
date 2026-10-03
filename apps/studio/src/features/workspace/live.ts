@@ -10,6 +10,8 @@ import {
   requestsBy,
   type Result,
   type SimState,
+  type Supervision,
+  supervisionFor,
   type WorkItem,
 } from '@modus-bpm/core'
 import type { Id } from '@modus-bpm/core/model/types'
@@ -56,9 +58,11 @@ export interface WorkData {
   queues: QueueSummary[]
   distribution: DistributionSummary[]
   requests: RequestSummary[]
+  /** Steps and processes the person oversees (everything, for administrators). */
+  supervision: Supervision
 }
 
-const EMPTY: WorkData = { clock: 0, basket: [], queues: [], distribution: [], requests: [] }
+const EMPTY: WorkData = { clock: 0, basket: [], queues: [], distribution: [], requests: [], supervision: { processes: [], steps: [] } }
 
 /** Everything the Workspace shows for one person, recomputed at most twice a second while running. */
 export function useWorkData(sim: SimState | undefined, ctx: Ctx | undefined, me: Id, tick: string): WorkData {
@@ -70,6 +74,7 @@ export function useWorkData(sim: SimState | undefined, ctx: Ctx | undefined, me:
       queues: queuesFor(sim, ctx, me),
       distribution: distributionFor(sim, ctx, me),
       requests: requestsBy(sim, ctx, me),
+      supervision: supervisionFor(sim, ctx, me),
     }
   }, [sim, ctx, me, tick])
 }

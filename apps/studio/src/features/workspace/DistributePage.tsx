@@ -186,7 +186,7 @@ function StepBoard({
                     className={cx('flex cursor-grab items-center gap-2 py-2 pr-3 pl-2 text-xs active:cursor-grabbing', dragging === i.token.id ? 'bg-brand-50 opacity-60' : 'hover:bg-slate-50')}
                   >
                     <GripVertical size={14} className="shrink-0 text-slate-300" />
-                    <PriorityBadge priority={i.priority} className="w-[62px] justify-center" />
+                    <PriorityBadge priority={i.priority} expedited={i.expedited} reason={i.obj.expedite?.reason} className="w-[78px] justify-center" />
                     <span className="min-w-0 flex-1">
                       <span className="flex items-baseline gap-1.5">
                         <span className="font-mono text-[11px] font-medium text-brand-700">{i.obj.number}</span>
