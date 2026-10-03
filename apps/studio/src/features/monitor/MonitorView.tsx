@@ -1,7 +1,8 @@
 import { Activity, ArrowRight, Download, FastForward, FlaskConical, Play, TriangleAlert } from 'lucide-react'
-import { exportOcel } from '@modus-bpm/core'
+import { activeObjects, exportOcel, type SimState } from '@modus-bpm/core'
 import { type ReactNode, useMemo } from 'react'
 import { Button, Card, cx, EmptyState } from '../../components/ui'
+import type { Id } from '@modus-bpm/core/model/types'
 import { formatClock, formatDuration } from '@modus-bpm/core/model/util'
 import { useApp, useDesign } from '../../store/design'
 import { ctxFor, useSim, useSimState, useSimView } from '../../store/sim'
@@ -28,6 +29,21 @@ function downloadEventLog(appId: string) {
   useUi.getState().toast('Event log exported as OCEL 2.0.', 'success')
 }
 
+/** Expedited items at each step right now. Subflow steps count the items running inside them, once per item. */
+function expeditedByStep(sim: SimState): Record<Id, number> {
+  const out: Record<Id, number> = {}
+  for (const obj of activeObjects(sim)) {
+    if (!obj.expedite) continue
+    const seen = new Set<Id>()
+    for (const t of obj.tokens) {
+      seen.add(t.nodeId)
+      for (const c of t.calls) seen.add(c.nodeId)
+    }
+    for (const id of seen) out[id] = (out[id] ?? 0) + 1
+  }
+  return out
+}
+
 // The administrator's live view of the open application's simulated work:
 // where items are piling up, who is carrying the load, and what just happened.
 
@@ -49,6 +65,10 @@ export function MonitorView() {
   const hasWork = (sim?.created ?? 0) > 0
   const bottleneck = describeBottleneck(view, app, { users, groups, services })
   const usesServices = app.workflows.some((w) => w.nodes.some((n) => n.type === 'auto' && n.data.serviceId))
+  // Expedite KPIs only where expediting is set up or has happened.
+  const showExpedite = app.workflows.some((w) => w.expedite) || (view?.expedited ?? 0) > 0 || (view?.expeditedCycle ?? 0) > 0
+  const expedited = sim && view?.expedited ? expeditedByStep(sim) : undefined
+  const cycle = (m: number | undefined) => (m ? formatDuration(m) : '—')
 
   return (
     <div className="h-full overflow-y-auto">
@@ -71,7 +91,7 @@ export function MonitorView() {
           </div>
         </header>
 
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9">
+        <div className={cx('grid grid-cols-2 gap-3 sm:grid-cols-3', showExpedite ? 'md:grid-cols-4 lg:grid-cols-6 2xl:grid-cols-11' : 'lg:grid-cols-5 xl:grid-cols-9')}>
           <Kpi label="Created" value={(view?.created ?? 0).toLocaleString()} />
           <Kpi label="In flight" value={(view?.active ?? 0).toLocaleString()} />
           <Kpi label="Completed" value={(view?.completed ?? 0).toLocaleString()} tone="green" />
@@ -81,6 +101,22 @@ export function MonitorView() {
           <Kpi label="Overdue" value={(view?.overdue ?? 0).toLocaleString()} tone={(view?.overdue ?? 0) > 0 ? 'amber' : undefined} hint="Open items past their workflow's target time" />
           <Kpi label="Stuck" value={(view?.stuck ?? 0).toLocaleString()} tone={(view?.stuck ?? 0) > 0 ? 'red' : undefined} hint="No path in the map" />
           <Kpi label="Parallel branches" value={(view?.branches ?? 0).toLocaleString()} hint="Branches running side by side inside items that split into parallel paths" />
+          {showExpedite && (
+            <>
+              <Kpi
+                label="Expedited in flight"
+                value={(view?.expedited ?? 0).toLocaleString()}
+                tone={(view?.expedited ?? 0) > 0 ? 'amber' : undefined}
+                hint="Open items flagged to go faster: ahead of every queue, with tighter due dates"
+              />
+              <Kpi
+                label="Expedited cycle"
+                value={cycle(view?.expeditedCycle)}
+                sub={`vs ${cycle(view?.normalCycle)} normal`}
+                hint="Average time from created to finished for expedited items, against everything else"
+              />
+            </>
+          )}
         </div>
 
         {!hasWork ? (
@@ -130,7 +166,7 @@ export function MonitorView() {
             </div>
 
             <Section title="Steps" subtitle="Click a step to open it in the designer. The shuffle button evens out its work.">
-              <StepsTable app={app} view={view} services={services} />
+              <StepsTable app={app} view={view} services={services} expedited={expedited} />
             </Section>
 
             <div className="grid gap-4 xl:grid-cols-5">
@@ -164,7 +200,7 @@ function Section({ title, subtitle, children, className }: { title: string; subt
   )
 }
 
-function Kpi({ label, value, hint, tone }: { label: string; value: ReactNode; hint?: string; tone?: 'green' | 'red' | 'amber' }) {
+function Kpi({ label, value, sub, hint, tone }: { label: string; value: ReactNode; sub?: ReactNode; hint?: string; tone?: 'green' | 'red' | 'amber' }) {
   return (
     <Card className="px-3.5 py-2.5">
       <div className="text-[10.5px] font-medium tracking-wide text-slate-500 uppercase" title={hint}>
@@ -175,6 +211,7 @@ function Kpi({ label, value, hint, tone }: { label: string; value: ReactNode; hi
       >
         {value}
       </div>
+      {sub && <div className="truncate text-[11px] text-slate-500 tabular-nums">{sub}</div>}
     </Card>
   )
 }
