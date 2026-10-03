@@ -5,7 +5,7 @@
 
 import { blockedFields, type FieldVerdict, fieldVerdicts } from '../model/security'
 import { normalizeData } from '../model/tables'
-import type { FieldAccess, Id, Priority, WfNode } from '../model/types'
+import type { FieldAccess, FieldDef, Id, Priority, WfNode } from '../model/types'
 import {
   ADMIN,
   activeTokens,
@@ -210,16 +210,17 @@ function writeData(sim: SimState, idx: Index, obj: SimObject, patch: Record<stri
     if (JSON.stringify(obj.data[k]) === JSON.stringify(v)) continue
     obj.data[k] = v
     const f = type?.fields.find((x) => x.id === k)
-    if (f && f.type === 'table') audit(sim, obj, { kind: 'field', nodeId, actor, text: `${f.label} updated by ${actor} (${Array.isArray(v) ? v.length : 0} rows)` })
-    else if (f && f.type !== 'attachment') audit(sim, obj, { kind: 'field', nodeId, actor, text: `${f.label} changed to ${displayValue(idx, type, k, v) || '(blank)'} by ${actor}` })
-    else if (f) audit(sim, obj, { kind: 'field', nodeId, actor, text: `${f.label} updated by ${actor}` })
+    const redacted = `${f?.label} changed by ${actor}`
+    if (f && f.type === 'table') audit(sim, obj, { kind: 'field', nodeId, actor, fieldIds: [k], redacted, text: `${f.label} updated by ${actor} (${Array.isArray(v) ? v.length : 0} rows)` })
+    else if (f && f.type !== 'attachment') audit(sim, obj, { kind: 'field', nodeId, actor, fieldIds: [k], redacted, text: `${f.label} changed to ${displayValue(idx, type, k, v) || '(blank)'} by ${actor}` })
+    else if (f) audit(sim, obj, { kind: 'field', nodeId, actor, fieldIds: [k], redacted, text: `${f.label} updated by ${actor}` })
   }
   if (!type) return
   obj.data = normalizeData(type, obj.data)
   for (const id of computed) {
     if (JSON.stringify(before[id]) === JSON.stringify(obj.data[id])) continue
     const f = type.fields.find((x) => x.id === id)!
-    audit(sim, obj, { kind: 'field', nodeId, text: `${f.label} recalculated: ${displayValue(idx, type, id, obj.data[id])}` })
+    audit(sim, obj, { kind: 'field', nodeId, fieldIds: [id], redacted: `${f.label} recalculated`, text: `${f.label} recalculated: ${displayValue(idx, type, id, obj.data[id])}` })
   }
 }
 
@@ -443,7 +444,16 @@ export function canCreate(ctx: Ctx, workflowId: Id, userId: Id): boolean {
   const wf = ctx.app.workflows.find((w) => w.id === workflowId)
   const type = ctx.app.objectTypes.find((t) => t.id === wf?.objectTypeId)
   if (!type || wf?.kind === 'subflow') return false
+  if (hasRole(buildIndex(ctx), userId, 'admin')) return true
   return Object.entries(type.permissions).some(([gid, p]) => p.create && ctx.groups.find((g) => g.id === gid)?.memberIds.includes(userId))
+}
+
+/** Fields in `data` this person may not set on a new item (hidden or locked for them, or set by the workflow). Totals don't count: they are recalculated. */
+export function createRefusals(ctx: Ctx, workflowId: Id, userId: Id, data: Record<string, unknown>): Array<{ field: FieldDef; reason: string }> {
+  const wf = ctx.app.workflows.find((w) => w.id === workflowId)
+  const type = ctx.app.objectTypes.find((t) => t.id === wf?.objectTypeId)
+  if (!wf || !type) return []
+  return blockedFields({ type, wf, userId, groups: ctx.groups, admin: hasRole(buildIndex(ctx), userId, 'admin'), creating: true }, data).filter((b) => !b.field.total)
 }
 
 /** Raise or lower the priority of an item you are working or created. */

@@ -35,14 +35,22 @@ interface Item {
 }
 
 /** A small invoice from Maya, matched by the ERP worker and load balanced to an AP clerk. */
-async function invoiceAtClerk(invno: string): Promise<{ item: Item; workItemId: string; clerk: string }> {
+/** A new invoice, waiting at the AP clerk step. AP Exceptions (Rosa) may enter bank details; a clerk (Maya) may not. */
+async function invoiceAtClerk(invno: string, creator = 'u_maya'): Promise<{ item: Item; workItemId: string; clerk: string }> {
   const created = await api.inject({
     method: 'POST',
     url: '/api/apps/app_invoice/items',
-    headers: as('u_maya'),
+    headers: as(creator),
     payload: {
       workflowId: 'w_invoice',
-      data: { f_invno: invno, f_vendor: 'l_vendors_0', f_lines: [{ id: 'row_1', c_desc: 'Toner cartridge', c_qty: 2, c_price: 50 }], f_dept: 'l_org_0', f_cc: 'l_org_1', f_bank: SECRET },
+      data: {
+        f_invno: invno,
+        f_vendor: 'l_vendors_0',
+        f_lines: [{ id: 'row_1', c_desc: 'Toner cartridge', c_qty: 2, c_price: 50 }],
+        f_dept: 'l_org_0',
+        f_cc: 'l_org_1',
+        ...(creator === 'u_rosa' ? { f_bank: SECRET } : {}),
+      },
     },
   })
   expect(created.statusCode).toBe(201)
@@ -77,7 +85,7 @@ describe('search', () => {
   })
 
   it('never matches or returns fields hidden from the caller', async () => {
-    const { item } = await invoiceAtClerk('SRCH-78')
+    const { item } = await invoiceAtClerk('SRCH-78', 'u_rosa')
     const clerk = (await api.inject({ method: 'GET', url: `/api/apps/app_invoice/search?q=${SECRET}`, headers: as('u_maya') })).json() as { total: number }
     expect(clerk.total).toBe(0)
     const controller = (await api.inject({ method: 'GET', url: `/api/apps/app_invoice/search?q=${SECRET}`, headers: as('u_victor') })).json() as { total: number }
@@ -88,6 +96,11 @@ describe('search', () => {
     expect((seenByClerk.json() as Item).fields.some((f) => f.id === 'f_bank')).toBe(false)
     const seenByController = (await api.inject({ method: 'GET', url: `/api/apps/app_invoice/items/${item.number}`, headers: as('u_victor') })).json() as Item
     expect(seenByController.data.f_bank).toBe(SECRET)
+
+    // Nor can a clerk write it when creating an invoice.
+    const write = await api.inject({ method: 'POST', url: '/api/apps/app_invoice/items', headers: as('u_maya'), payload: { workflowId: 'w_invoice', data: { f_bank: 'X' } } })
+    expect(write.statusCode).toBe(403)
+    expect(write.json().error).toMatch(/Vendor Bank Account/)
 
     // People who can't read the item at all don't learn it exists.
     expect((await api.inject({ method: 'GET', url: `/api/apps/app_invoice/items/${item.number}`, headers: as('u_carmen') })).statusCode).toBe(404)

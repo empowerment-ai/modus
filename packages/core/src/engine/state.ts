@@ -117,6 +117,9 @@ export interface AuditEntry {
   actor?: string
   text: string
   comment?: string
+  /** Fields whose values the text shows. Someone who may not see one of them reads `redacted` instead. */
+  fieldIds?: Id[]
+  redacted?: string
 }
 
 export interface SimObject {

@@ -3,7 +3,7 @@
 // field security is applied to reads: fields hidden from that person (and the
 // audit lines that would reveal their values) never leave the server.
 
-import { accessFor, buildIndex, type Ctx, fieldVerdicts, hasRole, type Id, type ObjectType, type SearchHit, searchItems, type SimObject, type SimState, type WorkItem } from '@modus-bpm/core'
+import { accessFor, buildIndex, canReadItem, type Ctx, fieldVerdicts, hasRole, type Id, type ObjectType, type SearchHit, type SimObject, type SimState, visibleHistory, type WorkItem } from '@modus-bpm/core'
 import { objectTitle } from '@modus-bpm/core/model/format'
 
 /** Field ids this person may not see on this item (sensitive fields, workflow locks). */
@@ -33,12 +33,9 @@ function titleFor(obj: SimObject, ctx: Ctx, userId: Id | undefined): string {
   return objectTitle(type, obj.data, ctx.app.lists, ctx.users)
 }
 
-/**
- * May this person find the item at all (type permissions, involvement, supervision, roles)?
- * Core decides; we ask it through search instead of copying the rule.
- */
-export function canRead(sim: SimState, ctx: Ctx, obj: SimObject, userId: Id): boolean {
-  return searchItems(sim, ctx, `number:${obj.number}`, { userId, limit: Number.MAX_SAFE_INTEGER }).hits.some((h) => h.obj.id === obj.id)
+/** May this person see the item at all (type permissions, involvement, supervision, roles)? Core decides. */
+export function canRead(_sim: SimState, ctx: Ctx, obj: SimObject, userId: Id): boolean {
+  return canReadItem(ctx, obj, userId)
 }
 
 /** An item by id or number (case-insensitive). */
@@ -77,18 +74,18 @@ export function itemDto(obj: SimObject, ctx: Ctx, userId: Id, sim: SimState, opt
     fieldVerdicts({ type, wf: ctx.app.workflows.find((w) => w.id === obj.workflowId), passed: obj.passed, userId, groups: ctx.groups, admin: hasRole(buildIndex(ctx), userId, 'admin') })
   const data: Record<string, unknown> = {}
   const access: Record<string, string> = {}
-  const hiddenLabels: string[] = []
+  const hidden = new Set<Id>()
   for (const f of type.fields) {
     const v = verdicts[f.id]
     if (v?.access === 'hidden') {
-      hiddenLabels.push(`${f.label} `)
+      hidden.add(f.id)
       continue
     }
     data[f.id] = obj.data[f.id]
     access[f.id] = v?.access ?? 'read'
   }
-  // Field audit lines read "<Label> changed to <value> …": drop the ones about hidden fields.
-  const history = obj.history.filter((h) => h.kind !== 'field' || !hiddenLabels.some((l) => h.text.startsWith(l)))
+  // Audit lines that show a hidden field's value come back redacted.
+  const history = visibleHistory(ctx, obj, userId, hidden)
   return {
     id: obj.id,
     number: obj.number,

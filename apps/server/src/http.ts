@@ -21,6 +21,7 @@ import {
   basketOf,
   buildIndex,
   canCreate,
+  createRefusals,
   canExpedite,
   canSuperviseToken,
   completeJob,
@@ -190,6 +191,8 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     const body = createBody.parse(req.body)
     return rt.run(appId, (sim, ctx) => {
       if (!canCreate(ctx, body.workflowId, user)) return reply.code(403).send({ ok: false, error: 'You can’t create items in that workflow.' })
+      const refused = createRefusals(ctx, body.workflowId, user, body.data)
+      if (refused.length) return reply.code(403).send({ ok: false, error: `You can’t set ${refused.map((r) => r.field.label).join(', ')} (${refused[0]!.reason}).` })
       const obj = createObject(sim, ctx, body.workflowId, body.data, user)
       if (!obj) return reply.code(404).send({ ok: false, error: 'Unknown workflow.' })
       return reply.code(201).send({ ok: true, value: itemDto(obj, ctx, user, sim) })
