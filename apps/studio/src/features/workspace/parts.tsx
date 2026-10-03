@@ -2,12 +2,30 @@ import { Check, ChevronDown, Clock } from 'lucide-react'
 import { type ReactNode, useRef, useState } from 'react'
 import { useClickOutside } from '../../components/Shell'
 import { Badge, cx } from '../../components/ui'
-import { PRIORITIES, type TokenState, type WorkItem } from '@modus-bpm/core'
-import type { Priority } from '@modus-bpm/core/model/types'
+import { type Ctx, fieldVerdicts, PRIORITIES, type SimObject, type TokenState, type WorkItem } from '@modus-bpm/core'
+import type { Id, Priority } from '@modus-bpm/core/model/types'
 import { PriorityBadge } from '../objects/PriorityBadge'
 import { dueText, dueTone } from './format'
 
 // Small building blocks shared by the Workspace pages.
+
+/** How an item stands overall. */
+export const STATUS: Record<SimObject['status'], { label: string; tone: 'brand' | 'green' | 'red' | 'slate' }> = {
+  active: { label: 'In progress', tone: 'brand' },
+  completed: { label: 'Completed', tone: 'green' },
+  rejected: { label: 'Rejected', tone: 'red' },
+  cancelled: { label: 'Cancelled', tone: 'slate' },
+}
+
+/** Is the field that titles an item hidden from this person? Then show its number, not the title. */
+export function titleHidden(ctx: Ctx, obj: SimObject, userId: Id): boolean {
+  const type = ctx.app.objectTypes.find((t) => t.id === obj.typeId)
+  const field = type && (type.fields.find((f) => f.id === type.titleFieldId) ?? type.fields.find((f) => f.summary))
+  if (!type || !field) return false
+  const wf = ctx.app.workflows.find((w) => w.id === obj.workflowId)
+  const admin = !!ctx.users.find((u) => u.id === userId)?.roles?.includes('admin')
+  return fieldVerdicts({ type, wf, passed: obj.passed, userId, groups: ctx.groups, admin })[field.id]?.access === 'hidden'
+}
 
 const DUE_CLASS = {
   overdue: 'text-rose-600 font-medium',

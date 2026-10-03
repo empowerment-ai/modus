@@ -1,4 +1,4 @@
-import { buildIndex, type Ctx, describeToken, findToken, type SimState, workNext } from '@modus-bpm/core'
+import { buildIndex, type Ctx, describeToken, findToken, type SimState, type WorkItem, workNext } from '@modus-bpm/core'
 import type { Id } from '@modus-bpm/core/model/types'
 import { useUi } from '../../store/ui'
 import { perform } from './live'
@@ -31,4 +31,12 @@ export function getNext(userId: Id) {
   if (!r.ok) return
   useWorkspace.getState().openItem(r.value.tokenId)
   useUi.getState().toast(`${r.value.number} is yours now. It’s open and waiting for you.`, 'success')
+}
+
+/** Open an item you found (search, Ask Modus, Supervise): in My work if it's in your basket, otherwise read-only. */
+export function openFound(objectId: Id, basket: WorkItem[]) {
+  const held = basket.find((i) => i.obj.id === objectId)
+  const ws = useWorkspace.getState()
+  if (held) ws.openItem(held.token.id)
+  else ws.view(objectId)
 }
