@@ -1,6 +1,6 @@
-import { ArrowRightLeft, Ban, CircleCheck, MoveRight, RotateCw, ShieldCheck, TriangleAlert, Undo2 } from 'lucide-react'
+import { ArrowRightLeft, Ban, CircleCheck, MoveRight, RotateCw, ShieldCheck, TriangleAlert, Undo2, Zap, ZapOff } from 'lucide-react'
 import { useState } from 'react'
-import { Button, Select, Textarea } from '../../components/ui'
+import { Button, Input, Select, Textarea } from '../../components/ui'
 import {
   adminAssign,
   adminCancel,
@@ -12,6 +12,7 @@ import {
   MANUAL_OUTCOMES,
   PRIORITIES,
   type Result,
+  setExpedite,
   type SimObject,
   type Token,
 } from '@modus-bpm/core'
@@ -68,6 +69,7 @@ export function AdminPanel({ obj, tok, node, app, users, groups }: { obj: SimObj
         {tok && node && (people || automated) && !stuck && <AssignRow key={`assign-${tok.id}-${tok.nodeId}`} obj={obj} tok={tok} node={node} users={users} groups={groups} />}
         {tok && wf && <MoveRow key={`move-${tok.id}-${tok.nodeId}`} obj={obj} tok={tok} nodes={wf.nodes} />}
         {tok && people && !stuck && outcomes.length > 0 && <ReleaseRow key={`release-${tok.id}-${tok.nodeId}`} obj={obj} tok={tok} outcomes={outcomes} />}
+        <ExpediteRow obj={obj} app={app} users={users} />
         <ItemRow obj={obj} />
       </div>
     </section>
@@ -212,6 +214,69 @@ function ReleaseRow({ obj, tok, outcomes }: { obj: SimObject; tok: Token; outcom
           </Button>
         </div>
       </div>
+    </div>
+  )
+}
+
+/** “2× faster” for a due-date factor of 0.5. */
+function fasterLabel(factor: number): string {
+  return `${Math.round((1 / Math.max(0.05, factor)) * 10) / 10}× faster`
+}
+
+function ExpediteRow({ obj, app, users }: { obj: SimObject; app: App; users: User[] }) {
+  const [reason, setReason] = useState('')
+  const wf = app.workflows.find((w) => w.id === obj.workflowId)
+  const policy = wf?.expedite
+  // The engine checks expedite rights per person, so the studio acts as the organization's administrator persona.
+  const persona = users.find((u) => u.roles?.includes('admin')) ?? users.find((u) => u.id === 'u_avery')
+  const personaId = persona?.id ?? 'u_avery'
+  const needsReason = !!policy?.requireReason && !reason.trim()
+
+  const expedite = () => {
+    if (needsReason) return
+    if (report(useSim.getState().act((sim, ctx) => setExpedite(sim, ctx, obj.id, personaId, true, reason)), `${obj.number} expedited: it now jumps every queue.`)) setReason('')
+  }
+  const remove = () => report(useSim.getState().act((sim, ctx) => setExpedite(sim, ctx, obj.id, personaId, false)), `${obj.number} is no longer expedited.`)
+
+  const recorded = `Recorded as ${persona?.name ?? 'the administrator'}.`
+  return (
+    <div className="border-t border-slate-100 pt-3">
+      <RowLabel>Expedite (whole item)</RowLabel>
+      {obj.expedite ? (
+        <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md bg-orange-50 px-2.5 py-1.5 text-sm text-orange-900">
+            <Zap size={14} fill="currentColor" className="shrink-0 text-orange-600" />
+            <span className="min-w-0 truncate">
+              Expedited by <b className="font-semibold">{obj.expedite.by}</b>
+              {obj.expedite.reason && <span className="text-orange-800"> — {obj.expedite.reason}</span>}
+            </span>
+          </div>
+          <Button variant="ghost" icon={<ZapOff size={14} />} onClick={remove}>
+            Remove expedite
+          </Button>
+        </div>
+      ) : (
+        <div className="flex gap-2">
+          <Input
+            value={reason}
+            className="min-w-0 flex-1"
+            aria-label="Reason for expediting"
+            placeholder={policy?.requireReason ? 'Why does it need to go faster? (required)' : 'Why does it need to go faster?'}
+            onChange={(e) => setReason(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && expedite()}
+          />
+          <Button icon={<Zap size={14} />} disabled={needsReason} onClick={expedite}>
+            Expedite
+          </Button>
+        </div>
+      )}
+      <p className="mt-1 text-[11px] text-slate-500">
+        {obj.expedite
+          ? `Taking it off puts it back in normal order with its original due date. ${recorded}`
+          : policy
+            ? `Jumps every queue and basket, ahead of urgent work, with ${fasterLabel(policy.slaFactor)} due dates. ${recorded}`
+            : `Expediting isn’t set up for ${wf?.name ?? 'this process'}, so it uses 2× faster due dates. It still jumps every queue. ${recorded}`}
+      </p>
     </div>
   )
 }
