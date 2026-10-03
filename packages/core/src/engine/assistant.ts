@@ -10,7 +10,7 @@ import type { Id, ObjectType } from '../model/types'
 import { activeTokens, buildIndex, type Ctx, describeTokenText, type Index, type SimObject, type SimState, urgencyRank } from './engine'
 import { queuesFor } from './view'
 import { computeView } from './view'
-import { type SearchHit, searchItems } from './search'
+import { canReadItem, type SearchHit, searchItems, visibleHistory } from './search'
 
 export interface AssistantReply {
   /** Plain sentences; `**bold**` marks names. */
@@ -233,12 +233,12 @@ export function ask(sim: SimState, ctx: Ctx, question: string, opts: { userId?: 
   if (num) {
     const obj = Object.values(sim.objects).find((o) => o.number.toLowerCase() === num[1]!.toLowerCase())
     if (!obj) return { kind: 'fallback', text: `I couldn’t find **${num[1]!.toUpperCase()}**. It may belong to another application.`, suggestions: STARTERS }
-    const found = searchItems(sim, ctx, `number:${obj.number}`, { userId: opts.userId, limit: 1 })
-    if (!found.hits.length) return { kind: 'fallback', text: `You don’t have access to **${obj.number}**.`, suggestions: STARTERS }
-    const last = [...obj.history].reverse().slice(0, 3).map((h) => h.text)
+    if (!canReadItem(ctx, obj, opts.userId)) return { kind: 'fallback', text: `You don’t have access to **${obj.number}**.`, suggestions: STARTERS }
+    const hits = searchItems(sim, ctx, `number=${obj.number}`, { userId: opts.userId, limit: 1 }).hits
+    const last = [...visibleHistory(ctx, obj, opts.userId)].reverse().slice(0, 3).map((h) => h.text)
     const holder = obj.tokens.find((t) => t.userId)
     const text = [itemLine(idx, sim, obj), holder ? `${idx.user.get(holder.userId!)?.name ?? 'Someone'} has it.` : '', `Latest: ${last.join(' · ')}`].filter(Boolean).join(' ')
-    return { kind: 'item', text, itemId: obj.id, hits: found.hits, total: 1, suggestions: [`Show the history of ${obj.number}`, 'What should I work on next?'] }
+    return { kind: 'item', text, itemId: obj.id, hits, total: 1, suggestions: [`Show the history of ${obj.number}`, 'What should I work on next?'] }
   }
 
   // How-to questions.

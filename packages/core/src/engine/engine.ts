@@ -776,14 +776,17 @@ function completeCall(sim: SimState, idx: Index, obj: SimObject, tok: Token, nod
   releaseServiceSlot(sim, tok)
   sstat(sim, svc.id).ok++
   const shown: string[] = []
+  const stored: Id[] = []
   for (const out of node.data.outputs ?? []) {
     if (!(out.key in values)) continue
     const v = values[out.key]
     storeOutput(idx, obj, out.fieldId, v)
+    stored.push(out.fieldId)
     const label = op.outputs.find((x) => x.key === out.key)?.label ?? out.key
     shown.push(`${label} ${typeof v === 'boolean' ? (v ? 'yes' : 'no') : String(v)}`)
   }
-  audit(sim, obj, { kind: 'service', nodeId: node.id, tokenId: tok.id, text: `${svc.name} · ${op.name}: OK${shown.length ? ` (${shown.join(', ')})` : ''}` })
+  const ok = `${svc.name} · ${op.name}: OK`
+  audit(sim, obj, { kind: 'service', nodeId: node.id, tokenId: tok.id, fieldIds: stored.length ? stored : undefined, redacted: ok, text: `${ok}${shown.length ? ` (${shown.join(', ')})` : ''}` })
   applyActions(sim, idx, obj, node.data.actions, undefined, node.id)
   advanceFrom(sim, idx, obj, tok, AUTO_SUCCESS, 0)
 }
@@ -1459,7 +1462,7 @@ export function applyActions(sim: SimState, idx: Index, obj: SimObject, actions:
       const value = resolveValue(sim, idx, obj, a.value, f.type, currentUser)
       obj.data[f.id] = value
       obj.data = normalizeData(type!, obj.data)
-      audit(sim, obj, { kind: 'field', nodeId, text: `${f.label} set to ${displayValue(idx, type, f.id, value)}` })
+      audit(sim, obj, { kind: 'field', nodeId, fieldIds: [f.id], redacted: `${f.label} set`, text: `${f.label} set to ${displayValue(idx, type, f.id, value)}` })
     } else if (a.kind === 'notify') {
       const msg = String(resolveValue(sim, idx, obj, a.message, 'text', currentUser))
       audit(sim, obj, { kind: 'notify', nodeId, text: `Email to ${a.to || 'recipient'}: “${msg}”` })
