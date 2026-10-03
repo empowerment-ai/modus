@@ -3,7 +3,21 @@ import { useMemo, useState } from 'react'
 import { FormRenderer } from '../../components/FormRenderer'
 import { TypeIcon } from '../../components/icons'
 import { Avatar, Badge, Button, Card, cx, IconButton, Modal, Textarea } from '../../components/ui'
-import { accessFor, type Ctx, describeToken, type SimState, type WorkItem, workItem, workDelegate, workRelease, workReturn, workSave, workSetPriority, workStart } from '@modus-bpm/core'
+import {
+  accessFor,
+  type Ctx,
+  describeToken,
+  type SimState,
+  visibleHistory,
+  type WorkItem,
+  workItem,
+  workDelegate,
+  workRelease,
+  workReturn,
+  workSave,
+  workSetPriority,
+  workStart,
+} from '@modus-bpm/core'
 import { objectTitle } from '@modus-bpm/core/model/format'
 import type { App, Group, Id, Outcome, Priority, User } from '@modus-bpm/core/model/types'
 import { formatDuration, simDate } from '@modus-bpm/core/model/util'
@@ -317,7 +331,8 @@ function ItemBody({ item, me, app, ctx, users, groups, sim, tick, position, onMo
             </div>
           ) : (
             <div className="mt-4">
-              <ObjectHistory obj={obj} app={app} />
+              {/* Entries that would reveal a field hidden from you come back redacted. */}
+              <ObjectHistory obj={{ ...obj, history: visibleHistory(ctx, obj, me.id) }} app={app} />
             </div>
           )}
         </div>

@@ -1,7 +1,7 @@
 import { ArrowRight, ArrowRightLeft, ArrowUpCircle, CircleCheck, Flag, Inbox, type LucideIcon, PencilLine, Play, Send, Siren, Sparkles, TriangleAlert, Undo2, UserPlus } from 'lucide-react'
 import { type ReactNode, useMemo } from 'react'
 import { Button, Card, cx, EmptyState, SectionTitle } from '../../components/ui'
-import type { AuditKind, SimState, WorkItem } from '@modus-bpm/core'
+import { type AuditKind, type Ctx, type SimState, visibleHistory, type WorkItem } from '@modus-bpm/core'
 import { objectTitle } from '@modus-bpm/core/model/format'
 import type { App, User } from '@modus-bpm/core/model/types'
 import { formatDuration, simDate } from '@modus-bpm/core/model/util'
@@ -16,6 +16,7 @@ import { useWorkspace } from './store'
 
 interface Props {
   me: User
+  ctx: Ctx
   app: App
   users: User[]
   sim: SimState | undefined
@@ -24,7 +25,7 @@ interface Props {
 }
 
 /** Where someone lands: what needs them now, what is at risk, and what just happened to their items. */
-export function HomePage({ me, app, users, sim, tick, data }: Props) {
+export function HomePage({ me, ctx, app, users, sim, tick, data }: Props) {
   const { clock, basket, queues, distribution, requests, supervision } = data
   const ws = useWorkspace.getState()
   const date = simDate(clock)
@@ -43,7 +44,11 @@ export function HomePage({ me, app, users, sim, tick, data }: Props) {
   const expedited = expeditedMine + expeditedQueued + expeditedToHand
   const supervises = supervision.steps.length > 0
   const escalated = supervision.steps.reduce((n, s) => n + s.escalated.length, 0)
-  const activity = useMyActivity(sim, me, tick)
+  // Entries that would reveal a field hidden from you come back redacted.
+  const activity = useMyActivity(sim, me, tick).map((a) => {
+    const i = a.obj.history.indexOf(a.entry)
+    return i < 0 ? a : { ...a, entry: visibleHistory(ctx, a.obj, me.id)[i] ?? a.entry }
+  })
 
   // At risk: anything you can act on that is overdue or due within four hours, soonest first.
   const atRisk = useMemo(() => {
