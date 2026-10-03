@@ -2,6 +2,7 @@ import { produce } from 'immer'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { seedDesign } from '@modus-bpm/core/model/seed'
+import { upgradeDesign } from '@modus-bpm/core/model/upgrade'
 import type { App, Design, Id, ObjectType, ServiceDef, Template, Workflow } from '@modus-bpm/core/model/types'
 
 interface DesignStore {
@@ -72,7 +73,13 @@ export const useDesign = create<DesignStore>()(
     }),
     {
       name: 'modus-design',
-      version: 1,
+      // Bump when the sample data gains something designs saved earlier should get
+      // (version 2: line items, roles, supervisors, expedite). The upgrade runs once.
+      version: 2,
+      migrate: (persisted) => {
+        const p = persisted as { design?: Design } | undefined
+        return p?.design ? { ...p, design: upgradeDesign(normalizeDesign(p.design), seedDesign()) } : p
+      },
       merge: (persisted, current) => {
         const p = persisted as { design?: Design } | undefined
         return p?.design ? { ...current, design: normalizeDesign(p.design) } : current
