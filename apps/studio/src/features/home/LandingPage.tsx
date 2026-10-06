@@ -441,7 +441,7 @@ function Model() {
             uses production rules and a change is just an edit.
           </p>
           <p className="mt-4 text-[15px] leading-relaxed text-slate-500">
-            Edit the map while work is in flight and the work follows the new map. Work parked at a broken spot resumes on its own once you fix it.
+            Edit the map as a draft, then publish it: for new items only, or move the work in flight onto it now. Every version is kept, and you can see which items run on which.
           </p>
         </div>
         <div className="relative">

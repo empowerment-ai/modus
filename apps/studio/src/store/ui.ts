@@ -13,7 +13,12 @@ interface Toast {
   id: number
   text: string
   tone: 'info' | 'success' | 'warn'
+  /** A button on the toast, e.g. "Publish…" after a change that went into a draft. */
+  action?: { label: string; run: () => void }
 }
+
+/** The publish dialog or the version history of a workflow. */
+export type VersionsPanel = { kind: 'publish' | 'history'; workflowId: Id } | null
 
 interface UiStore {
   mode: Mode
@@ -32,6 +37,7 @@ interface UiStore {
   /** Workspace: the person you are working as (no sign-in in the prototype). */
   actingAs: Id
   toasts: Toast[]
+  versions: VersionsPanel
   setMode: (mode: Mode) => void
   setApp: (appId: Id) => void
   setView: (view: View) => void
@@ -47,8 +53,9 @@ interface UiStore {
   openObject: (id: Id | null) => void
   openCreate: (workflowId: Id | null) => void
   setActingAs: (userId: Id) => void
-  toast: (text: string, tone?: Toast['tone']) => void
+  toast: (text: string, tone?: Toast['tone'], action?: Toast['action']) => void
   dismiss: (id: number) => void
+  openVersions: (panel: VersionsPanel) => void
 }
 
 let toastSeq = 0
@@ -65,8 +72,9 @@ export const useUi = create<UiStore>()(
       createFor: null,
       actingAs: 'u_maya',
       toasts: [],
-      setMode: (mode) => set({ mode, selection: null, objectId: null }),
-      setApp: (appId) => set({ appId, workflowId: undefined, trail: [], typeId: undefined, listId: undefined, selection: null, objectId: null }),
+      versions: null,
+      setMode: (mode) => set({ mode, selection: null, objectId: null, versions: null }),
+      setApp: (appId) => set({ appId, workflowId: undefined, trail: [], typeId: undefined, listId: undefined, selection: null, objectId: null, versions: null }),
       setView: (view) => set({ view, selection: null }),
       setWorkflow: (workflowId) => set({ workflowId, trail: [], selection: null }),
       drillInto: (subflowId) =>
@@ -87,12 +95,14 @@ export const useUi = create<UiStore>()(
       openObject: (objectId) => set({ objectId }),
       openCreate: (createFor) => set({ createFor }),
       setActingAs: (actingAs) => set({ actingAs, objectId: null }),
-      toast: (text, tone = 'info') => {
+      toast: (text, tone = 'info', action) => {
         const id = ++toastSeq
-        set((s) => ({ toasts: [...s.toasts.slice(-3), { id, text, tone }] }))
-        setTimeout(() => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), 3800)
+        set((s) => ({ toasts: [...s.toasts.slice(-3), { id, text, tone, action }] }))
+        // A toast with something to do stays long enough to do it.
+        setTimeout(() => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), action ? 9000 : 3800)
       },
       dismiss: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+      openVersions: (versions) => set({ versions }),
     }),
     {
       name: 'modus-ui',

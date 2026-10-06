@@ -17,11 +17,11 @@
 //   amount>10k  "line total">=500  vendor:acme  category:software   any field or line-item column, by label
 
 import { rowsOf } from '../model/tables'
-import { fieldVerdicts } from '../model/security'
+import type { FieldVerdict } from '../model/security'
 import type { ColumnDef, FieldDef, Id, ObjectType, Priority, TableRow } from '../model/types'
 import { formatFieldValue } from '../model/format'
 import type { AuditEntry } from './state'
-import { activeTokens, buildIndex, type Ctx, describeTokenText, hasRole, type Index, PRIORITY_RANK, type SimObject, type SimState, supervisesProcess, urgencyRank } from './engine'
+import { activeTokens, buildIndex, type Ctx, describeTokenText, hasRole, type Index, indexFor, itemFieldVerdicts, PRIORITY_RANK, type SimObject, type SimState, supervisesProcess, urgencyRank } from './engine'
 
 // ---------- Parsing ----------
 
@@ -152,15 +152,27 @@ function mayRead(idx: Index, obj: SimObject, type: ObjectType, userId: Id | unde
   if (!userId || hasRole(idx, userId, 'admin') || hasRole(idx, userId, 'auditor')) return true
   if (obj.createdBy === userId) return true
   if (obj.tokens.some((t) => t.userId === userId) || obj.history.some((h) => h.userId === userId)) return true
-  if (supervisesProcess(idx, obj.workflowId, userId)) return true
+  if (supervisesProcess(indexFor(idx, obj), obj.workflowId, userId)) return true
   return Object.entries(type.permissions).some(([gid, p]) => p.read && idx.group.get(gid)?.memberIds.includes(userId))
 }
 
 function hiddenFields(idx: Index, obj: SimObject, type: ObjectType, userId: Id | undefined): Set<Id> {
   if (!userId) return new Set()
-  const wf = idx.wf.get(obj.workflowId)
-  const v = fieldVerdicts({ type, wf, passed: obj.passed, userId, groups: idx.ctx.groups, admin: hasRole(idx, userId, 'admin') })
+  const v = readVerdicts(idx, obj, type, userId)
   return new Set(Object.entries(v).filter(([, x]) => x.access === 'hidden').map(([id]) => id))
+}
+
+/** Field access outside a work step: the locks of the item's version and of the live version, the stricter wins. */
+function readVerdicts(idx: Index, obj: SimObject, type: ObjectType, userId: Id): Record<Id, FieldVerdict> {
+  const admin = hasRole(idx, userId, 'admin')
+  return itemFieldVerdicts(idx, obj, (ix) => ({ type, wf: ix.wf.get(obj.workflowId), passed: obj.passed, userId, groups: ix.ctx.groups, admin }))
+}
+
+/** What a person may see and change of an item outside a work step (read views, the API). */
+export function itemReadVerdicts(ctx: Ctx, obj: SimObject, userId: Id): Record<Id, FieldVerdict> {
+  const idx = buildIndex(ctx)
+  const type = idx.type.get(obj.typeId)
+  return type ? readVerdicts(idx, obj, type, userId) : {}
 }
 
 /** May this person see this item at all? The same rule search uses. */
@@ -236,6 +248,7 @@ function nameMatches(idx: Index, userId: Id | undefined, value: string, me: Id |
 
 function passes(idx: Index, sim: SimState, obj: SimObject, type: ObjectType, hidden: Set<Id>, f: Filter, me: Id | undefined): boolean | undefined {
   const v = f.value.toLowerCase()
+  const own = indexFor(idx, obj)
   switch (f.key) {
     case 'status': {
       if (v === 'open' || v === 'active') return obj.status === 'active'
@@ -275,7 +288,7 @@ function passes(idx: Index, sim: SimState, obj: SimObject, type: ObjectType, hid
       return obj.priority === want
     }
     case 'step':
-      return obj.tokens.some((t) => (idx.node.get(t.nodeId)?.node.data.label ?? '').toLowerCase().includes(v) || t.calls.some((c) => (idx.node.get(c.nodeId)?.node.data.label ?? '').toLowerCase().includes(v)))
+      return obj.tokens.some((t) => (own.node.get(t.nodeId)?.node.data.label ?? '').toLowerCase().includes(v) || t.calls.some((c) => (own.node.get(c.nodeId)?.node.data.label ?? '').toLowerCase().includes(v)))
     case 'assignee':
       return obj.tokens.some((t) => nameMatches(idx, t.userId, f.value, me))
     case 'creator':
@@ -360,7 +373,8 @@ export function searchItems(sim: SimState, ctx: Ctx, query: string, opts: Search
     const visible = doc.entries.filter((e) => !hidden.has(e.fieldId))
     // A title made from a field this person may not see is neither shown nor searched.
     const title = doc.titleFieldId && hidden.has(doc.titleFieldId) ? '' : doc.title
-    const where = obj.tokens.map((t) => describeTokenText(idx, t)).join(' · ')
+    const own = indexFor(idx, obj)
+    const where = obj.tokens.map((t) => describeTokenText(own, t)).join(' · ')
     const haystack = [obj.number, title, where, ...visible.map((e) => e.text)].join(' \u0001 ').toLowerCase()
     if (parsed.excluded.some((w) => haystack.includes(w))) continue
     let score = 0
@@ -382,7 +396,7 @@ export function searchItems(sim: SimState, ctx: Ctx, query: string, opts: Search
     if (!ok) continue
     score += urgencyRank(obj) + (obj.status === 'active' ? 2 : 0) + Math.max(0, 1 - (sim.clock - obj.createdAt) / (7 * 1440))
     hits.push({ obj, score, title, where: obj.status === 'active' ? where : `Finished (${obj.status})`, matches })
-    const steps = obj.status === 'active' ? [...new Set(obj.tokens.map((t) => idx.node.get(t.nodeId)?.node.data.label ?? '?'))] : ['Finished']
+    const steps = obj.status === 'active' ? [...new Set(obj.tokens.map((t) => own.node.get(t.nodeId)?.node.data.label ?? '?'))] : ['Finished']
     facets.status[obj.status] = (facets.status[obj.status] ?? 0) + 1
     facets.priority[obj.expedite ? 'expedited' : obj.priority] = (facets.priority[obj.expedite ? 'expedited' : obj.priority] ?? 0) + 1
     for (const s of steps) facets.step[s] = (facets.step[s] ?? 0) + 1

@@ -18,6 +18,7 @@ import {
 } from '@modus-bpm/core'
 import type { App, Group, Outcome, Priority, User, WfNode } from '@modus-bpm/core/model/types'
 import { useSim } from '../../store/sim'
+import { itemVersions, MoveToLatest } from '../versions/ItemVersion'
 import { useUi } from '../../store/ui'
 
 const NODE_KIND: Record<WfNode['type'], string> = {
@@ -69,10 +70,27 @@ export function AdminPanel({ obj, tok, node, app, users, groups }: { obj: SimObj
         {tok && node && (people || automated) && !stuck && <AssignRow key={`assign-${tok.id}-${tok.nodeId}`} obj={obj} tok={tok} node={node} users={users} groups={groups} />}
         {tok && wf && <MoveRow key={`move-${tok.id}-${tok.nodeId}`} obj={obj} tok={tok} nodes={wf.nodes} />}
         {tok && people && !stuck && outcomes.length > 0 && <ReleaseRow key={`release-${tok.id}-${tok.nodeId}`} obj={obj} tok={tok} outcomes={outcomes} />}
+        <VersionRows obj={obj} app={app} />
         <ExpediteRow obj={obj} app={app} users={users} />
         <ItemRow obj={obj} />
       </div>
     </section>
+  )
+}
+
+/** Workflows the item runs on an older version than the live one, each with "Move to version N". */
+function VersionRows({ obj, app }: { obj: SimObject; app: App }) {
+  const behind = itemVersions(app, obj).filter((r) => r.version !== r.live)
+  if (!behind.length) return null
+  return (
+    <div className="border-t border-slate-100 pt-3">
+      <RowLabel>Version</RowLabel>
+      <div className="space-y-2">
+        {behind.map((r) => (
+          <MoveToLatest key={r.wf.id} app={app} obj={obj} wf={r.wf} version={r.version} live={r.live} />
+        ))}
+      </div>
+    </div>
   )
 }
 

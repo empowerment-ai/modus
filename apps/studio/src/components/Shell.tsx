@@ -89,7 +89,7 @@ function TopBar() {
         </span>
         <span className="hidden leading-tight min-[1200px]:block">
           <span className="block text-sm font-semibold text-slate-900">{PRODUCT.name}</span>
-          <span className="hidden text-[10.5px] font-medium tracking-wide text-slate-400 uppercase min-[1440px]:block">{PRODUCT.tagline}</span>
+          <span className="hidden text-[10.5px] font-medium tracking-wide text-slate-400 uppercase min-[1520px]:block">{PRODUCT.tagline}</span>
         </span>
       </a>
       <div className="mx-2 hidden h-6 w-px bg-slate-200 min-[1200px]:block" />
@@ -279,7 +279,7 @@ function SimControls() {
 
   return (
     <div className="flex items-center gap-2.5">
-      <div className="hidden items-center gap-3 pr-1 text-xs min-[1760px]:flex">
+      <div className="hidden items-center gap-3 pr-1 text-xs min-[1800px]:flex">
         <Kpi label="In flight" value={view?.active ?? 0} />
         <Kpi label="Completed" value={view?.completed ?? 0} tone="green" />
         <Kpi label="Rejected" value={view?.rejected ?? 0} tone="red" />
@@ -326,7 +326,7 @@ function SimControls() {
           useUi.getState().toast('Simulation reset: all simulated work cleared.')
         }}
       >
-        <span className="hidden min-[1440px]:inline">Reset</span>
+        <span className="hidden min-[1520px]:inline">Reset</span>
       </Button>
       <Button variant={running ? 'secondary' : 'primary'} onClick={toggle} icon={running ? <Pause size={14} /> : <Play size={14} />} className="min-[1200px]:w-[118px]" title="Space bar">
         {running ? (

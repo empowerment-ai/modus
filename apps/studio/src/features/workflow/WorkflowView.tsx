@@ -12,6 +12,7 @@ import { Inspector } from './inspector/Inspector'
 import { blankSubflow, subflowCallers } from './model'
 import { showStep } from './navigate'
 import { SaveTemplateModal } from './TemplateModals'
+import { VersionControls } from '../versions/VersionControls'
 
 export function WorkflowView() {
   const appId = useUi((s) => s.appId)
@@ -61,7 +62,7 @@ export function WorkflowView() {
           {subflows.length > 0 && (
             <>
               <span className="mx-1 h-5 w-px shrink-0 bg-slate-200" aria-hidden />
-              <span className="shrink-0 px-1 text-[10.5px] font-semibold tracking-wide text-slate-400 uppercase">Subflows</span>
+              <span className="hidden shrink-0 px-1 text-[10.5px] font-semibold tracking-wide text-slate-400 uppercase xl:inline">Subflows</span>
               {subflows.map(tab)}
             </>
           )}
@@ -70,14 +71,23 @@ export function WorkflowView() {
           </Button>
         </div>
         <div className="flex-1" />
+        {wf && <VersionControls wf={wf} />}
+        {wf && <span className="mx-0.5 h-5 w-px shrink-0 bg-slate-200" aria-hidden />}
         {wf && (
-          <Button size="sm" variant="ghost" icon={<LibraryBig size={13} />} title="Save this workflow to the template library so it can be reused as a subflow" onClick={() => setSaving(true)}>
-            Save as template
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={<LibraryBig size={13} />}
+            aria-label="Save as template"
+            title="Save this workflow to the template library so it can be reused as a subflow"
+            onClick={() => setSaving(true)}
+          >
+            <span className="hidden 2xl:inline">Save as template</span>
           </Button>
         )}
         {wf && type && !isSubflow && (
           <>
-            <span className="hidden text-xs text-slate-500 xl:inline">
+            <span className="hidden text-xs text-slate-500 2xl:inline">
               Simulating <b className="font-semibold text-slate-700">{wf.arrivalsPerHour}</b> new {type.pluralName.toLowerCase()} / hour
             </span>
             <Button
@@ -89,7 +99,7 @@ export function WorkflowView() {
                 useUi.getState().toast(`${n} ${type.pluralName.toLowerCase()} arrived at once.`, 'success')
               }}
             >
-              Burst of 25
+              <span className="hidden xl:inline">Burst of</span> 25
             </Button>
             <Button size="sm" variant="primary" icon={<Plus size={13} />} onClick={() => useUi.getState().openCreate(wf.id)}>
               New {type.name}

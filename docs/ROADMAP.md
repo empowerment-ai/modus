@@ -12,6 +12,8 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | Line items (table fields): typed columns, calculated columns, totals, row limits; rules on rows (count, sum, any/every row) | Prototype |
 | Linked (cascading) lists | Prototype |
 | Visual workflow designer with live counts on every step | Prototype |
+| Draft → publish with workflow versions: what changes, a note, who uses it (new items, in-flight items too, nobody yet), version history, restore a version as the draft | Prototype |
+| Migration of in-flight items to a new version, with a preview of the steps to map: at publish, all of an old version's items, or one item | Prototype |
 | Decisions on object metadata (ordered rules + Otherwise) | Prototype |
 | Parallel split (all / inclusive) and join (all / first / N-of-M, cancel the rest) | Prototype |
 | Subflows (call a reusable process; route on its named ending); blow a step out into a subflow | Prototype |
@@ -21,8 +23,7 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | DMN decision tables bound to object fields | Planned |
 | Case handling: stages, milestones, ad-hoc tasks | Planned |
 | Natural language → draft workflow (always editable as a diagram) | Planned |
-| Draft → simulate → publish with visual diff; workflow versions | Planned (next) |
-| Migration of in-flight items to a new version, with preview | Planned |
+| Simulate a draft before publishing; the version differences drawn on the map | Planned (next) |
 | BPMN 2.0 XML export / import | Planned |
 
 ## Work and people

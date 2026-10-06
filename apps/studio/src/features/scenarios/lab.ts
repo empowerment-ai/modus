@@ -321,13 +321,15 @@ export const KPIS: Array<{ key: keyof ScenarioKpis; label: string; better: 'up' 
   { key: 'stuck', label: 'Stuck', better: 'down', format: (n) => n.toLocaleString(), hint: 'Items with no path forward at the end' },
 ]
 
-// ---------- Applying a run to the live design ----------
+// ---------- Applying a run to the design ----------
 
 export interface ApplyPlan {
   /** Design edits, in plain words ("Vision AI capacity 2 → 4"). */
   edits: string[]
   /** Changes people have to make (staffing). */
   manual: Array<{ groupId: Id; text: string }>
+  /** Workflows whose steps the edits change: they go into each one's draft, live once published. */
+  drafts: Id[]
   apply: () => void
 }
 
@@ -344,7 +346,7 @@ export function applyPlan(design: Design, appId: Id, changes: ScenarioChange[]):
       const g = design.groups.find((x) => x.id === c.groupId)?.name ?? 'the group'
       return { groupId: c.groupId, text: c.delta > 0 ? `Hire or assign ${people(c.delta)} to ${g}` : `Take ${people(-c.delta)} out of ${g}’s rotation` }
     })
-  if (!app) return { edits: [], manual, apply: () => {} }
+  if (!app) return { edits: [], manual, drafts: [], apply: () => {} }
 
   const before: Ctx = { app, users: design.users, groups: design.groups, services: design.services }
   const after = applyChanges(
@@ -442,7 +444,7 @@ export function applyPlan(design: Design, appId: Id, changes: ScenarioChange[]):
       }
     })
   }
-  return { edits, manual, apply }
+  return { edits, manual, drafts: [...new Set(nodeEdits.map((e) => e.wfId))], apply }
 }
 
 function formatMinutes(m: number): string {

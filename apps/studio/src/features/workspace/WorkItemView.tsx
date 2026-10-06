@@ -7,6 +7,7 @@ import {
   accessFor,
   type Ctx,
   describeToken,
+  runnableApp,
   type SimState,
   visibleHistory,
   type WorkItem,
@@ -101,11 +102,12 @@ function ItemBody({ item, me, app, ctx, users, groups, sim, tick, position, onMo
   const access = useMemo(() => Object.fromEntries(Object.entries(verdicts).map(([k, v]) => [k, v.access])), [verdicts])
   const values = useMemo(() => ({ ...obj.data, ...draft.values }), [obj.data, draft.values, tick])
   const dirty = Object.keys(draft.values).length > 0
+  // Labels from the workflow versions this item runs.
   const nodeLabel = useMemo(() => {
     const m = new Map<Id, string>()
-    for (const wf of app.workflows) for (const n of wf.nodes) m.set(n.id, n.data.label)
+    for (const wf of runnableApp(app, obj.versions).workflows) for (const n of wf.nodes) m.set(n.id, n.data.label)
     return (id: Id) => m.get(id) ?? 'a removed step'
-  }, [app.workflows])
+  }, [app, obj.versions])
 
   if (!type) return null
   const restricted = type.fields.filter((f) => verdicts[f.id] && verdicts[f.id]!.access !== 'edit')

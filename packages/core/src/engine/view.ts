@@ -10,9 +10,11 @@ import {
   type Ctx,
   distributorsOf,
   type Index,
+  indexFor,
   queueStepsByUser,
   serviceOf,
   speedFactor,
+  stepOf,
   supervisesStep,
   type SimObject,
   type SimState,
@@ -110,7 +112,8 @@ const blank = (): NodeMetrics => ({
 export function computeView(sim: SimState, ctx: Ctx): SimView {
   const idx = buildIndex(ctx)
   const nodes: Record<Id, NodeMetrics> = {}
-  for (const [id] of idx.node) nodes[id] = blank()
+  // Counts are by step id, whichever version an item runs; every step of every version gets an entry.
+  for (const [id] of idx.anyNode) nodes[id] = blank()
   const users: SimView['users'] = {}
   for (const u of ctx.users) {
     const st = sim.users[u.id]
@@ -126,12 +129,13 @@ export function computeView(sim: SimState, ctx: Ctx): SimView {
     if (obj.dueBy !== undefined && sim.clock > obj.dueBy) overdue++
     if (obj.expedite) expedited++
     if (obj.tokens.length > 1) branches += obj.tokens.length
+    const own = indexFor(idx, obj)
     for (const t of obj.tokens) {
       const m = (nodes[t.nodeId] ??= blank())
       m.total++
       m.oldestAge = Math.max(m.oldestAge, sim.clock - t.enteredAt)
-      const node = idx.node.get(t.nodeId)?.node
-      if (node?.type === 'user' && node.data.slaHours && sim.clock - t.enteredAt > node.data.slaHours * 60 * speedFactor(idx, obj)) m.slaBreaches++
+      const node = own.node.get(t.nodeId)?.node
+      if (node?.type === 'user' && node.data.slaHours && sim.clock - t.enteredAt > node.data.slaHours * 60 * speedFactor(own, obj)) m.slaBreaches++
       // Subflow steps count the items running inside them, at every level (once per item, however many branches).
       for (const c of t.calls) {
         const key = `${c.nodeId}|${obj.id}`
@@ -186,7 +190,7 @@ export function computeView(sim: SimState, ctx: Ctx): SimView {
 
   let bottleneckId: Id | undefined
   let worst = 0
-  for (const [id, { node }] of idx.node) {
+  for (const [id, { node }] of idx.anyNode) {
     const m = nodes[id]!
     const s = sim.nodeStats[id]
     if (s) {
@@ -281,8 +285,9 @@ export interface WorkItem {
   expedited: boolean
 }
 
-function toItem(sim: SimState, idx: Index, t: Token): WorkItem | undefined {
+function toItem(sim: SimState, base: Index, t: Token): WorkItem | undefined {
   const obj = sim.objects[t.objectId]
+  const idx = indexFor(base, obj)
   const found = idx.node.get(t.nodeId)
   const step = workStepOf(idx, t)
   if (!obj || !found || !step) return undefined
@@ -332,12 +337,17 @@ export function queuesFor(sim: SimState, ctx: Ctx, userId: Id): QueueSummary[] {
   const idx = buildIndex(ctx)
   const steps = queueStepsByUser(idx).get(userId) ?? []
   const waiting = activeTokens(sim).filter((t) => t.state === 'unassigned')
+  // A step can be one group's queue in one version and another's in the next: show each person their own.
+  const mine = (t: Token) => {
+    const ws = workStepOf(indexFor(idx, sim.objects[t.objectId]), t)
+    return ws?.distribution === 'queue' && !!idx.group.get(ws.groupId ?? '')?.memberIds.includes(userId)
+  }
   return steps.map((nodeId) => {
-    const found = idx.node.get(nodeId)!
+    const found = stepOf(idx, nodeId)!
     const node = found.node
     const groupId = node.type === 'user' ? node.data.groupId : undefined
     const items = waiting
-      .filter((t) => t.nodeId === nodeId)
+      .filter((t) => t.nodeId === nodeId && mine(t))
       .sort(urgent(sim))
       .map((t) => toItem(sim, idx, t))
       .filter((x): x is WorkItem => !!x)
@@ -362,23 +372,29 @@ export function distributionFor(sim: SimState, ctx: Ctx, userId: Id): Distributi
   const idx = buildIndex(ctx)
   const out: DistributionSummary[] = []
   const tokens = activeTokens(sim)
-  for (const wf of ctx.app.workflows) {
-    for (const node of wf.nodes) {
-      if (node.type !== 'user' || node.data.distribution !== 'manager') continue
-      const ws = { distributorGroupId: node.data.distributorGroupId, supervisorId: node.data.supervisorId, groupId: node.data.groupId }
-      if (!distributorsOf(idx, ws).includes(userId)) continue
-      const here = tokens.filter((t) => t.nodeId === node.id).sort(urgent(sim))
-      const items = (pred: (t: Token) => boolean) => here.filter(pred).map((t) => toItem(sim, idx, t)).filter((x): x is WorkItem => !!x)
-      out.push({
-        nodeId: node.id,
-        label: node.data.label,
-        path: wf.name,
-        groupId: node.data.groupId,
-        groupName: idx.group.get(node.data.groupId ?? '')?.name ?? '',
-        waiting: items((t) => t.state === 'unassigned'),
-        assigned: items((t) => t.state === 'assigned'),
-      })
-    }
+  // A step's dispatchers can differ between versions: each item is handed out by its own version's.
+  const handsOut = (t: Token) => {
+    const own = indexFor(idx, sim.objects[t.objectId])
+    const ws = workStepOf(own, t)
+    return ws?.distribution === 'manager' && distributorsOf(own, ws).includes(userId)
+  }
+  const seen = new Set<Id>()
+  for (const { node, wf } of idx.steps) {
+    if (node.type !== 'user' || node.data.distribution !== 'manager' || seen.has(node.id)) continue
+    const ws = { distributorGroupId: node.data.distributorGroupId, supervisorId: node.data.supervisorId, groupId: node.data.groupId }
+    if (!distributorsOf(idx, ws).includes(userId)) continue
+    seen.add(node.id)
+    const here = tokens.filter((t) => t.nodeId === node.id && handsOut(t)).sort(urgent(sim))
+    const items = (pred: (t: Token) => boolean) => here.filter(pred).map((t) => toItem(sim, idx, t)).filter((x): x is WorkItem => !!x)
+    out.push({
+      nodeId: node.id,
+      label: node.data.label,
+      path: wf.name,
+      groupId: node.data.groupId,
+      groupName: idx.group.get(node.data.groupId ?? '')?.name ?? '',
+      waiting: items((t) => t.state === 'unassigned'),
+      assigned: items((t) => t.state === 'assigned'),
+    })
   }
   return out
 }
@@ -399,7 +415,7 @@ export function requestsBy(sim: SimState, ctx: Ctx, userId: Id): RequestSummary[
     .sort((a, b) => b.createdAt - a.createdAt)
     .map((obj) => ({
       obj,
-      where: obj.tokens.map((t) => ({ label: idx.node.get(t.nodeId)?.node.data.label ?? 'Removed step', state: t.state, who: t.userId })),
+      where: obj.tokens.map((t) => ({ label: stepOf(indexFor(idx, obj), t.nodeId)?.node.data.label ?? 'Removed step', state: t.state, who: t.userId })),
       due: obj.dueBy,
       overdue: obj.status === 'active' && obj.dueBy !== undefined && sim.clock > obj.dueBy,
     }))
@@ -428,30 +444,35 @@ export interface Supervision {
 export function supervisionFor(sim: SimState, ctx: Ctx, userId: Id): Supervision {
   const idx = buildIndex(ctx)
   const admin = !!idx.user.get(userId)?.roles?.includes('admin')
-  const processes = ctx.app.workflows
+  const workflows = idx.ctx.app.workflows
+  const processes = workflows
     .filter((w) => w.kind !== 'subflow' && (admin || (w.supervisors && [...(w.supervisors.userIds ?? []), ...(w.supervisors.groupIds ?? []).flatMap((g) => idx.group.get(g)?.memberIds ?? [])].includes(userId))))
     .map((w) => ({ id: w.id, name: w.name }))
   const tokens = activeTokens(sim)
+  // Who supervises a step can differ between versions: each item counts under its own version's.
+  const oversees = (t: Token) => supervisesStep(indexFor(idx, sim.objects[t.objectId]), t.nodeId, userId)
   const steps: SupervisedStep[] = []
-  for (const wf of ctx.app.workflows) {
-    for (const node of wf.nodes) {
-      if (node.type !== 'user' || !supervisesStep(idx, node.id, userId)) continue
-      const here = tokens
-        .filter((t) => t.nodeId === node.id)
-        .sort(urgent(sim))
-        .map((t) => toItem(sim, idx, t))
-        .filter((x): x is WorkItem => !!x)
-      const callers = ctx.app.workflows.filter((w) => w.nodes.some((n) => n.type === 'subflow' && n.data.workflowId === wf.id)).map((w) => w.name)
-      steps.push({
-        nodeId: node.id,
-        label: node.data.label,
-        path: wf.kind === 'subflow' && callers.length ? `${callers[0]} › ${wf.name}` : wf.name,
-        workflowId: wf.id,
-        groupId: node.data.groupId,
-        items: here,
-        escalated: here.filter((i) => i.token.escalated),
-      })
-    }
+  const seen = new Set<Id>()
+  for (const { node, wf } of idx.steps) {
+    if (node.type !== 'user' || seen.has(node.id)) continue
+    seen.add(node.id)
+    const at = tokens.filter((t) => t.nodeId === node.id && oversees(t))
+    // Steps of the published versions are listed even when empty; older versions' only while items are there.
+    if (!at.length && !(idx.node.has(node.id) && supervisesStep(idx, node.id, userId))) continue
+    const here = at
+      .sort(urgent(sim))
+      .map((t) => toItem(sim, idx, t))
+      .filter((x): x is WorkItem => !!x)
+    const callers = workflows.filter((w) => w.nodes.some((n) => n.type === 'subflow' && n.data.workflowId === wf.id)).map((w) => w.name)
+    steps.push({
+      nodeId: node.id,
+      label: node.data.label,
+      path: wf.kind === 'subflow' && callers.length ? `${callers[0]} › ${wf.name}` : wf.name,
+      workflowId: wf.id,
+      groupId: node.data.groupId,
+      items: here,
+      escalated: here.filter((i) => i.token.escalated),
+    })
   }
   return { processes, steps }
 }
@@ -465,8 +486,8 @@ export function workItem(sim: SimState, ctx: Ctx, tokenId: Id): WorkItem | undef
 }
 
 /** Human description of where a token is and what it is waiting for. */
-export function describeToken(_sim: SimState, ctx: Ctx, t: Token): string {
-  const idx = buildIndex(ctx)
+export function describeToken(sim: SimState, ctx: Ctx, t: Token): string {
+  const idx = indexFor(buildIndex(ctx), sim.objects[t.objectId])
   const node = idx.node.get(t.nodeId)?.node
   const name = (id?: Id) => idx.user.get(id ?? '')?.name ?? 'someone'
   switch (t.state) {

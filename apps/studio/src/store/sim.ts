@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { advance, burst, newSim, type Ctx, type SimState } from '@modus-bpm/core'
 import { computeView, type SimView } from '@modus-bpm/core/engine/view'
 import type { Id } from '@modus-bpm/core/model/types'
-import { useDesign } from './design'
+import { setPublishClock, useDesign } from './design'
 import { useUi } from './ui'
 
 // The simulation state is a plain mutable object driven by a game-loop style
@@ -168,8 +168,11 @@ export const useSim = create<SimStore>()((set, get) => {
   }
 })
 
-// Model-driven: any design edit immediately re-evaluates the live read model,
-// and switching apps shows that app's own simulation.
+// Versions record when they were published in simulation time.
+setPublishClock(() => useSim.getState().sims[useUi.getState().appId]?.clock ?? 0)
+
+// Any design edit re-evaluates the read model (published changes apply at
+// once; a draft changes only the map), and switching apps shows that app's own simulation.
 useDesign.subscribe(() => useSim.getState().refresh())
 useUi.subscribe((s, prev) => {
   if (s.appId !== prev.appId) {

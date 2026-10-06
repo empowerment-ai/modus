@@ -37,12 +37,20 @@ earlier-generation BPM tools will recognize most of these under older names.
 | **Ask Modus** | Ask in plain words ("urgent invoices over 10k", "what's waiting on me?"); it shows the search it ran and the results. Runs offline; a server can add an AI model with the same permissions as you. | — | Conversational assistant |
 | **Simulation** | The engine running the design with simulated people, arrivals and services, live on the map. | — | Process simulation |
 | **What-if** | Run the live state forward twice — as is and with a change — and compare. | — | Scenario simulation / digital twin |
-| **Stuck** | Work that can't continue (no matching path, a failed call). It resumes on its own when the map is fixed, or an administrator moves or retries it. | — | Incident |
+| **Draft** | The map you see and edit. Changing it touches no item until you publish it. | — | Working copy · unpublished revision |
+| **Version** | A numbered copy of a workflow, made when you publish. Every version is kept; each item records the version it started on and runs it to the end. Access is the exception: supervisors and field security are the stricter of the item's version and the live one, so removing a supervisor or adding a lock applies to every item at once. | — | Process definition version |
+| **Publish** | Make the draft the next version and choose who uses it: *new items only* (items in flight finish on the version they started), *new items and items in flight* (move them now), or *nobody yet* (keep it as a draft). | — | Deploy · process versioning |
+| **Move items to a version** | Put items in flight onto another version, usually the latest: all of an old version's items, or one item. Work at a step both versions have stays where it is; work at a step the new version removed goes where you choose, or the item stays on its version. Audited. | — | Process instance migration (with a step mapping) |
+| **Stuck** | Work that can't continue (no matching path, a failed call). Publish a fixed map and move the item onto it, and it resumes on its own; or an administrator moves or retries it. | — | Incident |
 
 ## Reading the map
 
-- The **number on a step** is how many items are there right now; amber means it is building
-  up, red means backed up, and the busiest step carries a **Bottleneck** tag.
+- The **number on a step** is how many items are there right now, whichever version they run;
+  amber means it is building up, red means backed up, and the busiest step carries a
+  **Bottleneck** tag.
+- The chip in the header says which version is live (**Version 2 · Live**), or **Draft · 3
+  changes** while the map has changes that aren't published. A note on the map counts items at
+  steps the map no longer has (they run an older version), with a link to **History**.
 - Bars under a people step are **each person's share** of its work.
 - A **subflow step** shows how many items are inside it; open it to see where.
 - A **join** shows how many branches are waiting for their siblings.
@@ -56,6 +64,7 @@ earlier-generation BPM tools will recognize most of these under older names.
 | Add a field, choose which fields show on cards, mark a field sensitive | Object Types · People & Security › Field security |
 | Build cascading choices (Model Year → Make → Model) | Lists |
 | Draw or change a process, add parallel steps, subflows, timers | Workflows |
+| Publish a change, see which items run which version, move items to the latest | Workflows › **Publish…** · **History** · click an item › *Move to version N* |
 | Decide who does the work and how it is handed out | Workflows › select a people step |
 | Add line items (a table) to a form, with totals | Object Types › add a field › Table |
 | Name supervisors; set who may expedite | Workflows › the process overview (process supervisors, expedite) · select a people step (task supervisors) |
