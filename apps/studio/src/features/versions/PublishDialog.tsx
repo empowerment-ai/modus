@@ -21,6 +21,8 @@ export function PublishDialog({ app, wf, onClose }: { app: App; wf: Workflow; on
   const inFlight = sim && ctx ? versionUsage(sim, ctx, wf.id).total : 0
   const missing = who === 'all' && sim && ctx ? missingSteps(sim, ctx, wf.id, wf.nodes) : []
   const changes = diff?.count ?? 0
+  // Access is the stricter of an item's version and the live one, so these reach items in flight whatever is chosen.
+  const access = !!diff && (diff.settings.some((x) => x === 'Field security' || x === 'Process supervisors') || diff.steps.changed.some((x) => /supervisors|field access/.test(x.detail ?? '')))
 
   const choices: Array<{ value: Audience; title: string; hint: string; recommended?: boolean }> = [
     { value: 'new', title: 'New items only', hint: 'Items in flight finish on the version they started.', recommended: true },
@@ -107,6 +109,11 @@ export function PublishDialog({ app, wf, onClose }: { app: App; wf: Workflow; on
           </div>
         </section>
 
+        {access && who !== 'draft' && (
+          <p className="text-xs text-slate-500">
+            Supervisor and field-security changes reach every item once published, whichever version it runs: whatever either version restricts stays restricted.
+          </p>
+        )}
         {who === 'all' && <StepMapping missing={missing} targets={wf.nodes} toVersion={next} value={stepMap} onChange={setStepMap} />}
       </div>
     </Modal>

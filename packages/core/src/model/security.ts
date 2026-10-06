@@ -103,15 +103,26 @@ export function fieldAccessMap(input: AccessInput): Record<Id, FieldAccess> {
 
 /** Fields in `patch` the person may not change, with reasons. Empty = allowed. */
 export function blockedFields(input: AccessInput, patch: Record<string, unknown>): Array<{ field: FieldDef; reason: string }> {
-  const v = fieldVerdicts(input)
+  return blockedBy(input.type, fieldVerdicts(input), patch)
+}
+
+/** Fields in `patch` these verdicts don't let the person change, with reasons. */
+export function blockedBy(type: ObjectType, verdicts: Record<Id, FieldVerdict>, patch: Record<string, unknown>): Array<{ field: FieldDef; reason: string }> {
   const blocked: Array<{ field: FieldDef; reason: string }> = []
   for (const key of Object.keys(patch)) {
-    const f = input.type.fields.find((x) => x.id === key)
+    const f = type.fields.find((x) => x.id === key)
     if (!f) continue
-    const verdict = v[key]
+    const verdict = verdicts[key]
     if (verdict && verdict.access !== 'edit') blocked.push({ field: f, reason: verdict.reason ?? 'Not editable' })
   }
   return blocked
+}
+
+/** The strictest verdict for each field across several sets (hidden over read over edit). */
+export function strictestVerdicts(...sets: Array<Record<Id, FieldVerdict>>): Record<Id, FieldVerdict> {
+  const out: Record<Id, FieldVerdict> = {}
+  for (const set of sets) for (const [id, v] of Object.entries(set)) if (!out[id] || RANK[v.access] > RANK[out[id].access]) out[id] = v
+  return out
 }
 
 /** One row per field, one column per step: the security matrix administrators review. */

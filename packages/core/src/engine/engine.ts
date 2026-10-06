@@ -11,6 +11,7 @@
 // that item's own index (indexFor).
 
 import { describeCondition, evaluateCondition, withMeta } from '../model/conditions'
+import { type AccessInput, type FieldVerdict, fieldVerdicts, strictestVerdicts } from '../model/security'
 import { normalizeData } from '../model/tables'
 import { publishedVersion, runnable, runnableApp } from '../model/versions'
 import type {
@@ -1653,13 +1654,26 @@ export function hasRole(idx: Index, userId: Id, role: 'admin' | 'designer' | 'au
   return !!idx.user.get(userId)?.roles?.includes(role)
 }
 
+// Authorization across versions: access is the stricter of the version an item
+// runs and the live (published) version. Removing a supervisor or adding a lock
+// takes effect on items already in flight; adding a supervisor reaches only the
+// items it can see in both. Drafts grant and revoke nothing until published.
+
 /**
  * Who supervises a work item: the supervisors of its step, the supervisor of the
  * step's work group, and the process supervisors of its workflow and of every
  * workflow it was called from (a subflow's work is also its parent process's work).
+ * They must supervise it in the item's version and in the live version; at a
+ * step the live version no longer has, only the live process supervisors qualify.
  */
 export function supervisorsOf(idx: Index, obj: SimObject, tok: Token): Set<Id> {
-  idx = indexFor(idx, obj)
+  const own = supervisorsIn(indexFor(idx, obj), obj, tok)
+  const live = supervisorsIn(idx.base, obj, tok)
+  return new Set([...own].filter((id) => live.has(id)))
+}
+
+/** Supervisors of a work item as one index (one set of versions) defines them. */
+function supervisorsIn(idx: Index, obj: SimObject, tok: Token): Set<Id> {
   const out = new Set<Id>()
   const node = idx.node.get(tok.nodeId)?.node
   if (node?.type === 'user') {
@@ -1681,17 +1695,18 @@ export function canSuperviseToken(idx: Index, obj: SimObject, tok: Token, userId
   return hasRole(idx, userId, 'admin') || supervisorsOf(idx, obj, tok).has(userId)
 }
 
-/** Process supervisors of a workflow (named users and group members). */
+/** Process supervisors of a workflow (named users and group members), in this index's version and the live one. */
 export function processSupervisors(idx: Index, workflowId: Id): Id[] {
-  return audienceMembers(idx, idx.wf.get(workflowId)?.supervisors)
+  const live = new Set(audienceMembers(idx, idx.base.wf.get(workflowId)?.supervisors))
+  return audienceMembers(idx, idx.wf.get(workflowId)?.supervisors).filter((id) => live.has(id))
 }
 
-/** Does this person supervise the process (or is an administrator)? */
+/** Does this person supervise the process (or is an administrator)? In this index's version and the live one both. */
 export function supervisesProcess(idx: Index, workflowId: Id, userId: Id): boolean {
-  return hasRole(idx, userId, 'admin') || inAudience(idx, idx.wf.get(workflowId)?.supervisors, userId)
+  if (hasRole(idx, userId, 'admin')) return true
+  return inAudience(idx, idx.wf.get(workflowId)?.supervisors, userId) && inAudience(idx, idx.base.wf.get(workflowId)?.supervisors, userId)
 }
 
-/** Does this person supervise this step (step supervisors, its group's supervisor, or its process)? */
 /** Every workflow that runs this one as a subflow, directly or through other subflows. */
 function callersOf(idx: Index, wfId: Id, seen = new Set<Id>([wfId])): Workflow[] {
   const out: Workflow[] = []
@@ -1703,15 +1718,40 @@ function callersOf(idx: Index, wfId: Id, seen = new Set<Id>([wfId])): Workflow[]
   return out
 }
 
+/**
+ * Does this person supervise this step (step supervisors, its group's supervisor,
+ * or its process)? As the given index defines it and as the live version does; a
+ * step the live version no longer has is overseen only by the live process supervisors.
+ */
 export function supervisesStep(idx: Index, nodeId: Id, userId: Id): boolean {
+  const base = idx.base
   const found = stepOf(idx, nodeId)
   if (!found) return false
-  const n = found.node
-  if (hasRole(idx, userId, 'admin') || inAudience(idx, found.wf.supervisors, userId)) return true
+  const live = base.node.get(nodeId)
+  if (!(live ? oversees(base, live, userId) : oversees(base, found, userId, true))) return false
+  const own = idx.node.get(nodeId)
+  return idx === base || !own || oversees(idx, own, userId)
+}
+
+/** The supervision rule for one step as one index defines it (`processOnly`: ignore the step's own supervisors). */
+function oversees(idx: Index, found: { node: WfNode; wf: Workflow }, userId: Id, processOnly = false): boolean {
+  if (hasRole(idx, userId, 'admin') || inAudience(idx, idx.wf.get(found.wf.id)?.supervisors, userId)) return true
   // A subflow's steps are also overseen by the supervisors of every process that calls it.
   if (callersOf(idx, found.wf.id).some((w) => inAudience(idx, w.supervisors, userId))) return true
-  if (n.type === 'user') return inAudience(idx, n.data.supervisors, userId) || (!!n.data.groupId && idx.group.get(n.data.groupId)?.supervisorId === userId)
-  return false
+  const n = found.node
+  if (processOnly || n.type !== 'user') return false
+  return inAudience(idx, n.data.supervisors, userId) || (!!n.data.groupId && idx.group.get(n.data.groupId)?.supervisorId === userId)
+}
+
+/**
+ * Field access on an item under the version it runs and under the live version,
+ * the stricter per field: a lock published later applies to items in flight too.
+ * `input` builds the access question for one index.
+ */
+export function itemFieldVerdicts(idx: Index, obj: SimObject, input: (idx: Index) => AccessInput): Record<Id, FieldVerdict> {
+  const own = indexFor(idx, obj)
+  const mine = fieldVerdicts(input(own))
+  return own === own.base ? mine : strictestVerdicts(mine, fieldVerdicts(input(own.base)))
 }
 
 // ---------- Live mode: external workers (the "device" protocol) ----------

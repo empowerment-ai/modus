@@ -3,9 +3,9 @@
 // save, release, delegate, distribute). Each returns a Result so the UI — and
 // later the API — can explain a refusal instead of failing silently.
 
-import { blockedFields, type FieldVerdict, fieldVerdicts } from '../model/security'
+import { blockedBy, blockedFields, type FieldVerdict } from '../model/security'
 import { normalizeData } from '../model/tables'
-import type { FieldAccess, FieldDef, Id, Priority, WfNode } from '../model/types'
+import type { ExpeditePolicy, FieldAccess, FieldDef, Id, Priority, WfNode } from '../model/types'
 import {
   ADMIN,
   activeTokens,
@@ -18,6 +18,7 @@ import {
   clearExpedited,
   hasRole,
   indexFor,
+  itemFieldVerdicts,
   markExpedited,
   supervisesProcess,
   supervisesStep,
@@ -120,8 +121,8 @@ function unassign(sim: SimState, tok: Token) {
 }
 
 /** Even out everything not yet being worked at a step across its available members. Returns how many moved. */
-export function adminRedistribute(sim: SimState, ctx: Ctx, nodeId: Id, actor = ADMIN): number {
-  const groups = waitingBySteps(sim, buildIndex(ctx), (t) => t.nodeId === nodeId && (t.state === 'assigned' || t.state === 'unassigned'))
+export function adminRedistribute(sim: SimState, ctx: Ctx, nodeId: Id, actor = ADMIN, only?: (obj: SimObject, tok: Token) => boolean): number {
+  const groups = waitingBySteps(sim, buildIndex(ctx), (t) => t.nodeId === nodeId && (t.state === 'assigned' || t.state === 'unassigned') && (!only || only(sim.objects[t.objectId]!, t)))
   if (!groups.length) return 0
   const all = groups.flatMap((g) => g.tokens)
   const before = new Map(all.map((t) => [t.id, t.userId]))
@@ -321,6 +322,21 @@ function securityInput(idx: Index, obj: SimObject, tok: Token, userId: Id) {
 }
 
 /**
+ * What a person may do with each field at a work item: the stricter of the item's
+ * version and the live one. A step the live version no longer has keeps the item's
+ * own step access, under the live workflow's locks.
+ */
+function accessAt(base: Index, obj: SimObject, tok: Token, userId: Id): Record<Id, FieldVerdict> {
+  const own = indexFor(base, obj)
+  return itemFieldVerdicts(base, obj, (idx) => {
+    const input = securityInput(idx, obj, tok, userId)
+    if (input.node) return input
+    const step = own.node.get(tok.nodeId)
+    return { ...input, wf: step ? idx.wf.get(step.wf.id) : input.wf, node: step && accessNode(step.node, input.type.fields.map((f) => f.id)) }
+  })
+}
+
+/**
  * The node whose field access applies. People doing an automated step by hand may
  * fill in what the service would have returned; everything else is read-only there.
  */
@@ -335,7 +351,7 @@ function accessNode(node: WfNode, fieldIds: Id[]): WfNode {
 export function accessFor(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id): Record<Id, FieldVerdict> | undefined {
   const found = findToken(sim, tokenId)
   if (!found) return undefined
-  return fieldVerdicts(securityInput(indexFor(buildIndex(ctx), found.obj), found.obj, found.tok, userId))
+  return accessAt(buildIndex(ctx), found.obj, found.tok, userId)
 }
 
 /** Save changes without releasing. Locked or hidden fields are refused. */
@@ -343,7 +359,7 @@ export function workSave(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id, patch
   const { idx, obj, tok } = itemAt(sim, ctx, tokenId)
   if (!obj || tok.userId !== userId) return fail('It is not in your basket.')
   const type = idx.type.get(obj.typeId)
-  const blocked = blockedFields(securityInput(idx, obj, tok, userId), changedOnly(obj, patch, type))
+  const blocked = blockedBy(type!, accessAt(idx, obj, tok, userId), changedOnly(obj, patch, type))
   if (blocked.length) {
     audit(sim, obj, { kind: 'security', nodeId: tok.nodeId, tokenId, userId, text: `${userName(idx, userId)} tried to change ${blocked.map((b) => b.field.label).join(', ')} (${blocked[0]!.reason}); refused` })
     return fail(`You can’t change ${blocked.map((b) => `${b.field.label} (${b.reason.toLowerCase()})`).join(', ')}.`)
@@ -370,10 +386,10 @@ export function workRelease(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id, ou
   const saved = workSave(sim, ctx, tokenId, userId, patch)
   if (!saved.ok) return saved
   // Required fields you can edit here must be filled before it moves on (rejections excepted).
-  const input = securityInput(idx, obj, tok, userId)
   const unhappy = /reject|deny|return|cancel|could not/i.test(outcome.label)
   if (!unhappy && ws.node.type === 'user') {
-    const missing = input.type.fields.filter((f) => f.required && (ws.node.type === 'user' ? (ws.node.data.fieldAccess[f.id] ?? 'edit') === 'edit' : false) && isEmpty(obj.data[f.id]))
+    const access = accessAt(idx, obj, tok, userId)
+    const missing = (idx.type.get(obj.typeId)?.fields ?? []).filter((f) => f.required && access[f.id]?.access === 'edit' && isEmpty(obj.data[f.id]))
     if (missing.length) return fail(`Fill in ${missing.map((f) => f.label).join(', ')} first.`)
   }
   release(sim, idx, obj, tok, outcomeId, comment.trim() || undefined, userName(idx, userId))
@@ -516,7 +532,8 @@ export function superviseRetry(sim: SimState, ctx: Ctx, tokenId: Id, byUserId: I
 export function superviseRedistribute(sim: SimState, ctx: Ctx, nodeId: Id, byUserId: Id): Result<number> {
   const idx = buildIndex(ctx)
   if (!supervisesStep(idx, nodeId, byUserId)) return fail(`${userName(idx, byUserId)} doesn’t supervise “${idx.node.get(nodeId)?.node.data.label ?? 'that step'}”.`)
-  return ok(adminRedistribute(sim, ctx, nodeId, userName(idx, byUserId)))
+  // Only the work they supervise in its own version too (items on older versions may have other supervisors).
+  return ok(adminRedistribute(sim, ctx, nodeId, userName(idx, byUserId), (obj, tok) => canSuperviseToken(idx, obj, tok, byUserId)))
 }
 
 export function superviseSetPriority(sim: SimState, ctx: Ctx, objectId: Id, priority: Priority, byUserId: Id): Result {
@@ -534,12 +551,23 @@ function supervisesItem(idx: Index, obj: SimObject, userId: Id): boolean {
 // ---------- Expedite ----------
 
 /** May this person flag (or unflag) the item as expedited, under its workflow's policy? */
+const WHO_RANK: Record<ExpeditePolicy['who'], number> = { supervisors: 0, requester: 1, anyone: 2 }
+
+/** Who may expedite an item, and whether a reason is needed: the stricter of its version's policy and the live one. */
+function expediteRule(idx: Index, obj: SimObject): { who: ExpeditePolicy['who']; requireReason: boolean } {
+  const own = indexFor(idx, obj).wf.get(obj.workflowId)?.expedite
+  const live = idx.base.wf.get(obj.workflowId)?.expedite
+  const a = own?.who ?? 'supervisors'
+  const b = live?.who ?? 'supervisors'
+  return { who: WHO_RANK[a] <= WHO_RANK[b] ? a : b, requireReason: !!own?.requireReason || !!live?.requireReason }
+}
+
 export function canExpedite(sim: SimState, ctx: Ctx, objectId: Id, userId: Id): boolean {
   const obj = sim.objects[objectId]
   const idx = indexFor(buildIndex(ctx), obj)
   if (!obj || obj.status !== 'active') return false
   if (hasRole(idx, userId, 'admin') || supervisesItem(idx, obj, userId)) return true
-  const who = idx.wf.get(obj.workflowId)?.expedite?.who ?? 'supervisors'
+  const who = expediteRule(idx, obj).who
   if (who === 'supervisors') return false
   if (obj.createdBy === userId) return true
   return who === 'anyone' && obj.tokens.some((t) => t.userId === userId)
@@ -551,12 +579,12 @@ export function setExpedite(sim: SimState, ctx: Ctx, objectId: Id, userId: Id, o
   const idx = indexFor(buildIndex(ctx), obj)
   if (!obj || obj.status !== 'active') return fail('That item is no longer active.')
   if (!canExpedite(sim, ctx, objectId, userId)) {
-    const who = idx.wf.get(obj.workflowId)?.expedite?.who ?? 'supervisors'
+    const who = expediteRule(idx, obj).who
     return fail(who === 'supervisors' ? 'Only supervisors can expedite items in this process.' : 'Only the requester or a supervisor can expedite this item.')
   }
   if (on && obj.expedite) return fail(`${obj.number} is already expedited.`)
   if (!on && !obj.expedite) return fail(`${obj.number} isn’t expedited.`)
-  if (on && idx.wf.get(obj.workflowId)?.expedite?.requireReason && !reason.trim()) return fail('Say why it needs to go faster.')
+  if (on && expediteRule(idx, obj).requireReason && !reason.trim()) return fail('Say why it needs to go faster.')
   if (on) markExpedited(sim, idx, obj, userName(idx, userId), reason)
   else clearExpedited(sim, idx, obj, userName(idx, userId))
   return ok(true)

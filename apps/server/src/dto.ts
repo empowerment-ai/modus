@@ -3,16 +3,14 @@
 // field security is applied to reads: fields hidden from that person (and the
 // audit lines that would reveal their values) never leave the server.
 
-import { accessFor, buildIndex, canReadItem, type Ctx, fieldVerdicts, hasRole, type Id, type ObjectType, type SearchHit, type SimObject, type SimState, visibleHistory, type WorkItem } from '@modus-bpm/core'
+import { accessFor, canReadItem, type Ctx, type Id, itemReadVerdicts, type ObjectType, type SearchHit, type SimObject, type SimState, visibleHistory, type WorkItem } from '@modus-bpm/core'
 import { objectTitle } from '@modus-bpm/core/model/format'
 
 /** Field ids this person may not see on this item (sensitive fields, workflow locks). */
-function hiddenFields(obj: SimObject, type: ObjectType, ctx: Ctx, userId: Id | undefined, sim?: SimState): Set<Id> {
+function hiddenFields(obj: SimObject, ctx: Ctx, userId: Id | undefined, sim?: SimState): Set<Id> {
   if (!userId) return new Set()
   const held = sim ? obj.tokens.find((t) => t.userId === userId) : undefined
-  const verdicts =
-    (held && sim && accessFor(sim, ctx, held.id, userId)) ||
-    fieldVerdicts({ type, wf: ctx.app.workflows.find((w) => w.id === obj.workflowId), passed: obj.passed, userId, groups: ctx.groups, admin: hasRole(buildIndex(ctx), userId, 'admin') })
+  const verdicts = (held && sim && accessFor(sim, ctx, held.id, userId)) || itemReadVerdicts(ctx, obj, userId)
   return new Set(
     Object.entries(verdicts)
       .filter(([, v]) => v.access === 'hidden')
@@ -29,7 +27,7 @@ function titleFor(obj: SimObject, ctx: Ctx, userId: Id | undefined): string {
   const type = typeOf(obj, ctx)
   if (!type) return ''
   const titleField = type.fields.find((f) => f.id === type.titleFieldId) ?? type.fields.find((f) => f.summary)
-  if (titleField && hiddenFields(obj, type, ctx, userId).has(titleField.id)) return ''
+  if (titleField && hiddenFields(obj, ctx, userId).has(titleField.id)) return ''
   return objectTitle(type, obj.data, ctx.app.lists, ctx.users)
 }
 
@@ -69,9 +67,7 @@ export function workItemDto(i: WorkItem, ctx: Ctx, viewer?: Id) {
 export function itemDto(obj: SimObject, ctx: Ctx, userId: Id, sim: SimState, opts: { historyLimit?: number } = {}) {
   const type = typeOf(obj, ctx)!
   const held = obj.tokens.find((t) => t.userId === userId)
-  const verdicts =
-    (held && accessFor(sim, ctx, held.id, userId)) ||
-    fieldVerdicts({ type, wf: ctx.app.workflows.find((w) => w.id === obj.workflowId), passed: obj.passed, userId, groups: ctx.groups, admin: hasRole(buildIndex(ctx), userId, 'admin') })
+  const verdicts = (held && accessFor(sim, ctx, held.id, userId)) || itemReadVerdicts(ctx, obj, userId)
   const data: Record<string, unknown> = {}
   const access: Record<string, string> = {}
   const hidden = new Set<Id>()

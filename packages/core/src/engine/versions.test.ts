@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { seedDesign } from '../model/seed'
 import type { App, Design, Group, User, WfEdge, WfNode, Workflow } from '../model/types'
 import { diffWorkflow, ensureVersions, hasDraftChanges, publishWorkflow, restoreDraft, runnable, snapshotOf } from '../model/versions'
-import { advance, burst, createObject, type Ctx, newSim, type SimObject } from './engine'
-import { adminMove, adminRelease, workDistribute, workNext } from './ops'
+import { advance, burst, buildIndex, canSuperviseToken, createObject, type Ctx, newSim, type SimObject } from './engine'
+import { accessFor, adminMove, adminRelease, superviseAssign, superviseRedistribute, superviseSetPriority, workClaim, workDistribute, workNext, workSave } from './ops'
+import { canReadItem, itemReadVerdicts, searchItems } from './search'
 import { migrateItems, missingSteps, pinInFlight, versionUsage } from './versions'
 import { computeView, distributionFor, queuesFor, supervisionFor } from './view'
 
@@ -59,7 +60,19 @@ function ctxOf(workflows: Workflow[]): Ctx {
     color: '#000',
     lists: [],
     objectTypes: [
-      { id: 't', name: 'Thing', pluralName: 'Things', icon: 'file', color: '#000', numberPrefix: 'T-', permissions: {}, fields: [{ id: 'amt', label: 'Amount', type: 'currency', width: 'half' }] },
+      {
+        id: 't',
+        name: 'Thing',
+        pluralName: 'Things',
+        icon: 'file',
+        color: '#000',
+        numberPrefix: 'T-',
+        permissions: {},
+        fields: [
+          { id: 'amt', label: 'Amount', type: 'currency', width: 'half' },
+          { id: 'notes', label: 'Notes', type: 'text', width: 'full' },
+        ],
+      },
     ],
     workflows,
   }
@@ -245,11 +258,8 @@ describe('workflow versions', () => {
     expect(['u0', 'u1', 'u2']).toContain(old.tokens[0]!.userId)
   })
 
-  it('dispatchers and supervisors of each version handle that version’s items', () => {
-    const w = wf(
-      [start(), userStep('b', { distribution: 'manager', distributorGroupId: 'dg1', supervisors: { userIds: ['s1'] } }), end()],
-      [edge('s', 'b'), edge('b', 'e', { outcomeId: 'ok' })],
-    )
+  it('each version’s dispatchers hand out that version’s items; supervisors must hold in both versions', () => {
+    const w = wf([start(), userStep('b', { distribution: 'manager', distributorGroupId: 'dg1', supervisors: { userIds: ['s1'] } }), end()], [edge('s', 'b'), edge('b', 'e', { outcomeId: 'ok' })])
     publish(w)
     const ctx = ctxOf([w])
     const sim = quiet()
@@ -262,8 +272,9 @@ describe('workflow versions', () => {
     expect(board('d2')).toEqual([fresh.id])
     expect(workDistribute(sim, ctx, fresh.tokens[0]!.id, 'd1', 'u0').ok).toBe(false)
     expect(workDistribute(sim, ctx, old.tokens[0]!.id, 'd1', 'u0').ok).toBe(true)
+    // Supervision is the stricter of the item's version and the live one: s1 was removed, s2 only oversees version 2.
     const watched = (userId: string) => supervisionFor(sim, ctx, userId).steps.flatMap((st) => st.items.map((i) => i.obj.id))
-    expect(watched('s1')).toEqual([old.id])
+    expect(watched('s1')).toEqual([])
     expect(watched('s2')).toEqual([fresh.id])
   })
 
@@ -328,6 +339,85 @@ describe('workflow versions', () => {
     expect(v.stuck).toBe(0)
     expect(sim.created).toBe(v.active + sim.completed + sim.rejected)
     expect(versionUsage(sim, ctx, 'w_invoice').counts[1]).toBeUndefined()
+  })
+})
+
+// Access is the stricter of an item's version and the live (published) version.
+describe('authorization across versions', () => {
+  const supervised = (supervisors: Workflow['supervisors']) => {
+    const w = wf([start(), userStep('b'), end()], [edge('s', 'b'), edge('b', 'e', { outcomeId: 'ok' })], { supervisors })
+    publish(w)
+    return w
+  }
+  const found = (sim: ReturnType<typeof quiet>, ctx: Ctx, userId: string) => searchItems(sim, ctx, '', { userId }).hits.map((h) => h.obj.id)
+
+  it('removing a process supervisor in a new version revokes their access to items still on the old one', () => {
+    const w = supervised({ userIds: ['s1'] })
+    const ctx = ctxOf([w])
+    const sim = quiet()
+    const o = createObject(sim, ctx, 'w', {}, 'u0')!
+    expect(found(sim, ctx, 's1')).toEqual([o.id])
+    expect(superviseSetPriority(sim, ctx, o.id, 'high', 's1').ok).toBe(true)
+
+    // A draft revokes nothing.
+    w.supervisors = { userIds: [] }
+    expect(canReadItem(ctx, o, 's1')).toBe(true)
+
+    publish(w)
+    expect(o.versions).toEqual({ w: 1 })
+    expect(found(sim, ctx, 's1')).toEqual([])
+    expect(canReadItem(ctx, o, 's1')).toBe(false)
+    expect(canSuperviseToken(buildIndex(ctx), o, o.tokens[0]!, 's1')).toBe(false)
+    expect(superviseSetPriority(sim, ctx, o.id, 'urgent', 's1').ok).toBe(false)
+    expect(superviseAssign(sim, ctx, o.tokens[0]!.id, 'u1', 's1').ok).toBe(false)
+    expect(superviseRedistribute(sim, ctx, 'b', 's1').ok).toBe(false)
+  })
+
+  it('adding a supervisor in a new version does not reach items on the old one', () => {
+    const w = supervised(undefined)
+    const ctx = ctxOf([w])
+    const sim = quiet()
+    const old = createObject(sim, ctx, 'w', {}, 'u0')!
+    // A draft grants nothing.
+    w.supervisors = { userIds: ['s2'] }
+    expect(canReadItem(ctx, old, 's2')).toBe(false)
+    publish(w)
+    const fresh = createObject(sim, ctx, 'w', {}, 'u0')!
+    expect(found(sim, ctx, 's2')).toEqual([fresh.id])
+    expect(superviseSetPriority(sim, ctx, old.id, 'high', 's2').ok).toBe(false)
+    expect(superviseSetPriority(sim, ctx, fresh.id, 'high', 's2').ok).toBe(true)
+    expect(superviseAssign(sim, ctx, old.tokens[0]!.id, 'u1', 's2').ok).toBe(false)
+    // Redistributing the step moves only the work they supervise.
+    workClaim(sim, ctx, old.tokens[0]!.id, 'u0')
+    workClaim(sim, ctx, fresh.tokens[0]!.id, 'u0')
+    expect(superviseRedistribute(sim, ctx, 'b', 's2')).toEqual({ ok: true, value: 1 })
+    expect(old.tokens[0]!.userId).toBe('u0')
+  })
+
+  it('a lock published in a new version applies to items still on the old one', () => {
+    const w = supervised(undefined)
+    const ctx = ctxOf([w])
+    const sim = quiet()
+    const o = createObject(sim, ctx, 'w', { notes: 'bank details' }, 'u0')!
+    const tok = o.tokens[0]!.id
+    expect(workClaim(sim, ctx, tok, 'u0').ok).toBe(true)
+    expect(accessFor(sim, ctx, tok, 'u0')!.amt!.access).toBe('edit')
+
+    w.fieldLocks = [
+      { id: 'lk1', fieldId: 'amt', access: 'read', when: 'always' },
+      { id: 'lk2', fieldId: 'notes', access: 'hidden', when: 'always' },
+    ]
+    // Still a draft: nothing changes for anyone.
+    expect(accessFor(sim, ctx, tok, 'u0')!.amt!.access).toBe('edit')
+    publish(w)
+
+    expect(o.versions).toEqual({ w: 1 })
+    expect(accessFor(sim, ctx, tok, 'u0')!.amt!.access).toBe('read')
+    expect(accessFor(sim, ctx, tok, 'u0')!.notes!.access).toBe('hidden')
+    expect(workSave(sim, ctx, tok, 'u0', { amt: 5 }).ok).toBe(false)
+    expect(o.data.amt).not.toBe(5)
+    expect(itemReadVerdicts(ctx, o, 'u0').notes!.access).toBe('hidden')
+    expect(searchItems(sim, ctx, 'bank', { userId: 'u0' }).hits).toEqual([])
   })
 })
 
