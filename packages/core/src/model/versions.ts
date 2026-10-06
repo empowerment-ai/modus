@@ -103,7 +103,9 @@ export function ensureVersions(design: Design, at = 0): Design {
   return {
     ...design,
     apps: design.apps.map((a) =>
-      a.workflows.every(done) ? a : { ...a, workflows: a.workflows.map((w) => (done(w) ? w : { ...w, versions: [{ version: 1, publishedAt: at, note: 'First version', snapshot: snapshotOf(w) }], published: 1 })) },
+      a.workflows.every(done)
+        ? a
+        : { ...a, workflows: a.workflows.map((w) => (done(w) ? w : { ...w, versions: [{ version: 1, publishedAt: at, note: 'First version', snapshot: snapshotOf(w) }], published: 1 })) },
     ),
   }
 }
@@ -258,8 +260,7 @@ export function diffWorkflow(a: WorkflowSnapshot, b: WorkflowSnapshot): Workflow
   // The simulated share of expedited arrivals is a simulation setting, not part of the process.
   if (!same({ ...a.expedite, simulateRate: undefined }, { ...b.expedite, simulateRate: undefined })) settings.push('Expedite policy')
 
-  const count =
-    steps.added.length + steps.removed.length + steps.changed.length + paths.added.length + paths.removed.length + paths.changed.length + settings.length
+  const count = steps.added.length + steps.removed.length + steps.changed.length + paths.added.length + paths.removed.length + paths.changed.length + settings.length
   return { steps, paths, settings, count }
 }
 

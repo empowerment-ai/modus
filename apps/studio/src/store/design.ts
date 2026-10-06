@@ -3,6 +3,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { seedDesign } from '@modus-bpm/core/model/seed'
 import { upgradeDesign } from '@modus-bpm/core/model/upgrade'
+import { ensureVersions } from '@modus-bpm/core/model/versions'
 import type { App, Design, Id, ObjectType, ServiceDef, Template, Workflow } from '@modus-bpm/core/model/types'
 
 interface DesignStore {
@@ -19,7 +20,7 @@ interface DesignStore {
 }
 
 /** Older saved designs may predate the service registry or the template library. */
-export function normalizeDesign(d: Design): Design {
+function withRegistries(d: Design): Design {
   const seed = seedDesign()
   return {
     ...d,
@@ -28,17 +29,33 @@ export function normalizeDesign(d: Design): Design {
   }
 }
 
+/** Fill in what older saved designs lack; every workflow starts at version 1, published, from its map. */
+export function normalizeDesign(d: Design): Design {
+  return versioned(withRegistries(d))
+}
+
+// When a workflow first gets its version 1 (on load, or when one is created), in simulation minutes.
+let clock = () => 0
+export function setPublishClock(fn: () => number) {
+  clock = fn
+}
+
+/** Workflows created from now on (blank, from a template, blown out of a step) start at version 1, published. */
+const versioned = (d: Design) => ensureVersions(d, clock())
+
 export const useDesign = create<DesignStore>()(
   persist(
     (set) => ({
-      design: seedDesign(),
-      update: (fn) => set((s) => ({ design: produce(s.design, fn) })),
+      design: versioned(seedDesign()),
+      update: (fn) => set((s) => ({ design: versioned(produce(s.design, fn)) })),
       updateApp: (appId, fn) =>
         set((s) => ({
-          design: produce(s.design, (d) => {
-            const app = d.apps.find((a) => a.id === appId)
-            if (app) fn(app)
-          }),
+          design: versioned(
+            produce(s.design, (d) => {
+              const app = d.apps.find((a) => a.id === appId)
+              if (app) fn(app)
+            }),
+          ),
         })),
       updateWorkflow: (appId, workflowId, fn) =>
         set((s) => ({
@@ -69,16 +86,20 @@ export const useDesign = create<DesignStore>()(
           }),
         })),
       replace: (design) => set({ design: normalizeDesign(design) }),
-      reset: () => set({ design: seedDesign() }),
+      reset: () => set({ design: versioned(seedDesign()) }),
     }),
     {
       name: 'modus-design',
-      // Bump when the sample data gains something designs saved earlier should get
-      // (version 2: line items, roles, supervisors, expedite). The upgrade runs once.
-      version: 2,
-      migrate: (persisted) => {
+      // Bump when saved designs need something added once
+      // (version 2: line items, roles, supervisors, expedite from the sample data;
+      // version 3: workflow versions, made from each saved map as it stands).
+      version: 3,
+      migrate: (persisted, from) => {
         const p = persisted as { design?: Design } | undefined
-        return p?.design ? { ...p, design: upgradeDesign(normalizeDesign(p.design), seedDesign()) } : p
+        if (!p?.design) return p
+        // The sample-data upgrade runs once, so things deleted after it stay deleted.
+        const design = from < 2 ? upgradeDesign(withRegistries(p.design), seedDesign()) : withRegistries(p.design)
+        return { ...p, design: versioned(design) }
       },
       merge: (persisted, current) => {
         const p = persisted as { design?: Design } | undefined

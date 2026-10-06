@@ -2,7 +2,7 @@ import { Check, ChevronDown, Clock } from 'lucide-react'
 import { type ReactNode, useRef, useState } from 'react'
 import { useClickOutside } from '../../components/Shell'
 import { Badge, cx } from '../../components/ui'
-import { type Ctx, fieldVerdicts, PRIORITIES, type SimObject, type TokenState, type WorkItem } from '@modus-bpm/core'
+import { type Ctx, fieldVerdicts, itemVersion, PRIORITIES, runnable, type SimObject, type TokenState, type WorkItem } from '@modus-bpm/core'
 import type { Id, Priority } from '@modus-bpm/core/model/types'
 import { PriorityBadge } from '../objects/PriorityBadge'
 import { dueText, dueTone } from './format'
@@ -22,7 +22,9 @@ export function titleHidden(ctx: Ctx, obj: SimObject, userId: Id): boolean {
   const type = ctx.app.objectTypes.find((t) => t.id === obj.typeId)
   const field = type && (type.fields.find((f) => f.id === type.titleFieldId) ?? type.fields.find((f) => f.summary))
   if (!type || !field) return false
-  const wf = ctx.app.workflows.find((w) => w.id === obj.workflowId)
+  // The field locks of the version the item runs.
+  const drawn = ctx.app.workflows.find((w) => w.id === obj.workflowId)
+  const wf = drawn && runnable(drawn, itemVersion(drawn, obj))
   const admin = !!ctx.users.find((u) => u.id === userId)?.roles?.includes('admin')
   return fieldVerdicts({ type, wf, passed: obj.passed, userId, groups: ctx.groups, admin })[field.id]?.access === 'hidden'
 }

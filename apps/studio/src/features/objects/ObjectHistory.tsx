@@ -32,6 +32,7 @@ import { cx } from '../../components/ui'
 import type { AuditEntry, AuditKind, SimObject } from '@modus-bpm/core'
 import type { App } from '@modus-bpm/core/model/types'
 import { formatClock } from '@modus-bpm/core/model/util'
+import { findStep } from '@modus-bpm/core/model/versions'
 
 const KIND: Record<AuditKind, { icon: LucideIcon; tone: string; label: string }> = {
   created: { icon: Sparkles, tone: 'bg-brand-50 text-brand-600', label: 'Created' },
@@ -70,11 +71,10 @@ export function ObjectHistory({ obj, app }: { obj: SimObject; app: App }) {
   const entries = [...obj.history].reverse()
   const stepLabel = (id?: string) => {
     if (!id) return undefined
-    for (const wf of app.workflows) {
-      const n = wf.nodes.find((x) => x.id === id)
-      if (n) return wf.id === obj.workflowId ? n.data.label : `${wf.name} › ${n.data.label}`
-    }
-    return undefined
+    // The item's own versions first; steps a later version dropped from any version that had them.
+    const found = findStep(app, id)
+    if (!found) return undefined
+    return found.wf.id === obj.workflowId ? found.node.data.label : `${found.wf.name} › ${found.node.data.label}`
   }
   return (
     <ol className="relative">
