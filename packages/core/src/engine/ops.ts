@@ -17,6 +17,7 @@ import {
   canSuperviseToken,
   clearExpedited,
   hasRole,
+  indexFor,
   markExpedited,
   supervisesProcess,
   supervisesStep,
@@ -38,11 +39,13 @@ import {
   release,
   releaseServiceSlot,
   serviceOf,
+  canFetch,
   type SimObject,
   type SimState,
   stat,
   type Token,
   userName,
+  type WorkStep,
   workStepOf,
 } from './engine'
 
@@ -54,6 +57,13 @@ const fail = (error: string): Result<never> => ({ ok: false, error })
 function tokenAt(sim: SimState, tokenId: Id): { obj: SimObject; tok: Token } | undefined {
   const found = findToken(sim, tokenId)
   return found && found.obj.status === 'active' ? found : undefined
+}
+
+/** An active work item and the index of the workflow versions it runs. */
+function itemAt(sim: SimState, ctx: Ctx, tokenId: Id): { idx: Index; obj: SimObject; tok: Token } | { idx: Index; obj?: undefined; tok?: undefined } {
+  const found = tokenAt(sim, tokenId)
+  const idx = indexFor(buildIndex(ctx), found?.obj)
+  return found ? { idx, ...found } : { idx }
 }
 
 function isMember(idx: Index, groupId: Id | undefined, userId: Id): boolean {
@@ -69,10 +79,8 @@ function isMember(idx: Index, groupId: Id | undefined, userId: Id): boolean {
  * supervisors and dispatchers; full administrators may pick anyone).
  */
 export function adminAssign(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id, actor = ADMIN, opts: { sameGroupOnly?: boolean } = {}): Result {
-  const idx = buildIndex(ctx)
-  const found = tokenAt(sim, tokenId)
-  if (!found) return fail('That work item is no longer active.')
-  const { obj, tok } = found
+  const { idx, obj, tok } = itemAt(sim, ctx, tokenId)
+  if (!obj) return fail('That work item is no longer active.')
   const node = idx.node.get(tok.nodeId)?.node
   if (!idx.user.has(userId)) return fail('Unknown person.')
   if (node?.type === 'auto' && !tok.manual) {
@@ -92,10 +100,8 @@ export function adminAssign(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id, ac
 }
 
 export function adminReturnToPool(sim: SimState, ctx: Ctx, tokenId: Id, actor = ADMIN): Result {
-  const idx = buildIndex(ctx)
-  const found = tokenAt(sim, tokenId)
-  if (!found) return fail('That work item is no longer active.')
-  const { obj, tok } = found
+  const { idx, obj, tok } = itemAt(sim, ctx, tokenId)
+  if (!obj) return fail('That work item is no longer active.')
   if (!workStepOf(idx, tok)) return fail('Only work at a people step can be returned.')
   if (tok.state === 'unassigned') return fail('It is not assigned to anyone.')
   const prev = tok.userId
@@ -115,31 +121,46 @@ function unassign(sim: SimState, tok: Token) {
 
 /** Even out everything not yet being worked at a step across its available members. Returns how many moved. */
 export function adminRedistribute(sim: SimState, ctx: Ctx, nodeId: Id, actor = ADMIN): number {
-  const idx = buildIndex(ctx)
-  const movable = activeTokens(sim)
-    .filter((t) => t.nodeId === nodeId && (t.state === 'assigned' || t.state === 'unassigned') && workStepOf(idx, t))
-    .sort(byUrgency((t) => t.enteredAt, (t) => sim.objects[t.objectId]))
-  const ws = movable[0] && workStepOf(idx, movable[0])
-  if (!ws) return 0
-  const before = new Map(movable.map((t) => [t.id, t.userId]))
-  for (const t of movable) unassign(sim, t)
+  const groups = waitingBySteps(sim, buildIndex(ctx), (t) => t.nodeId === nodeId && (t.state === 'assigned' || t.state === 'unassigned'))
+  if (!groups.length) return 0
+  const all = groups.flatMap((g) => g.tokens)
+  const before = new Map(all.map((t) => [t.id, t.userId]))
+  for (const t of all) unassign(sim, t)
   const loads = openLoads(sim)
   let moved = 0
-  for (const t of movable) {
-    if (!loadBalanceToken(sim, idx, sim.objects[t.objectId]!, t, ws, loads, actor)) break
-    if (t.userId !== before.get(t.id)) moved++
+  for (const { idx, ws, tokens } of groups) {
+    for (const t of tokens) {
+      if (!loadBalanceToken(sim, idx, sim.objects[t.objectId]!, t, ws, loads, actor)) break
+      if (t.userId !== before.get(t.id)) moved++
+    }
   }
   return moved
 }
 
+/**
+ * Work at a people step matching `pick`, most urgent first, grouped by the
+ * version it runs (the step's group and settings can differ between versions).
+ */
+function waitingBySteps(sim: SimState, base: Index, pick: (t: Token) => boolean): Array<{ idx: Index; ws: WorkStep; tokens: Token[] }> {
+  const groups = new Map<Index, { idx: Index; ws: WorkStep; tokens: Token[] }>()
+  const tokens = activeTokens(sim).filter(pick).sort(byUrgency((t) => t.enteredAt, (t) => sim.objects[t.objectId]))
+  for (const t of tokens) {
+    const idx = indexFor(base, sim.objects[t.objectId])
+    const ws = workStepOf(idx, t)
+    if (!ws) continue
+    const g = groups.get(idx) ?? { idx, ws, tokens: [] }
+    g.tokens.push(t)
+    groups.set(idx, g)
+  }
+  return [...groups.values()]
+}
+
 /** Move a work item to another step of the same workflow, skipping the routing rules. */
 export function adminMove(sim: SimState, ctx: Ctx, tokenId: Id, nodeId: Id, actor = ADMIN): Result {
-  const idx = buildIndex(ctx)
-  const found = tokenAt(sim, tokenId)
-  if (!found) return fail('That work item is no longer active.')
-  const { obj, tok } = found
+  const { idx, obj, tok } = itemAt(sim, ctx, tokenId)
+  if (!obj) return fail('That work item is no longer active.')
   const target = idx.node.get(nodeId)
-  if (!target) return fail('That step no longer exists.')
+  if (!target) return fail('That step isn’t in the version this item runs.')
   if (tok.nodeId === nodeId) return fail('It is already there.')
   if (target.wf.id !== tok.workflowId) return fail('Items can only be moved within the workflow they are in.')
   const from = nodeLabel(idx, tok.nodeId)
@@ -159,9 +180,8 @@ export function adminMove(sim: SimState, ctx: Ctx, tokenId: Id, nodeId: Id, acto
 
 /** Release on behalf of the assignee (or nobody) with an outcome and comment. */
 export function adminRelease(sim: SimState, ctx: Ctx, tokenId: Id, outcomeId: Id, comment: string, actor = ADMIN): Result {
-  const idx = buildIndex(ctx)
-  const found = tokenAt(sim, tokenId)
-  if (!found) return fail('That work item is no longer active.')
+  const { idx, ...found } = itemAt(sim, ctx, tokenId)
+  if (!found.obj) return fail('That work item is no longer active.')
   const ws = workStepOf(idx, found.tok)
   if (!ws) return fail('Only work at a people step can be released.')
   const outcome = ws.outcomes.find((o) => o.id === outcomeId)
@@ -173,10 +193,8 @@ export function adminRelease(sim: SimState, ctx: Ctx, tokenId: Id, outcomeId: Id
 
 /** Try a failed automated call again (or re-run routing for anything else that is stuck). */
 export function adminRetry(sim: SimState, ctx: Ctx, tokenId: Id, actor = ADMIN): Result {
-  const idx = buildIndex(ctx)
-  const found = tokenAt(sim, tokenId)
-  if (!found) return fail('That work item is no longer active.')
-  const { obj, tok } = found
+  const { idx, obj, tok } = itemAt(sim, ctx, tokenId)
+  if (!obj) return fail('That work item is no longer active.')
   const node = idx.node.get(tok.nodeId)?.node
   if (!node) return fail('Its step was removed; move it to another step instead.')
   audit(sim, obj, { kind: 'moved', nodeId: node.id, tokenId: tok.id, actor, text: `${actor} retried ${node.data.label}` })
@@ -237,8 +255,8 @@ export function adminSetPriority(sim: SimState, ctx: Ctx, objectId: Id, priority
 
 /** Cancel the whole item, withdrawing every branch. */
 export function adminCancel(sim: SimState, ctx: Ctx, objectId: Id, comment: string, actor = ADMIN): Result {
-  const idx = buildIndex(ctx)
   const obj = sim.objects[objectId]
+  const idx = indexFor(buildIndex(ctx), obj)
   const tok = obj?.tokens[0]
   if (!obj || obj.status !== 'active' || !tok) return fail('That item is no longer active.')
   // Unwind to the top level so the whole item ends, not just a subflow.
@@ -252,10 +270,8 @@ export function adminCancel(sim: SimState, ctx: Ctx, objectId: Id, comment: stri
 
 /** Claim an item waiting at a step you work (queue fetch, or picking from the pool). */
 export function workClaim(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id): Result {
-  const idx = buildIndex(ctx)
-  const found = tokenAt(sim, tokenId)
-  if (!found) return fail('Someone else got to it first, or it moved on.')
-  const { obj, tok } = found
+  const { idx, obj, tok } = itemAt(sim, ctx, tokenId)
+  if (!obj) return fail('Someone else got to it first, or it moved on.')
   const ws = workStepOf(idx, tok)
   if (!ws || tok.state !== 'unassigned') return fail('It is not waiting to be claimed.')
   if (!isMember(idx, ws.groupId, userId)) return fail(`You are not in ${idx.group.get(ws.groupId ?? '')?.name ?? 'the group'} that works “${ws.label}”.`)
@@ -271,8 +287,8 @@ export function workNext(sim: SimState, ctx: Ctx, userId: Id): Result<Id> {
   const steps = new Set(queueStepsByUser(idx).get(userId) ?? [])
   const candidates = activeTokens(sim).filter((t) => {
     if (t.state !== 'unassigned' || !steps.has(t.nodeId)) return false
-    const ws = workStepOf(idx, t)
-    return !ws || !excludedFor(sim.objects[t.objectId]!, ws).has(userId)
+    const own = indexFor(idx, sim.objects[t.objectId])
+    return canFetch(sim, workStepOf(own, t), t, userId, own)
   })
   if (!candidates.length) return fail('Your queues are empty. Nice work.')
   candidates.sort(byUrgency((t) => t.enteredAt, (t) => sim.objects[t.objectId]))
@@ -317,18 +333,15 @@ function accessNode(node: WfNode, fieldIds: Id[]): WfNode {
 
 /** What a person may do with each field of a work item they hold (drives the Workspace form). */
 export function accessFor(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id): Record<Id, FieldVerdict> | undefined {
-  const idx = buildIndex(ctx)
   const found = findToken(sim, tokenId)
   if (!found) return undefined
-  return fieldVerdicts(securityInput(idx, found.obj, found.tok, userId))
+  return fieldVerdicts(securityInput(indexFor(buildIndex(ctx), found.obj), found.obj, found.tok, userId))
 }
 
 /** Save changes without releasing. Locked or hidden fields are refused. */
 export function workSave(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id, patch: Record<string, unknown>): Result {
-  const idx = buildIndex(ctx)
-  const found = tokenAt(sim, tokenId)
-  if (!found || found.tok.userId !== userId) return fail('It is not in your basket.')
-  const { obj, tok } = found
+  const { idx, obj, tok } = itemAt(sim, ctx, tokenId)
+  if (!obj || tok.userId !== userId) return fail('It is not in your basket.')
   const type = idx.type.get(obj.typeId)
   const blocked = blockedFields(securityInput(idx, obj, tok, userId), changedOnly(obj, patch, type))
   if (blocked.length) {
@@ -348,10 +361,8 @@ function changedOnly(obj: SimObject, patch: Record<string, unknown>, type?: { fi
 
 /** Finish your part: save allowed changes, then release with an outcome (and a comment if required). */
 export function workRelease(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id, outcomeId: Id, comment: string, patch: Record<string, unknown> = {}): Result {
-  const idx = buildIndex(ctx)
-  const found = tokenAt(sim, tokenId)
-  if (!found || found.tok.userId !== userId) return fail('It is not in your basket.')
-  const { obj, tok } = found
+  const { idx, obj, tok } = itemAt(sim, ctx, tokenId)
+  if (!obj || tok.userId !== userId) return fail('It is not in your basket.')
   const ws = workStepOf(idx, tok)
   const outcome = ws?.outcomes.find((o) => o.id === outcomeId)
   if (!ws || !outcome) return fail('Pick how you are releasing it.')
@@ -375,9 +386,8 @@ function isEmpty(v: unknown): boolean {
 
 /** Give it back: to the queue, the pool, or the dispatchers. */
 export function workReturn(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id, comment = ''): Result {
-  const idx = buildIndex(ctx)
-  const found = tokenAt(sim, tokenId)
-  if (!found || found.tok.userId !== userId) return fail('It is not in your basket.')
+  const { idx, ...found } = itemAt(sim, ctx, tokenId)
+  if (!found.obj || found.tok.userId !== userId) return fail('It is not in your basket.')
   const ws = workStepOf(idx, found.tok)
   if (!ws) return fail('It can’t be returned from here.')
   if (ws.distribution === 'direct') return fail('This step always goes to you; ask an administrator to reassign it.')
@@ -389,9 +399,8 @@ export function workReturn(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id, com
 
 /** Hand an item in your basket to a colleague in the same group. */
 export function workDelegate(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id, toUserId: Id, comment = ''): Result {
-  const idx = buildIndex(ctx)
-  const found = tokenAt(sim, tokenId)
-  if (!found || found.tok.userId !== userId) return fail('It is not in your basket.')
+  const { idx, ...found } = itemAt(sim, ctx, tokenId)
+  if (!found.obj || found.tok.userId !== userId) return fail('It is not in your basket.')
   const ws = workStepOf(idx, found.tok)
   if (!ws) return fail('It can’t be delegated from here.')
   if (!ws.allowDelegate) return fail(`Delegation is turned off for “${ws.label}”.`)
@@ -405,9 +414,8 @@ export function workDelegate(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id, t
 
 /** A dispatcher hands an item out to a member of the step's group. */
 export function workDistribute(sim: SimState, ctx: Ctx, tokenId: Id, dispatcherId: Id, toUserId: Id): Result {
-  const idx = buildIndex(ctx)
-  const found = tokenAt(sim, tokenId)
-  if (!found) return fail('That item moved on.')
+  const { idx, ...found } = itemAt(sim, ctx, tokenId)
+  if (!found.obj) return fail('That item moved on.')
   const ws = workStepOf(idx, found.tok)
   if (!ws) return fail('It is not at a people step.')
   if (!distributorsOf(idx, ws).includes(dispatcherId)) return fail(`You don’t distribute work for “${ws.label}”.`)
@@ -422,15 +430,13 @@ export function workDistribute(sim: SimState, ctx: Ctx, tokenId: Id, dispatcherI
 
 /** A dispatcher spreads everything waiting at a step evenly across available members. */
 export function workDistributeEvenly(sim: SimState, ctx: Ctx, nodeId: Id, dispatcherId: Id): Result<number> {
-  const idx = buildIndex(ctx)
-  const waiting = activeTokens(sim).filter((t) => t.nodeId === nodeId && t.state === 'unassigned')
-  const ws = waiting[0] && workStepOf(idx, waiting[0])
-  if (!ws) return fail('Nothing is waiting to be handed out.')
-  if (!distributorsOf(idx, ws).includes(dispatcherId)) return fail(`You don’t distribute work for “${ws.label}”.`)
-  waiting.sort(byUrgency((t) => t.enteredAt, (t) => sim.objects[t.objectId]))
+  const all = waitingBySteps(sim, buildIndex(ctx), (t) => t.nodeId === nodeId && t.state === 'unassigned')
+  if (!all.length) return fail('Nothing is waiting to be handed out.')
+  const groups = all.filter((g) => distributorsOf(g.idx, g.ws).includes(dispatcherId))
+  if (!groups.length) return fail(`You don’t distribute work for “${all[0]!.ws.label}”.`)
   const loads = openLoads(sim)
   let n = 0
-  for (const t of waiting) if (loadBalanceToken(sim, idx, sim.objects[t.objectId]!, t, ws, loads, userName(idx, dispatcherId))) n++
+  for (const { idx, ws, tokens } of groups) for (const t of tokens) if (loadBalanceToken(sim, idx, sim.objects[t.objectId]!, t, ws, loads, userName(idx, dispatcherId))) n++
   return ok(n)
 }
 
@@ -450,10 +456,12 @@ export function canCreate(ctx: Ctx, workflowId: Id, userId: Id): boolean {
 
 /** Fields in `data` this person may not set on a new item (hidden or locked for them, or set by the workflow). Totals don't count: they are recalculated. */
 export function createRefusals(ctx: Ctx, workflowId: Id, userId: Id, data: Record<string, unknown>): Array<{ field: FieldDef; reason: string }> {
-  const wf = ctx.app.workflows.find((w) => w.id === workflowId)
-  const type = ctx.app.objectTypes.find((t) => t.id === wf?.objectTypeId)
+  const idx = buildIndex(ctx)
+  // New items start on the published version, so its field locks apply.
+  const wf = idx.wf.get(workflowId)
+  const type = idx.type.get(wf?.objectTypeId ?? '')
   if (!wf || !type) return []
-  return blockedFields({ type, wf, userId, groups: ctx.groups, admin: hasRole(buildIndex(ctx), userId, 'admin'), creating: true }, data).filter((b) => !b.field.total)
+  return blockedFields({ type, wf, userId, groups: ctx.groups, admin: hasRole(idx, userId, 'admin'), creating: true }, data).filter((b) => !b.field.total)
 }
 
 /** Raise or lower the priority of an item you are working or created. */
@@ -475,9 +483,8 @@ export function workSetPriority(sim: SimState, ctx: Ctx, objectId: Id, userId: I
 // reassignment only within the step's own group (administrators may go wider).
 
 function asSupervisor(sim: SimState, ctx: Ctx, tokenId: Id, byUserId: Id): { idx: Index; obj: SimObject; tok: Token; name: string; admin: boolean } | string {
-  const idx = buildIndex(ctx)
-  const found = tokenAt(sim, tokenId)
-  if (!found) return 'That work item is no longer active.'
+  const { idx, ...found } = itemAt(sim, ctx, tokenId)
+  if (!found.obj) return 'That work item is no longer active.'
   if (!canSuperviseToken(idx, found.obj, found.tok, byUserId)) return `${userName(idx, byUserId)} doesn’t supervise this work.`
   return { idx, ...found, name: userName(idx, byUserId), admin: hasRole(idx, byUserId, 'admin') }
 }
@@ -521,15 +528,15 @@ export function superviseSetPriority(sim: SimState, ctx: Ctx, objectId: Id, prio
 }
 
 function supervisesItem(idx: Index, obj: SimObject, userId: Id): boolean {
-  return supervisesProcess(idx, obj.workflowId, userId) || obj.tokens.some((t) => canSuperviseToken(idx, obj, t, userId))
+  return supervisesProcess(indexFor(idx, obj), obj.workflowId, userId) || obj.tokens.some((t) => canSuperviseToken(idx, obj, t, userId))
 }
 
 // ---------- Expedite ----------
 
 /** May this person flag (or unflag) the item as expedited, under its workflow's policy? */
 export function canExpedite(sim: SimState, ctx: Ctx, objectId: Id, userId: Id): boolean {
-  const idx = buildIndex(ctx)
   const obj = sim.objects[objectId]
+  const idx = indexFor(buildIndex(ctx), obj)
   if (!obj || obj.status !== 'active') return false
   if (hasRole(idx, userId, 'admin') || supervisesItem(idx, obj, userId)) return true
   const who = idx.wf.get(obj.workflowId)?.expedite?.who ?? 'supervisors'
@@ -540,8 +547,8 @@ export function canExpedite(sim: SimState, ctx: Ctx, objectId: Id, userId: Id): 
 
 /** Flag an item as expedited (or take the flag off). Expedited work goes to the front of every queue. */
 export function setExpedite(sim: SimState, ctx: Ctx, objectId: Id, userId: Id, on: boolean, reason = ''): Result {
-  const idx = buildIndex(ctx)
   const obj = sim.objects[objectId]
+  const idx = indexFor(buildIndex(ctx), obj)
   if (!obj || obj.status !== 'active') return fail('That item is no longer active.')
   if (!canExpedite(sim, ctx, objectId, userId)) {
     const who = idx.wf.get(obj.workflowId)?.expedite?.who ?? 'supervisors'

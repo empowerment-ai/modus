@@ -7,7 +7,7 @@
 
 import { formatDuration } from '../model/util'
 import type { Id, ObjectType } from '../model/types'
-import { activeTokens, buildIndex, type Ctx, describeTokenText, type Index, type SimObject, type SimState, urgencyRank } from './engine'
+import { activeTokens, buildIndex, type Ctx, describeTokenText, type Index, indexFor, type SimObject, type SimState, stepOf, urgencyRank } from './engine'
 import { queuesFor } from './view'
 import { computeView } from './view'
 import { canReadItem, type SearchHit, searchItems, visibleHistory } from './search'
@@ -215,7 +215,7 @@ function escape(s: string): string {
 // ---------- Answering ----------
 
 function itemLine(idx: Index, sim: SimState, obj: SimObject): string {
-  const where = obj.status === 'active' ? obj.tokens.map((t) => describeTokenText(idx, t)).join('; ') : `finished (${obj.status})`
+  const where = obj.status === 'active' ? obj.tokens.map((t) => describeTokenText(indexFor(idx, obj), t)).join('; ') : `finished (${obj.status})`
   const due = obj.status === 'active' && obj.dueBy !== undefined ? (sim.clock > obj.dueBy ? `, overdue by ${formatDuration(sim.clock - obj.dueBy)}` : `, due in ${formatDuration(obj.dueBy - sim.clock)}`) : ''
   return `**${obj.number}** is at ${where}${due}${obj.expedite ? ' — expedited' : ''}.`
 }
@@ -278,11 +278,11 @@ export function ask(sim: SimState, ctx: Ctx, question: string, opts: { userId?: 
   if (/\b(bottleneck|backed up|piling up|slowest|holding things up|where.*stuck)\b/.test(lower)) {
     const v = computeView(sim, ctx)
     const busiest = Object.entries(v.nodes)
-      .filter(([id]) => ['user', 'auto'].includes(idx.node.get(id)?.node.type ?? ''))
+      .filter(([id]) => ['user', 'auto'].includes(stepOf(idx, id)?.node.type ?? ''))
       .sort((a, b) => b[1].total - a[1].total)
       .slice(0, 3)
-      .map(([id, m]) => `${idx.node.get(id)!.node.data.label} (${m.total})`)
-    const bn = v.bottleneckId ? idx.node.get(v.bottleneckId)?.node.data.label : undefined
+      .map(([id, m]) => `${stepOf(idx, id)!.node.data.label} (${m.total})`)
+    const bn = v.bottleneckId ? stepOf(idx, v.bottleneckId)?.node.data.label : undefined
     const m = v.bottleneckId ? v.nodes[v.bottleneckId] : undefined
     return {
       kind: 'metrics',

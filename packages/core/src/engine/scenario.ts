@@ -3,7 +3,7 @@
 // run both copies forward with the same random numbers, and compare. Because
 // the engine is deterministic, any difference comes from the change.
 
-import type { App, Distribution, Group, Id, ServiceDef, User } from '../model/types'
+import type { App, Distribution, Group, Id, ServiceDef, User, WfNode, Workflow } from '../model/types'
 import { advance, type Ctx, type SimState } from './engine'
 import { computeView, type SimView } from './view'
 
@@ -44,6 +44,11 @@ function clone<T>(v: T): T {
   return structuredClone(v)
 }
 
+/** Every step of a workflow: its working copy's and each version's (a what-if applies to items on any version). */
+function everyNode(wf: Workflow): WfNode[] {
+  return [...wf.nodes, ...(wf.versions ?? []).flatMap((v) => v.snapshot.nodes)]
+}
+
 /** Apply changes to a copy of the design context. */
 export function applyChanges(ctx: Ctx, changes: ScenarioChange[]): Ctx {
   const app: App = clone(ctx.app)
@@ -70,23 +75,29 @@ export function applyChanges(ctx: Ctx, changes: ScenarioChange[]): Ctx {
         }
         break
       }
-      case 'handling':
+      case 'handling': {
+        // The step appears once per version, its service operation only once.
+        const scaled = new Set<object>()
         for (const wf of app.workflows)
-          for (const n of wf.nodes) {
+          for (const n of everyNode(wf)) {
             if (n.id !== c.nodeId) continue
             if (n.type === 'user' || n.type === 'auto') n.data.avgMinutes = Math.max(1, n.data.avgMinutes * c.factor)
             if (n.type === 'auto' && n.data.serviceId) {
               const svc = services.find((s) => s.id === (n.data as { serviceId?: Id }).serviceId)
               const op = svc?.operations.find((o) => o.id === (n.data as { operationId?: Id }).operationId) ?? svc?.operations[0]
-              if (op) op.avgMinutes = Math.max(0.05, op.avgMinutes * c.factor)
+              if (op && !scaled.has(op)) {
+                scaled.add(op)
+                op.avgMinutes = Math.max(0.05, op.avgMinutes * c.factor)
+              }
             }
           }
         break
+      }
       case 'arrivals':
         for (const wf of app.workflows) if (wf.id === c.workflowId) wf.arrivalsPerHour = Math.max(0, wf.arrivalsPerHour * c.factor)
         break
       case 'distribution':
-        for (const wf of app.workflows) for (const n of wf.nodes) if (n.id === c.nodeId && n.type === 'user') n.data.distribution = c.distribution
+        for (const wf of app.workflows) for (const n of everyNode(wf)) if (n.id === c.nodeId && n.type === 'user') n.data.distribution = c.distribution
         break
       case 'capacity': {
         const svc = services.find((s) => s.id === c.serviceId)

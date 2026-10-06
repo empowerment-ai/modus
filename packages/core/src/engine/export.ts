@@ -6,7 +6,7 @@
 import { formatFieldValue } from '../model/format'
 import type { FieldType, Id } from '../model/types'
 import { simDate } from '../model/util'
-import { buildIndex, type Ctx, type SimState } from './engine'
+import { buildIndex, type Ctx, type SimState, stepOf } from './engine'
 
 type OcelType = 'string' | 'float' | 'integer' | 'boolean' | 'time'
 
@@ -44,7 +44,7 @@ export function exportOcel(sim: SimState, ctx: Ctx): OcelLog {
     objects.push({ id: obj.id, type: type.name, attributes, relationships: [] })
 
     obj.history.forEach((h, i) => {
-      const step = h.nodeId ? idx.node.get(h.nodeId)?.node.data.label : undefined
+      const step = h.nodeId ? stepOf(idx, h.nodeId)?.node.data.label : undefined
       const activity = step ? `${step} · ${h.kind}` : h.kind
       if (!eventTypes.has(activity)) eventTypes.set(activity, { name: activity, attributes: [{ name: 'text', type: 'string' }, { name: 'comment', type: 'string' }] })
       const relationships = [{ objectId: obj.id, qualifier: 'item' }]
