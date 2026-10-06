@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react'
 import { FormRenderer } from '../../components/FormRenderer'
 import { TypeIcon } from '../../components/icons'
 import { Badge, Button, Card, cx, EmptyState, IconButton, Segmented } from '../../components/ui'
-import { canExpedite, type Ctx, describeToken, fieldAccessMap, type RequestSummary, type SimObject, type SimState, visibleHistory, workSetPriority } from '@modus-bpm/core'
+import { canExpedite, type Ctx, describeToken, fieldAccessMap, type RequestSummary, runnableApp, type SimObject, type SimState, visibleHistory, workSetPriority } from '@modus-bpm/core'
 import { objectTitle } from '@modus-bpm/core/model/format'
 import type { App, Group, Id, Priority, User, WfNode } from '@modus-bpm/core/model/types'
 import { formatClock, formatDuration } from '@modus-bpm/core/model/util'
@@ -169,12 +169,14 @@ export function ItemReadView({
 }: Pick<Props, 'me' | 'app' | 'ctx' | 'users' | 'groups'> & { sim: SimState; obj: SimObject; crumb: string; onBack: () => void }) {
   const [tab, setTab] = useState<'details' | 'history'>('details')
   const type = app.objectTypes.find((t) => t.id === obj.typeId)
-  const wf = app.workflows.find((w) => w.id === obj.workflowId)
+  // The workflow versions this item runs (its steps and field locks), not the map's draft.
+  const own = useMemo(() => runnableApp(app, obj.versions), [app, obj.versions])
+  const wf = own.workflows.find((w) => w.id === obj.workflowId)
   const nodes = useMemo(() => {
     const m = new Map<Id, WfNode>()
-    for (const w of app.workflows) for (const n of w.nodes) m.set(n.id, n)
+    for (const w of own.workflows) for (const n of w.nodes) m.set(n.id, n)
     return m
-  }, [app.workflows])
+  }, [own.workflows])
   if (!type) return null
   // Fields you may not see stay hidden; administrators see everything (but nothing is editable here).
   const access = fieldAccessMap({ type, wf, passed: obj.passed, userId: me.id, groups, admin: me.roles?.includes('admin') })

@@ -10,6 +10,7 @@ import { OrgView } from './features/org/OrgView'
 import { ScenariosView } from './features/scenarios/ScenariosView'
 import { TemplatesView } from './features/templates/TemplatesView'
 import { TypesView } from './features/types/TypesView'
+import { VersionDialogs } from './features/versions/VersionControls'
 import { WorkflowView } from './features/workflow/WorkflowView'
 import { WorkspaceView } from './features/workspace/WorkspaceView'
 import { LandingPage } from './features/home/LandingPage'
@@ -66,6 +67,7 @@ export function App() {
         </>
       )}
       <ObjectDrawer />
+      <VersionDialogs />
       <CreateObjectModal />
       <Toaster />
     </Shell>

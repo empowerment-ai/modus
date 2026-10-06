@@ -46,6 +46,8 @@ export function ObjectExplorer({ app, users, sim, version }: { app: App; users: 
   const nodesById = useMemo(() => {
     const m = new Map<Id, WfNode>()
     for (const wf of app.workflows) for (const n of wf.nodes) m.set(n.id, n)
+    // Steps the map no longer has, where items on older versions can still be.
+    for (const wf of app.workflows) for (const v of [...(wf.versions ?? [])].reverse()) for (const n of v.snapshot.nodes) if (!m.has(n.id)) m.set(n.id, n)
     return m
   }, [app.workflows])
 

@@ -3,13 +3,14 @@ import { useEffect, useState } from 'react'
 import { FormRenderer } from '../../components/FormRenderer'
 import { TypeIcon } from '../../components/icons'
 import { Badge, Button, cx, IconButton, Segmented } from '../../components/ui'
-import { adminUpdateData, describeToken, type SimObject, type Token } from '@modus-bpm/core'
+import { adminUpdateData, describeToken, runnableApp, type SimObject, type Token } from '@modus-bpm/core'
 import { objectTitle } from '@modus-bpm/core/model/format'
 import type { App, User, WfNode } from '@modus-bpm/core/model/types'
 import { formatDuration } from '@modus-bpm/core/model/util'
 import { useApp, useDesign } from '../../store/design'
 import { ctxFor, useSim, useSimState } from '../../store/sim'
 import { useUi } from '../../store/ui'
+import { VersionLine } from '../versions/ItemVersion'
 import { AdminPanel } from './AdminPanel'
 import { ObjectHistory } from './ObjectHistory'
 import { ExpeditedBadge, PriorityBadge } from './PriorityBadge'
@@ -90,7 +91,9 @@ function nodeOf(app: App, id: string): { node?: WfNode; wfName?: string } {
   return {}
 }
 
-function DrawerBody({ obj, app, clock }: { obj: SimObject; app: App; clock: number }) {
+function DrawerBody({ obj, app: drawn, clock }: { obj: SimObject; app: App; clock: number }) {
+  // Everything here reads the workflow versions this item runs, not the map's draft.
+  const app = runnableApp(drawn, obj.versions)
   const users = useDesign((s) => s.design.users)
   const groups = useDesign((s) => s.design.groups)
   const close = () => useUi.getState().openObject(null)
@@ -147,6 +150,7 @@ function DrawerBody({ obj, app, clock }: { obj: SimObject; app: App; clock: numb
                   · {type?.name} · {wf?.name ?? 'Unknown workflow'}
                 </span>
               </p>
+              <VersionLine app={app} obj={obj} />
               {obj.expedite && (
                 <p className="mt-0.5 flex items-center gap-1 text-xs text-orange-800">
                   <Zap size={12} className="shrink-0 text-orange-600" fill="currentColor" />

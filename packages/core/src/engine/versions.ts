@@ -121,13 +121,7 @@ export interface Migration {
  * work at a step it doesn't have moves to `stepMap[step]` (handed out again,
  * like an administrator's move), or the item is skipped with the reason.
  */
-export function migrateItems(
-  sim: SimState,
-  ctx: Ctx,
-  workflowId: Id,
-  toVersion: number,
-  opts: { objectIds?: Id[]; stepMap?: Record<Id, Id>; actor?: string } = {},
-): Result<Migration> {
+export function migrateItems(sim: SimState, ctx: Ctx, workflowId: Id, toVersion: number, opts: { objectIds?: Id[]; stepMap?: Record<Id, Id>; actor?: string } = {}): Result<Migration> {
   const base = buildIndex(ctx)
   const wf = base.design.get(workflowId)
   if (!wf) return { ok: false, error: 'That workflow no longer exists.' }
@@ -149,7 +143,8 @@ export function migrateItems(
     let reason: string | undefined
     for (const t of obj.tokens) {
       for (const c of t.calls) {
-        if (c.workflowId === workflowId && next.node.get(c.nodeId)?.node.type !== 'subflow') reason ??= `It is inside “${nodeLabel(own, c.nodeId)}”, which version ${toVersion} doesn’t have; move it once it comes out.`
+        if (c.workflowId === workflowId && next.node.get(c.nodeId)?.node.type !== 'subflow')
+          reason ??= `It is inside “${nodeLabel(own, c.nodeId)}”, which version ${toVersion} doesn’t have; move it once it comes out.`
       }
       if (t.workflowId !== workflowId) continue
       const now = own.node.get(t.nodeId)?.node

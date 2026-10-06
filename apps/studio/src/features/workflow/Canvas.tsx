@@ -27,6 +27,7 @@ import { edgeTypes, type FlowEdgeData, STROKE } from './FlowEdge'
 import { canConnect, newEdge, newNode } from './model'
 import { type FlowNodeData, nodeTypes } from './nodes'
 import { InsertTemplateModal } from './TemplateModals'
+import { VersionBanners } from '../versions/VersionControls'
 
 const PALETTE: Array<{ type: WfNodeType; label: string; hint: string; more?: string; icon: LucideIcon; tone: string }> = [
   { type: 'user', label: 'User step', hint: 'A person does the work', icon: UserRound, tone: 'bg-sky-50 text-sky-600' },
@@ -111,12 +112,13 @@ function CanvasInner({ app, wf }: { app: App; wf: Workflow }) {
   )
 
   const onBeforeDelete: OnBeforeDelete = async ({ nodes: doomed, edges: doomedEdges }) => {
+    // The map is a draft: items at a removed step stay on their version until they are moved.
     const view = useSim.getState().views[app.id]
-    const busy = doomed.filter((n) => (view?.nodes[n.id]?.total ?? 0) > 0)
-    if (busy.length) {
-      const label = wf.nodes.find((n) => n.id === busy[0]!.id)?.data.label
-      useUi.getState().toast(`“${label}” still has ${view!.nodes[busy[0]!.id]!.total} items. Move or finish them first.`, 'warn')
-      return false
+    const busy = doomed.find((n) => (view?.nodes[n.id]?.total ?? 0) > 0)
+    if (busy) {
+      const label = wf.nodes.find((n) => n.id === busy.id)?.data.label
+      const n = view!.nodes[busy.id]!.total
+      useUi.getState().toast(`“${label}” is gone from the draft. Its ${n} item${n === 1 ? '' : 's'} stay${n === 1 ? 's' : ''} on ${n === 1 ? 'its' : 'their'} version until you move them.`)
     }
     return { nodes: doomed, edges: doomedEdges }
   }
@@ -260,6 +262,7 @@ function CanvasInner({ app, wf }: { app: App; wf: Workflow }) {
             </button>
           </div>
         </Panel>
+        <VersionBanners app={app} wf={wf} />
         {!started && (
           <Panel position="bottom-center">
             <div className="mb-2 rounded-full border border-slate-200 bg-white/95 px-4 py-1.5 text-xs text-slate-600 shadow-sm">

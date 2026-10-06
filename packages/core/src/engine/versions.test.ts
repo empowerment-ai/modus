@@ -16,7 +16,17 @@ function userStep(id: string, extra: Partial<Extract<WfNode, { type: 'user' }>['
     id,
     type: 'user',
     position: at,
-    data: { label: id, distribution: 'queue', groupId: 'g', autoDistribute: false, distributeEveryMinutes: 30, avgMinutes: 10_000, outcomes: [{ id: 'ok', label: 'Done', weight: 1, actions: [] }], fieldAccess: {}, ...extra },
+    data: {
+      label: id,
+      distribution: 'queue',
+      groupId: 'g',
+      autoDistribute: false,
+      distributeEveryMinutes: 30,
+      avgMinutes: 10_000,
+      outcomes: [{ id: 'ok', label: 'Done', weight: 1, actions: [] }],
+      fieldAccess: {},
+      ...extra,
+    },
   }
 }
 
@@ -46,7 +56,9 @@ function ctxOf(workflows: Workflow[]): Ctx {
     description: '',
     color: '#000',
     lists: [],
-    objectTypes: [{ id: 't', name: 'Thing', pluralName: 'Things', icon: 'file', color: '#000', numberPrefix: 'T-', permissions: {}, fields: [{ id: 'amt', label: 'Amount', type: 'currency', width: 'half' }] }],
+    objectTypes: [
+      { id: 't', name: 'Thing', pluralName: 'Things', icon: 'file', color: '#000', numberPrefix: 'T-', permissions: {}, fields: [{ id: 'amt', label: 'Amount', type: 'currency', width: 'half' }] },
+    ],
     workflows,
   }
   return { app, users, groups, services: [] }
@@ -173,8 +185,19 @@ describe('workflow versions', () => {
   })
 
   it('items keep the subflow version they entered; later items enter the newly published one', () => {
-    const child: Workflow = { id: 'child', name: 'Child', kind: 'subflow', objectTypeId: 't', arrivalsPerHour: 0, nodes: [start('cs'), userStep('k1'), end('ce')], edges: [edge('cs', 'k1'), edge('k1', 'ce', { outcomeId: 'ok' })] }
-    const parent = wf([start(), wait('pause', 10), { id: 'sub', type: 'subflow', position: at, data: { label: 'Sub', workflowId: 'child' } }, end()], [edge('s', 'pause'), edge('pause', 'sub'), edge('sub', 'e')])
+    const child: Workflow = {
+      id: 'child',
+      name: 'Child',
+      kind: 'subflow',
+      objectTypeId: 't',
+      arrivalsPerHour: 0,
+      nodes: [start('cs'), userStep('k1'), end('ce')],
+      edges: [edge('cs', 'k1'), edge('k1', 'ce', { outcomeId: 'ok' })],
+    }
+    const parent = wf(
+      [start(), wait('pause', 10), { id: 'sub', type: 'subflow', position: at, data: { label: 'Sub', workflowId: 'child' } }, end()],
+      [edge('s', 'pause'), edge('pause', 'sub'), edge('sub', 'e')],
+    )
     publish(child)
     publish(parent)
     const ctx = ctxOf([parent, child])
@@ -301,10 +324,7 @@ describe('drafts and publishing', () => {
     w.nodes = w.nodes.map((n) => ({ ...n, position: { x: 300, y: 40 } }))
     w.edges = w.edges.map((e) => ({ ...e, sourceHandle: 'r', targetHandle: 'l' }))
     expect(hasDraftChanges(w)).toBe(false)
-    w.nodes = [
-      ...w.nodes.map((n) => (n.id === 'b' && n.type === 'user' ? { ...n, data: { ...n.data, label: 'Approve', groupId: 'other' } } : n)),
-      userStep('extra'),
-    ]
+    w.nodes = [...w.nodes.map((n) => (n.id === 'b' && n.type === 'user' ? { ...n, data: { ...n.data, label: 'Approve', groupId: 'other' } } : n)), userStep('extra')]
     w.edges = [...w.edges.filter((e) => e.target !== 'e'), edge('b', 'extra', { outcomeId: 'ok' }), edge('extra', 'e', { outcomeId: 'ok' })]
     w.targetHours = 24
     const d = diffWorkflow(w.versions![0]!.snapshot, snapshotOf(w))
