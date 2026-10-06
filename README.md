@@ -40,6 +40,10 @@ they changed something.
   wins, N of M), **subflows**, timers.
 - **Templates**: save any workflow, stamp it into another application with a field mapping, or
   blow a single step out into its own subflow.
+- **Drafts and versions**: change the map freely, then **publish** a new version for new items
+  only, for items in flight too (choosing where work at removed steps goes), or for nobody yet.
+  Every version is kept with a note, you can see which items run on which, and move them to the
+  latest one at a time or all at once.
 
 **Work**
 
