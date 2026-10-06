@@ -1,6 +1,6 @@
 import { ArrowDown, ArrowRight, ArrowUp, CheckCircle2, CircleAlert, Info, Minus, Users, Wand2 } from 'lucide-react'
 import { memo, useMemo, useState } from 'react'
-import { buildIndex, type Ctx, type NodeMetrics, type ScenarioKpis } from '@modus-bpm/core'
+import { buildIndex, type Ctx, hasDraftChanges, type NodeMetrics, type ScenarioKpis, stepOf } from '@modus-bpm/core'
 import type { Id, WfNode } from '@modus-bpm/core/model/types'
 import { formatClock, formatDuration } from '@modus-bpm/core/model/util'
 import { Badge, Button, Card, cx, Modal } from '../../components/ui'
@@ -25,7 +25,7 @@ export const Results = memo(function Results({ run, ctx }: { run: Run; ctx: Ctx 
   const v = run.verdict
   const { baseline: b, scenario: s } = run.result
   const Icon = TONE_ICON[v.tone]
-  const label = (id?: Id) => (id ? (idx.node.get(id)?.node.data.label ?? 'A removed step') : undefined)
+  const label = (id?: Id) => (id ? (stepOf(idx, id)?.node.data.label ?? 'A removed step') : undefined)
 
   return (
     <div className="space-y-4">
@@ -144,26 +144,37 @@ function ApplyPanel({ run }: { run: Run }) {
     plan.apply()
     useLab.getState().markApplied(run.id)
     setConfirming(false)
-    useUi.getState().toast(`Applied ${plan.edits.length} change${plan.edits.length === 1 ? '' : 's'} to the live design. The simulation follows it from now on.`, 'success')
+    const n = `${plan.edits.length} change${plan.edits.length === 1 ? '' : 's'}`
+    // Step changes go into each workflow's draft; they run once published.
+    const app = useDesign.getState().design.apps.find((a) => a.id === run.appId)
+    const drafts = (app?.workflows ?? []).filter((w) => plan.drafts.includes(w.id) && hasDraftChanges(w))
+    if (!drafts.length) return useUi.getState().toast(`Applied ${n}. The simulation follows ${plan.edits.length === 1 ? 'it' : 'them'} from now on.`, 'success')
+    const names = drafts.map((w) => w.name).join(' and ')
+    useUi
+      .getState()
+      .toast(`Applied ${n}. The step changes are in the draft of ${names}; they go live when you publish.`, 'success', {
+        label: 'Publish…',
+        run: () => useUi.getState().openVersions({ kind: 'publish', workflowId: drafts[0]!.id }),
+      })
   }
 
   return (
     <div className="space-y-2 border-t border-slate-200 px-4 py-3">
       {run.applied ? (
         <p className="flex items-center gap-1.5 text-xs font-medium text-emerald-700">
-          <CheckCircle2 size={14} /> Applied to the live design.
+          <CheckCircle2 size={14} /> Applied to the design.
         </p>
       ) : plan.edits.length > 0 ? (
         <div className="flex items-center gap-2">
           <Button variant="primary" size="sm" icon={<Wand2 size={13} />} onClick={() => setConfirming(true)}>
-            Apply to the live design
+            Apply to the design
           </Button>
           <span className="text-[11px] text-slate-500">
             {plan.edits.length} design edit{plan.edits.length === 1 ? '' : 's'}; you’ll see the list first.
           </span>
         </div>
       ) : (
-        !plan.manual.length && <p className="text-xs text-slate-500">The live design already matches this run.</p>
+        !plan.manual.length && <p className="text-xs text-slate-500">The design already matches this run.</p>
       )}
       {plan.manual.map((m) => (
         <div key={m.groupId} className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
@@ -179,8 +190,8 @@ function ApplyPanel({ run }: { run: Run }) {
       <Modal
         open={confirming}
         onClose={() => setConfirming(false)}
-        title="Apply to the live design?"
-        subtitle="These edits change the design every simulated (and, later, real) item follows from now on. You can change them back by hand."
+        title="Apply to the design?"
+        subtitle="Changes to steps go into the workflow’s draft and take effect when you publish it. Services and arrival rates change at once. You can change them back by hand."
         width={560}
         footer={
           <>

@@ -128,9 +128,25 @@ business processes actually need. Each maps to a standard concept (see
 - **Determinism.** Randomness only comes from a seeded generator stored in the state, so a run
   repeats exactly, a what-if scenario differs from its baseline only by its change, and state
   can be cloned, saved and replayed.
-- **Model-driven.** The engine re-reads the design on every call. Edit the map while work is
-  in flight and the work follows the new map; work parked at a broken spot resumes when the
-  map is fixed.
+- **Model-driven, with versions.** The engine reads the design on every call. A workflow's map
+  is its **draft**; publishing copies it into a numbered **version**, and new items start on
+  the published one. Each item **pins** the version it started on (and each subflow's version
+  when it first enters it) and runs it to the end: every lookup for a specific item — routing,
+  allocation, timers, escalations, service calls, joins, field security, worklists — goes
+  through that item's own index (`indexFor`, cached per set of pins). A publish can also
+  **migrate** the items in flight (`migrateItems`): work at a step both versions have stays
+  put, work at a removed step moves where the administrator maps it (re-allocated like a move)
+  or the item stays on its version with the reason, and the move is audited. Work parked at a
+  broken spot resumes once it runs a version that fixes it. A workflow without versions runs
+  its map directly, as every workflow once did (the server's designs today).
+- **Access across versions.** Who may see and supervise an item is the *stricter* of the version
+  it runs and the live version: a process or task supervisor must hold in both (at a step the
+  live version dropped, only the live process supervisors qualify), field access is computed
+  under both and the strictest wins per field (hidden over read over edit), and the expedite
+  policy is the stricter of the two. So removing a supervisor or adding a lock reaches items in
+  flight at once, while adding a supervisor reaches only new work. Drafts grant and revoke
+  nothing until published. Who *works* a step (its group, dispatchers) stays with the item's
+  version, so work in flight always has someone to do it.
 
 ### Simulation vs live
 
@@ -349,11 +365,18 @@ takes the hybrid that modern databases make cheap:
   `object_row_idx`, and very large tables (over ~500 rows) move to a paged child table. Fields an administrator marks *searchable* are copied into a narrow,
   typed index table (`object_field_idx`) in the same transaction, with identical DDL on every
   database. Per-type reporting **views** give BI tools tidy columns without copying data.
+- **Workflow versions are immutable.** Publishing writes a new `workflow_version` row; the
+  editable map is a separate draft. **Each item records the versions it runs**
+  (`item_version`), so a published change never shifts the rules under work in flight unless
+  an administrator moves it, and every past decision can be explained by the version it ran.
 - **Outbox, timers and job claims in tables**, claimed with `FOR UPDATE SKIP LOCKED` (Postgres,
   Oracle) or `UPDLOCK, READPAST` (SQL Server). No extra infrastructure, exactly-once side effects.
 
 ```
 object_type(id, tenant_id, key, version, schema_json)
+workflow(id, tenant_id, key, name, draft_json, published_version)
+workflow_version(workflow_id, version, published_at, published_by, note, snapshot_json)
+item_version(item_id, workflow_id, version)    -- the version of each workflow an item runs
 object(id, tenant_id, type_id, type_version, number, title, status, priority, due_at,
        data JSON, row_version, created_at, created_by, updated_at, updated_by)
 object_field_idx(tenant_id, type_id, field_id, object_id, v_text, v_num, v_date, v_ref)
@@ -442,7 +465,7 @@ customers who need hard separation.
 
 | | Milestone | Exit criteria |
 | --- | --- | --- |
-| **M1** | Kernel hardening | Split the engine's command handlers from the simulation drivers further (`decide/evolve` over typed events); property tests and a "one million simulated items, zero stuck tokens" fuzz run; versioned JSON Schemas for designs. *Partly done: live mode, tokens, split/join, subflows, OCEL export, separation of duties, line items, search, assistant, supervisors, expedite; 88 tests across engine and server.* |
+| **M1** | Kernel hardening | Split the engine's command handlers from the simulation drivers further (`decide/evolve` over typed events); property tests and a "one million simulated items, zero stuck tokens" fuzz run; versioned JSON Schemas for designs. *Partly done: live mode, tokens, split/join, subflows, OCEL export, separation of duties, line items, search, assistant, supervisors, expedite, workflow versions and migration; 112 tests across engine and server.* |
 | **M2** | Server on Postgres | Kysely migrations; events + projections + outbox + timers with per-item locking; object types, objects, lists, attachments; OIDC login; single image + Compose. |
 | **M3** | Work service and Workspace on the server | Worklists and all distribution modes with SKIP LOCKED claims; delegation, out of office, SLA timers with business calendars; the studio's Workspace and Monitor wired to the API and the live stream. |
 | **M4** | Automation | Outbox dispatcher; REST/OpenAPI and MCP connectors; worker SDKs (TypeScript, Python, .NET, Java) from OpenAPI; retries, incidents, tracing. |
@@ -459,6 +482,7 @@ customers who need hard separation.
 | Hybrid event log + projections | Immediate worklists, full audit, replay and mining from one write. | Pure event sourcing (eventually consistent worklists); state + audit table (lossy replay). |
 | JSON documents + field index for dynamic types | No runtime DDL; portable; fast search on chosen fields. | Per-type generated tables; EAV. |
 | Line items inside the item's document | Atomic item versions and audit; calculations in the engine; a row index for queries. | A child table per table field (kept for very large tables only). |
+| Drafts, published versions, items pinned to theirs | Administrators choose when a change reaches work in flight (new items only, everything now, or not yet), and every item can be explained by the version it ran. | Every edit live at once (still one choice away: publish and move the items in flight); a new version per deploy with no way to move running work. |
 | Search in Postgres first | No extra service for most installs; security enforced inside the index. | OpenSearch from day one (another cluster to run and secure); kept as an option for very large tenants. |
 | Two-tier assistant | Works offline and air-gapped; a model adds open-ended answers through the same scoped tools. | Model-only (fails closed when offline; harder to trust). |
 | Authorization rules in the engine | The same rules must run in the simulator, the forms and the server. | A central policy engine (OpenFGA, Cedar), kept as an option. |

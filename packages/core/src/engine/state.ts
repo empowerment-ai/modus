@@ -154,6 +154,12 @@ export interface SimObject {
    * finishes this way. Keyed by call id, or "root".
    */
   scopeEnds?: Record<string, { result: 'completed' | 'rejected' | 'cancelled'; label: string; nodeId?: Id; outcome?: string }>
+  /**
+   * The workflow versions this item runs, by workflow id: its process from the
+   * moment it is created, each subflow from the moment it first enters it.
+   * Workflows not listed run their published version (or, unversioned, as drawn).
+   */
+  versions?: Record<Id, number>
   history: AuditEntry[]
 }
 

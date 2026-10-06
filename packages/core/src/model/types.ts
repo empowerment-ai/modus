@@ -1,6 +1,7 @@
 // Design-time model: everything an administrator builds in the studio.
 // The engine (src/engine) reads these definitions directly, which is what makes
-// the tool "model-driven": edit the map and live work follows it.
+// the tool "model-driven": publish a change and work follows it, new items only
+// or in-flight items too (see model/versions.ts).
 
 export type Id = string
 
@@ -490,6 +491,32 @@ export interface Workflow {
   supervisors?: Audience
   /** Expedited items: who may flag them, and how much faster they must move. */
   expedite?: ExpeditePolicy
+  /**
+   * Published versions, oldest first. The workflow's own nodes, edges and settings
+   * are the working copy (the draft the designer edits); items run the version they
+   * started on. A workflow without versions runs its working copy directly.
+   */
+  versions?: WorkflowVersion[]
+  /** The version new items start on. */
+  published?: number
+}
+
+/** The parts of a workflow that decide how its items run: what a version keeps. */
+export interface WorkflowSnapshot {
+  nodes: WfNode[]
+  edges: WfEdge[]
+  targetHours?: number
+  fieldLocks?: FieldLock[]
+  supervisors?: Audience
+  expedite?: ExpeditePolicy
+}
+
+export interface WorkflowVersion {
+  version: number
+  /** When it was published (simulation minute). */
+  publishedAt: number
+  note?: string
+  snapshot: WorkflowSnapshot
 }
 
 /**

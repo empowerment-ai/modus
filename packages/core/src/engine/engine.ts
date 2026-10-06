@@ -5,11 +5,15 @@
 //
 // The same engine powers the browser simulation (with simulated people and
 // services) and is written to move behind a server unchanged: it does no I/O,
-// reads the design on every call (so live edits apply), and is deterministic
-// for a given seed.
+// reads the design on every call (so published changes apply), and is
+// deterministic for a given seed. Items run the workflow version they started
+// on (see model/versions.ts); every lookup for a specific item goes through
+// that item's own index (indexFor).
 
 import { describeCondition, evaluateCondition, withMeta } from '../model/conditions'
+import { type AccessInput, type FieldVerdict, fieldVerdicts, strictestVerdicts } from '../model/security'
 import { normalizeData } from '../model/tables'
+import { publishedVersion, runnable, runnableApp } from '../model/versions'
 import type {
   ActionDef,
   App,
@@ -49,9 +53,10 @@ import {
 
 export * from './state'
 
-// ---------- Index over the design (rebuilt per call so live edits apply) ----------
+// ---------- Index over the design (rebuilt per call so published changes apply) ----------
 
 export interface Index {
+  /** The design as this index runs it: workflows resolved to the versions it was built for. */
   ctx: Ctx
   wf: Map<Id, Workflow>
   node: Map<Id, { node: WfNode; wf: Workflow }>
@@ -62,21 +67,44 @@ export interface Index {
   service: Map<Id, ServiceDef>
   manual: Set<Id>
   live: boolean
+  /** The index items resolve from: every workflow at its published version (or as drawn, when unversioned). */
+  base: Index
+  /** The pins this index was built for, as a key ('' for the base). */
+  pins: string
+  /** The design as given: working copies, with their versions. */
+  source: Ctx
+  /** Its workflows by id. */
+  design: Map<Id, Workflow>
+  /** Every step of the published versions, the working copies and older versions, for labels and design-wide lists. */
+  anyNode: Map<Id, { node: WfNode; wf: Workflow }>
+  /** Steps live items can be at: the published versions', then older versions' (a step can appear once per version). */
+  steps: Array<{ node: WfNode; wf: Workflow }>
+  /** Per-item indexes, kept on the base by pin key. */
+  cache: Map<string, Index>
 }
 
 export function buildIndex(ctx: Ctx): Index {
-  const idx: Index = {
+  return makeIndex(ctx)
+}
+
+function makeIndex(source: Ctx, pins?: Record<Id, number>, base?: Index, key = ''): Index {
+  const versioned = source.app.workflows.some((w) => w.versions?.length)
+  const ctx = versioned ? { ...source, app: runnableApp(source.app, pins) } : source
+  const idx = {
     ctx,
     wf: new Map(),
     node: new Map(),
     out: new Map(),
-    type: new Map(ctx.app.objectTypes.map((t) => [t.id, t])),
-    user: new Map(ctx.users.map((u) => [u.id, u])),
-    group: new Map(ctx.groups.map((g) => [g.id, g])),
-    service: new Map((ctx.services ?? []).map((s) => [s.id, s])),
-    manual: new Set(ctx.manualUserIds ?? []),
+    type: base?.type ?? new Map(ctx.app.objectTypes.map((t) => [t.id, t])),
+    user: base?.user ?? new Map(ctx.users.map((u) => [u.id, u])),
+    group: base?.group ?? new Map(ctx.groups.map((g) => [g.id, g])),
+    service: base?.service ?? new Map((ctx.services ?? []).map((s) => [s.id, s])),
+    manual: base?.manual ?? new Set(ctx.manualUserIds ?? []),
     live: !!ctx.live,
-  }
+    pins: key,
+    source,
+    cache: base?.cache ?? new Map(),
+  } as Index
   for (const wf of ctx.app.workflows) {
     idx.wf.set(wf.id, wf)
     for (const n of wf.nodes) idx.node.set(n.id, { node: n, wf })
@@ -86,13 +114,63 @@ export function buildIndex(ctx: Ctx): Index {
       idx.out.set(e.source, list)
     }
   }
+  if (base) {
+    idx.base = base
+    idx.design = base.design
+    idx.anyNode = base.anyNode
+    idx.steps = base.steps
+    return idx
+  }
+  idx.base = idx
+  idx.design = new Map(source.app.workflows.map((w) => [w.id, w]))
+  idx.anyNode = new Map(idx.node)
+  idx.steps = [...idx.node.values()]
+  if (versioned) {
+    for (const wf of source.app.workflows) for (const n of wf.nodes) if (!idx.anyNode.has(n.id)) idx.anyNode.set(n.id, { node: n, wf })
+    for (const wf of source.app.workflows) {
+      const live = publishedVersion(wf)
+      for (const v of [...(wf.versions ?? [])].reverse()) {
+        if (v.version === live) continue
+        const run = runnable(wf, v.version)
+        for (const n of run.nodes) {
+          if (!idx.anyNode.has(n.id)) idx.anyNode.set(n.id, { node: n, wf: run })
+          idx.steps.push({ node: n, wf: run })
+        }
+      }
+    }
+  }
   return idx
+}
+
+/**
+ * The index an item runs on: each workflow at the version the item is pinned
+ * to, else at its published version. Cached on the base index, so items on the
+ * published versions share the base and others share one index per set of pins.
+ */
+export function indexFor(idx: Index, obj: Pick<SimObject, 'versions'> | undefined): Index {
+  const base = idx.base
+  const pins = obj?.versions
+  if (!pins) return base
+  let key = ''
+  for (const [wfId, v] of Object.entries(pins).sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+    const wf = base.design.get(wfId)
+    if (wf?.versions?.some((x) => x.version === v) && v !== publishedVersion(wf)) key += `${wfId}@${v};`
+  }
+  if (!key) return base
+  let hit = base.cache.get(key)
+  if (!hit) base.cache.set(key, (hit = makeIndex(base.source, pins, base, key)))
+  return hit
+}
+
+/** A step by id in this index, else in any version (for labels of steps a later version removed). */
+export function stepOf(idx: Index, id: Id): { node: WfNode; wf: Workflow } | undefined {
+  return idx.node.get(id) ?? idx.base.anyNode.get(id)
 }
 
 export const userName = (idx: Index, id?: Id) => (id ? (idx.user.get(id)?.name ?? 'Unknown user') : 'nobody')
 
 export function nodeLabel(idx: Index, id: Id): string {
-  return idx.node.get(id)?.node.data.label ?? 'a removed step'
+  return stepOf(idx, id)?.node.data.label ?? 'a removed step'
 }
 
 export function stat(sim: SimState, nodeId: Id): NodeStat {
@@ -222,12 +300,15 @@ export function createObject(
   idx: Index = buildIndex(ctx),
   opts: { expedite?: { reason?: string } } = {},
 ): SimObject | undefined {
+  // New items start on the published version, and keep it.
+  idx = idx.base
   const wf = idx.wf.get(workflowId)
   const type = wf && idx.type.get(wf.objectTypeId)
   if (!wf || !type) return undefined
   const number = nextNumber(sim, type)
   sim.seq++
   const values = normalizeData(type, typeof data === 'function' ? data(number) : { ...data })
+  const version = publishedVersion(idx.design.get(workflowId))
   const obj: SimObject = {
     id: `o${sim.seq}`,
     number,
@@ -242,6 +323,7 @@ export function createObject(
     tokens: [],
     tokenSeq: 0,
     passed: [],
+    ...(version !== undefined ? { versions: { [workflowId]: version } } : {}),
     history: [],
   }
   sim.objects[obj.id] = obj
@@ -273,6 +355,7 @@ export function markStuck(sim: SimState, obj: SimObject, tok: Token, reason: str
 }
 
 export function enterNode(sim: SimState, idx: Index, obj: SimObject, tok: Token, nodeId: Id, hops: number) {
+  idx = indexFor(idx, obj)
   const found = idx.node.get(nodeId)
   freeWorker(sim, tok)
   releaseServiceSlot(sim, tok)
@@ -374,6 +457,7 @@ export function chooseEdge(idx: Index, obj: SimObject, node: WfNode, outcomeId?:
 }
 
 export function advanceFrom(sim: SimState, idx: Index, obj: SimObject, tok: Token, outcomeId: Id | undefined, hops: number): void {
+  idx = indexFor(idx, obj)
   const found = idx.node.get(tok.nodeId)
   if (!found) return markStuck(sim, obj, tok, 'This step was removed from the map', outcomeId)
   if (hops > 60) return markStuck(sim, obj, tok, 'Routing loop detected (60 instant hops)', outcomeId)
@@ -593,6 +677,9 @@ function callSubflow(sim: SimState, idx: Index, obj: SimObject, tok: Token, node
   if (tok.calls.some((c) => c.nodeId === node.id) || tok.calls.length > 8) return markStuck(sim, obj, tok, `“${node.data.label}” calls itself`)
   const start = child.nodes.find((n) => n.type === 'start')
   if (!start) return markStuck(sim, obj, tok, `Subflow “${child.name}” has no start step`)
+  // The item keeps the subflow version it first entered (the published one at the time).
+  const version = publishedVersion(idx.design.get(child.id))
+  if (version !== undefined && obj.versions?.[child.id] === undefined) (obj.versions ??= {})[child.id] = version
   tok.calls.push({ callId: `c${++sim.callSeq}`, nodeId: node.id, workflowId: tok.workflowId, forkDepth: tok.forks.length, at: sim.clock })
   audit(sim, obj, { kind: 'subflow', nodeId: node.id, tokenId: tok.id, text: `Entered subflow “${child.name}”` })
   enterNode(sim, idx, obj, tok, start.id, hops + 1)
@@ -804,11 +891,12 @@ function failCall(sim: SimState, idx: Index, obj: SimObject, tok: Token, node: N
   }
 }
 
-function finishAutomated(sim: SimState, idx: Index) {
+function finishAutomated(sim: SimState, base: Index) {
   for (const obj of activeObjects(sim)) {
     for (const tok of [...obj.tokens]) {
       if (obj.status !== 'active' || !obj.tokens.includes(tok)) continue
       if (tok.state !== 'auto' || tok.manual || tok.dueAt === undefined || tok.dueAt > sim.clock) continue
+      const idx = indexFor(base, obj)
       const node = idx.node.get(tok.nodeId)?.node
       if (!node || node.type !== 'auto') {
         markStuck(sim, obj, tok, 'This step was removed from the map')
@@ -832,15 +920,16 @@ function finishAutomated(sim: SimState, idx: Index) {
     }
   }
   // Calls finished: start queued ones where there is room (most urgent first).
-  dispatchQueued(sim, idx)
+  dispatchQueued(sim, base)
 }
 
-function dispatchQueued(sim: SimState, idx: Index) {
+function dispatchQueued(sim: SimState, base: Index) {
   const queued = activeTokens(sim).filter((t) => t.state === 'queued')
   if (!queued.length) return
   queued.sort(byUrgency((t) => t.enteredAt, objectOf(sim)))
   for (const tok of queued) {
     const obj = sim.objects[tok.objectId]
+    const idx = indexFor(base, obj)
     const node = idx.node.get(tok.nodeId)?.node
     if (!obj || node?.type !== 'auto') continue
     const { svc, op } = serviceOf(idx, node.data)
@@ -1110,7 +1199,8 @@ function generateObject(sim: SimState, idx: Index, wf: Workflow): SimObject | un
   const type = idx.type.get(wf.objectTypeId)
   if (!type) return undefined
   const creator = creatorFor(sim, idx, type, wf)
-  const rate = wf.expedite?.simulateRate ?? 0
+  // The simulated share of expedited arrivals is a simulation setting: the working copy's applies at once.
+  const rate = idx.design.get(wf.id)?.expedite?.simulateRate ?? 0
   const rush = rate > 0 && rand(sim) < rate ? { reason: pick(sim, RUSH_REASONS) } : undefined
   return createObject(sim, idx.ctx, wf.id, (number) => generateData(sim, type, idx.ctx.app.lists, idx.ctx.users, sim.clock, number), creator, idx, { expedite: rush })
 }
@@ -1126,10 +1216,11 @@ export function burst(sim: SimState, ctx: Ctx, workflowId: Id, count: number): n
 }
 
 /** Timers finishing, and escalations of work that has sat too long. */
-function timers(sim: SimState, idx: Index) {
+function timers(sim: SimState, base: Index) {
   for (const obj of activeObjects(sim)) {
     for (const tok of [...obj.tokens]) {
       if (obj.status !== 'active' || !obj.tokens.includes(tok)) continue
+      const idx = indexFor(base, obj)
       if (tok.state === 'waiting' && tok.dueAt !== undefined && tok.dueAt <= sim.clock) {
         tok.state = 'auto'
         tok.waitReason = undefined
@@ -1179,12 +1270,13 @@ function escalate(sim: SimState, idx: Index, obj: SimObject, tok: Token, node: N
   })
 }
 
-function finishWork(sim: SimState, idx: Index) {
+function finishWork(sim: SimState, base: Index) {
   for (const obj of activeObjects(sim)) {
     for (const tok of [...obj.tokens]) {
       if (obj.status !== 'active' || !obj.tokens.includes(tok)) continue
       if (tok.state !== 'working' || tok.dueAt === undefined || tok.dueAt > sim.clock) continue
-      if (tok.userId && idx.manual.has(tok.userId)) continue
+      if (tok.userId && base.manual.has(tok.userId)) continue
+      const idx = indexFor(base, obj)
       const ws = workStepOf(idx, tok)
       if (!ws) {
         freeWorker(sim, tok)
@@ -1219,6 +1311,7 @@ export function freeWorker(sim: SimState, tok: Token) {
 
 /** Release a token from a people step with an outcome. Runs the outcome's actions, then routes. */
 export function release(sim: SimState, idx: Index, obj: SimObject, tok: Token, outcomeId: Id | undefined, comment: string | undefined, actor?: string) {
+  idx = indexFor(idx, obj)
   const ws = workStepOf(idx, tok)
   if (!ws) return
   const outcome: Outcome | undefined = ws.outcomes.find((o) => o.id === outcomeId)
@@ -1246,10 +1339,11 @@ export function release(sim: SimState, idx: Index, obj: SimObject, tok: Token, o
   advanceFrom(sim, idx, obj, tok, outcomeId, 0)
 }
 
-function retryStuck(sim: SimState, idx: Index) {
+function retryStuck(sim: SimState, base: Index) {
   for (const obj of activeObjects(sim)) {
     for (const tok of [...obj.tokens]) {
       if (tok.state !== 'stuck' || obj.status !== 'active' || !obj.tokens.includes(tok)) continue
+      const idx = indexFor(base, obj)
       const node = idx.node.get(tok.nodeId)?.node
       if (!node) continue
       if (node.type === 'subflow' && !tok.pendingOutcomeId) {
@@ -1277,21 +1371,37 @@ function retryStuck(sim: SimState, idx: Index) {
   }
 }
 
-function unassignedByNode(sim: SimState): Map<Id, Token[]> {
-  const waiting = new Map<Id, Token[]>()
-  for (const t of activeTokens(sim)) {
-    if (t.state !== 'unassigned') continue
-    const list = waiting.get(t.nodeId) ?? []
-    list.push(t)
-    waiting.set(t.nodeId, list)
+/** Unassigned work by step, kept apart per version (a step's settings can differ between versions). */
+function unassignedBySteps(sim: SimState, base: Index): Map<string, { nodeId: Id; idx: Index; tokens: Token[] }> {
+  const waiting = new Map<string, { nodeId: Id; idx: Index; tokens: Token[] }>()
+  for (const obj of activeObjects(sim)) {
+    for (const t of obj.tokens) {
+      if (t.state !== 'unassigned') continue
+      const idx = indexFor(base, obj)
+      const key = `${t.nodeId}|${idx.pins}`
+      const group = waiting.get(key) ?? { nodeId: t.nodeId, idx, tokens: [] }
+      group.tokens.push(t)
+      waiting.set(key, group)
+    }
   }
   return waiting
 }
 
-function supervise(sim: SimState, idx: Index) {
+function supervise(sim: SimState, base: Index) {
   let loads: Map<Id, number> | undefined
   const urgency = byUrgency((t) => t.enteredAt, objectOf(sim))
-  for (const [nodeId, pending] of unassignedByNode(sim)) {
+  // Dispatch rounds are per step, whichever versions its waiting items run.
+  const round = new Map<Id, boolean>()
+  const dueRound = (nodeId: Id, every: number) => {
+    if (!round.has(nodeId)) {
+      const last = sim.lastDistribution[nodeId]
+      const due = last !== undefined && sim.clock - last >= Math.max(5, every)
+      if (last === undefined || due) sim.lastDistribution[nodeId] = sim.clock
+      round.set(nodeId, due)
+    }
+    return round.get(nodeId)!
+  }
+  for (const { nodeId, idx, tokens: pending } of unassignedBySteps(sim, base).values()) {
     pending.sort(urgency)
     const first = pending[0]
     const ws = first && workStepOf(idx, first)
@@ -1310,13 +1420,7 @@ function supervise(sim: SimState, idx: Index) {
         if (ws.userId && !excludedFor(o, ws).has(ws.userId)) assign(sim, o, t, ws.userId, 'assigned', `Assigned directly to ${userName(idx, ws.userId)}`)
       }
     } else if (ws.distribution === 'manager' && ws.autoDistribute && !idx.live) {
-      const last = sim.lastDistribution[nodeId]
-      if (last === undefined) {
-        sim.lastDistribution[nodeId] = sim.clock
-        continue
-      }
-      if (sim.clock - last < Math.max(5, ws.distributeEveryMinutes)) continue
-      sim.lastDistribution[nodeId] = sim.clock
+      if (!dueRound(nodeId, ws.distributeEveryMinutes)) continue
       const members = availableMembers(idx, ws)
       // Dispatchers driven by a real person in the Workspace do it themselves.
       const dispatchers = distributorsOf(idx, ws).filter((id) => !idx.manual.has(id))
@@ -1335,38 +1439,50 @@ function supervise(sim: SimState, idx: Index) {
   }
 }
 
-/** Members of `group` able to work queue steps, mapped to those steps. */
+/**
+ * Queue steps each person can fetch from (the group members of every queue
+ * step, in every version items run). A step one version gives to another group
+ * is listed for both groups; take items only through `canFetch`.
+ */
 function queueStepsByUser(idx: Index): Map<Id, Id[]> {
   const map = new Map<Id, Id[]>()
-  for (const wf of idx.ctx.app.workflows) {
-    for (const node of wf.nodes) {
-      if (node.type !== 'user' || node.data.distribution !== 'queue' || !node.data.groupId) continue
-      for (const uid of idx.group.get(node.data.groupId)?.memberIds ?? []) {
-        const l = map.get(uid) ?? []
-        l.push(node.id)
-        map.set(uid, l)
-      }
+  for (const { node } of idx.base.steps) {
+    if (node.type !== 'user' || node.data.distribution !== 'queue' || !node.data.groupId) continue
+    for (const uid of idx.group.get(node.data.groupId)?.memberIds ?? []) {
+      const l = map.get(uid) ?? []
+      if (!l.includes(node.id)) l.push(node.id)
+      map.set(uid, l)
     }
   }
   return map
 }
 
+/** May this person take this waiting item from its queue (its own version's group, separation of duties)? */
+export function canFetch(sim: SimState, ws: WorkStep | undefined, tok: Token, userId: Id, idx: Index): boolean {
+  if (ws?.distribution !== 'queue' || !idx.group.get(ws.groupId ?? '')?.memberIds.includes(userId)) return false
+  return !excludedFor(sim.objects[tok.objectId]!, ws).has(userId)
+}
+
 export { queueStepsByUser }
 
-function pullWork(sim: SimState, idx: Index) {
+function pullWork(sim: SimState, base: Index) {
   const baskets = new Map<Id, Token[]>()
   const queues = new Map<Id, Token[]>()
-  for (const t of activeTokens(sim)) {
-    if (t.state === 'assigned' && t.userId) {
-      const b = baskets.get(t.userId) ?? []
-      b.push(t)
-      baskets.set(t.userId, b)
-    } else if (t.state === 'unassigned') {
-      const ws = workStepOf(idx, t)
-      if (ws?.distribution === 'queue') {
-        const q = queues.get(t.nodeId) ?? []
-        q.push(t)
-        queues.set(t.nodeId, q)
+  const steps = new Map<Token, WorkStep>()
+  for (const obj of activeObjects(sim)) {
+    for (const t of obj.tokens) {
+      if (t.state === 'assigned' && t.userId) {
+        const b = baskets.get(t.userId) ?? []
+        b.push(t)
+        baskets.set(t.userId, b)
+      } else if (t.state === 'unassigned') {
+        const ws = workStepOf(indexFor(base, obj), t)
+        if (ws?.distribution === 'queue') {
+          const q = queues.get(t.nodeId) ?? []
+          q.push(t)
+          queues.set(t.nodeId, q)
+          steps.set(t, ws)
+        }
       }
     }
   }
@@ -1374,13 +1490,13 @@ function pullWork(sim: SimState, idx: Index) {
   for (const b of baskets.values()) b.sort(byUrgency((t) => t.assignedAt ?? 0, objOf))
   for (const q of queues.values()) q.sort(byUrgency((t) => t.enteredAt, objOf))
 
-  const queueNodesByUser = queueStepsByUser(idx)
-  const users = idx.ctx.users
+  const queueNodesByUser = queueStepsByUser(base)
+  const users = base.ctx.users
   const n = users.length
   const offset = n ? Math.floor(sim.clock) % n : 0
   for (let i = 0; i < n; i++) {
     const u = users[(offset + i) % n]!
-    if (!u.available || idx.manual.has(u.id)) continue
+    if (!u.available || base.manual.has(u.id)) continue
     const st = ustat(sim, u.id)
     if (st.currentId) {
       const cur = findToken(sim, st.currentId)?.tok
@@ -1394,7 +1510,7 @@ function pullWork(sim: SimState, idx: Index) {
       for (const nodeId of queueNodesByUser.get(u.id) ?? []) {
         const q = queues.get(nodeId)
         // The first item this person may take (separation of duties can rule some out).
-        const at = q ? q.findIndex((t) => { const ws = workStepOf(idx, t); return !ws || !excludedFor(sim.objects[t.objectId]!, ws).has(u.id) }) : -1
+        const at = q ? q.findIndex((t) => canFetch(sim, steps.get(t), t, u.id, base)) : -1
         if (q && at >= 0 && (!best || byUrgency((t) => t.enteredAt, objOf)(q[at]!, best.q[best.at]!) < 0)) best = { q, at }
       }
       const fetched = best ? best.q.splice(best.at, 1)[0] : undefined
@@ -1403,13 +1519,13 @@ function pullWork(sim: SimState, idx: Index) {
         next = fetched
       }
     }
-    if (next) startWork(sim, idx, next, u)
+    if (next) startWork(sim, base, next, u)
   }
 }
 
-function startWork(sim: SimState, idx: Index, tok: Token, u: User) {
-  const ws = workStepOf(idx, tok)
+function startWork(sim: SimState, base: Index, tok: Token, u: User) {
   const obj = sim.objects[tok.objectId]
+  const ws = obj && workStepOf(indexFor(base, obj), tok)
   if (!ws || !obj) return
   tok.state = 'working'
   tok.startedAt = sim.clock
@@ -1480,7 +1596,7 @@ export function applyActions(sim: SimState, idx: Index, obj: SimObject, actions:
 // Internal hooks for the operations module (admin + workbasket).
 /** Short "where is it" text for a branch, e.g. "Manager approval (with Marcus Hale)". */
 export function describeTokenText(idx: Index, t: Token): string {
-  const label = idx.node.get(t.nodeId)?.node.data.label ?? 'a removed step'
+  const label = stepOf(idx, t.nodeId)?.node.data.label ?? 'a removed step'
   const who = t.userId ? (idx.user.get(t.userId)?.name ?? 'someone') : undefined
   const state: Record<Token['state'], string> = {
     working: `${who} working`,
@@ -1500,7 +1616,7 @@ export function describeTokenText(idx: Index, t: Token): string {
 /** Due-date / escalation multiplier for an item: the workflow's expedite factor when expedited, else 1. */
 export function speedFactor(idx: Index, obj: SimObject): number {
   if (!obj.expedite) return 1
-  const f = idx.wf.get(obj.workflowId)?.expedite?.slaFactor ?? 0.5
+  const f = indexFor(idx, obj).wf.get(obj.workflowId)?.expedite?.slaFactor ?? 0.5
   return Math.min(1, Math.max(0.05, f))
 }
 
@@ -1508,7 +1624,7 @@ export function speedFactor(idx: Index, obj: SimObject): number {
 export function markExpedited(sim: SimState, idx: Index, obj: SimObject, by: string, reason?: string) {
   if (obj.expedite) return
   obj.expedite = { by, at: sim.clock, reason: reason?.trim() || undefined }
-  const wf = idx.wf.get(obj.workflowId)
+  const wf = indexFor(idx, obj).wf.get(obj.workflowId)
   if (wf?.targetHours) obj.dueBy = Math.min(obj.dueBy ?? Infinity, obj.createdAt + wf.targetHours * 60 * speedFactor(idx, obj))
   audit(sim, obj, { kind: 'priority', actor: by, text: `Expedited by ${by}${obj.expedite.reason ? `: ${obj.expedite.reason}` : ''}`, comment: obj.expedite.reason })
 }
@@ -1516,7 +1632,7 @@ export function markExpedited(sim: SimState, idx: Index, obj: SimObject, by: str
 export function clearExpedited(sim: SimState, idx: Index, obj: SimObject, by: string) {
   if (!obj.expedite) return
   obj.expedite = undefined
-  const wf = idx.wf.get(obj.workflowId)
+  const wf = indexFor(idx, obj).wf.get(obj.workflowId)
   if (wf?.targetHours) obj.dueBy = obj.createdAt + wf.targetHours * 60
   audit(sim, obj, { kind: 'priority', actor: by, text: `No longer expedited (by ${by})` })
 }
@@ -1538,12 +1654,26 @@ export function hasRole(idx: Index, userId: Id, role: 'admin' | 'designer' | 'au
   return !!idx.user.get(userId)?.roles?.includes(role)
 }
 
+// Authorization across versions: access is the stricter of the version an item
+// runs and the live (published) version. Removing a supervisor or adding a lock
+// takes effect on items already in flight; adding a supervisor reaches only the
+// items it can see in both. Drafts grant and revoke nothing until published.
+
 /**
  * Who supervises a work item: the supervisors of its step, the supervisor of the
  * step's work group, and the process supervisors of its workflow and of every
  * workflow it was called from (a subflow's work is also its parent process's work).
+ * They must supervise it in the item's version and in the live version; at a
+ * step the live version no longer has, only the live process supervisors qualify.
  */
 export function supervisorsOf(idx: Index, obj: SimObject, tok: Token): Set<Id> {
+  const own = supervisorsIn(indexFor(idx, obj), obj, tok)
+  const live = supervisorsIn(idx.base, obj, tok)
+  return new Set([...own].filter((id) => live.has(id)))
+}
+
+/** Supervisors of a work item as one index (one set of versions) defines them. */
+function supervisorsIn(idx: Index, obj: SimObject, tok: Token): Set<Id> {
   const out = new Set<Id>()
   const node = idx.node.get(tok.nodeId)?.node
   if (node?.type === 'user') {
@@ -1565,17 +1695,18 @@ export function canSuperviseToken(idx: Index, obj: SimObject, tok: Token, userId
   return hasRole(idx, userId, 'admin') || supervisorsOf(idx, obj, tok).has(userId)
 }
 
-/** Process supervisors of a workflow (named users and group members). */
+/** Process supervisors of a workflow (named users and group members), in this index's version and the live one. */
 export function processSupervisors(idx: Index, workflowId: Id): Id[] {
-  return audienceMembers(idx, idx.wf.get(workflowId)?.supervisors)
+  const live = new Set(audienceMembers(idx, idx.base.wf.get(workflowId)?.supervisors))
+  return audienceMembers(idx, idx.wf.get(workflowId)?.supervisors).filter((id) => live.has(id))
 }
 
-/** Does this person supervise the process (or is an administrator)? */
+/** Does this person supervise the process (or is an administrator)? In this index's version and the live one both. */
 export function supervisesProcess(idx: Index, workflowId: Id, userId: Id): boolean {
-  return hasRole(idx, userId, 'admin') || inAudience(idx, idx.wf.get(workflowId)?.supervisors, userId)
+  if (hasRole(idx, userId, 'admin')) return true
+  return inAudience(idx, idx.wf.get(workflowId)?.supervisors, userId) && inAudience(idx, idx.base.wf.get(workflowId)?.supervisors, userId)
 }
 
-/** Does this person supervise this step (step supervisors, its group's supervisor, or its process)? */
 /** Every workflow that runs this one as a subflow, directly or through other subflows. */
 function callersOf(idx: Index, wfId: Id, seen = new Set<Id>([wfId])): Workflow[] {
   const out: Workflow[] = []
@@ -1587,15 +1718,40 @@ function callersOf(idx: Index, wfId: Id, seen = new Set<Id>([wfId])): Workflow[]
   return out
 }
 
+/**
+ * Does this person supervise this step (step supervisors, its group's supervisor,
+ * or its process)? As the given index defines it and as the live version does; a
+ * step the live version no longer has is overseen only by the live process supervisors.
+ */
 export function supervisesStep(idx: Index, nodeId: Id, userId: Id): boolean {
-  const found = idx.node.get(nodeId)
+  const base = idx.base
+  const found = stepOf(idx, nodeId)
   if (!found) return false
-  const n = found.node
-  if (hasRole(idx, userId, 'admin') || inAudience(idx, found.wf.supervisors, userId)) return true
+  const live = base.node.get(nodeId)
+  if (!(live ? oversees(base, live, userId) : oversees(base, found, userId, true))) return false
+  const own = idx.node.get(nodeId)
+  return idx === base || !own || oversees(idx, own, userId)
+}
+
+/** The supervision rule for one step as one index defines it (`processOnly`: ignore the step's own supervisors). */
+function oversees(idx: Index, found: { node: WfNode; wf: Workflow }, userId: Id, processOnly = false): boolean {
+  if (hasRole(idx, userId, 'admin') || inAudience(idx, idx.wf.get(found.wf.id)?.supervisors, userId)) return true
   // A subflow's steps are also overseen by the supervisors of every process that calls it.
   if (callersOf(idx, found.wf.id).some((w) => inAudience(idx, w.supervisors, userId))) return true
-  if (n.type === 'user') return inAudience(idx, n.data.supervisors, userId) || (!!n.data.groupId && idx.group.get(n.data.groupId)?.supervisorId === userId)
-  return false
+  const n = found.node
+  if (processOnly || n.type !== 'user') return false
+  return inAudience(idx, n.data.supervisors, userId) || (!!n.data.groupId && idx.group.get(n.data.groupId)?.supervisorId === userId)
+}
+
+/**
+ * Field access on an item under the version it runs and under the live version,
+ * the stricter per field: a lock published later applies to items in flight too.
+ * `input` builds the access question for one index.
+ */
+export function itemFieldVerdicts(idx: Index, obj: SimObject, input: (idx: Index) => AccessInput): Record<Id, FieldVerdict> {
+  const own = indexFor(idx, obj)
+  const mine = fieldVerdicts(input(own))
+  return own === own.base ? mine : strictestVerdicts(mine, fieldVerdicts(input(own.base)))
 }
 
 // ---------- Live mode: external workers (the "device" protocol) ----------
@@ -1630,7 +1786,7 @@ export function pollJobs(sim: SimState, ctx: Ctx, serviceId: Id, workerId: strin
     .sort(byUrgency((t) => t.startedAt ?? t.enteredAt, objectOf(sim)))
   for (const tok of waiting.slice(0, max)) {
     const obj = sim.objects[tok.objectId]!
-    const node = idx.node.get(tok.nodeId)?.node
+    const node = indexFor(idx, obj).node.get(tok.nodeId)?.node
     if (node?.type !== 'auto') continue
     const { op } = serviceOf(idx, node.data)
     tok.workerId = workerId
@@ -1641,8 +1797,8 @@ export function pollJobs(sim: SimState, ctx: Ctx, serviceId: Id, workerId: strin
 }
 
 function jobAt(sim: SimState, ctx: Ctx, jobId: Id) {
-  const idx = buildIndex(ctx)
   const found = findToken(sim, jobId)
+  const idx = indexFor(buildIndex(ctx), found?.obj)
   const node = found && idx.node.get(found.tok.nodeId)?.node
   if (!found || found.obj.status !== 'active' || node?.type !== 'auto' || !found.tok.serviceId || found.tok.manual) return undefined
   const { svc, op } = serviceOf(idx, node.data)
