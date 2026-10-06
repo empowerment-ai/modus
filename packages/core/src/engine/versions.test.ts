@@ -3,9 +3,9 @@ import { seedDesign } from '../model/seed'
 import type { App, Design, Group, User, WfEdge, WfNode, Workflow } from '../model/types'
 import { diffWorkflow, ensureVersions, hasDraftChanges, publishWorkflow, restoreDraft, runnable, snapshotOf } from '../model/versions'
 import { advance, burst, createObject, type Ctx, newSim, type SimObject } from './engine'
-import { adminMove, adminRelease, workNext } from './ops'
+import { adminMove, adminRelease, workDistribute, workNext } from './ops'
 import { migrateItems, missingSteps, pinInFlight, versionUsage } from './versions'
-import { computeView, queuesFor } from './view'
+import { computeView, distributionFor, queuesFor, supervisionFor } from './view'
 
 // ---------- Builders ----------
 
@@ -45,10 +45,12 @@ function publish(w: Workflow, note?: string) {
 }
 
 function ctxOf(workflows: Workflow[]): Ctx {
-  const users: User[] = ['u0', 'u1', 'u2', 'out'].map((id) => ({ id, name: id, title: 'Clerk', color: '#000', speed: 1, available: true }))
+  const users: User[] = ['u0', 'u1', 'u2', 'out', 'd1', 'd2', 's1', 's2'].map((id) => ({ id, name: id, title: 'Clerk', color: '#000', speed: 1, available: true }))
   const groups: Group[] = [
     { id: 'g', name: 'Team', memberIds: ['u0', 'u1', 'u2'] },
     { id: 'other', name: 'Other team', memberIds: ['out'] },
+    { id: 'dg1', name: 'Dispatch 1', kind: 'distribution', memberIds: ['d1'] },
+    { id: 'dg2', name: 'Dispatch 2', kind: 'distribution', memberIds: ['d2'] },
   ]
   const app: App = {
     id: 'a',
@@ -241,6 +243,28 @@ describe('workflow versions', () => {
     // The simulated team fetches the version-1 item only.
     advance(sim, ctx, 1)
     expect(['u0', 'u1', 'u2']).toContain(old.tokens[0]!.userId)
+  })
+
+  it('dispatchers and supervisors of each version handle that version’s items', () => {
+    const w = wf(
+      [start(), userStep('b', { distribution: 'manager', distributorGroupId: 'dg1', supervisors: { userIds: ['s1'] } }), end()],
+      [edge('s', 'b'), edge('b', 'e', { outcomeId: 'ok' })],
+    )
+    publish(w)
+    const ctx = ctxOf([w])
+    const sim = quiet()
+    const old = createObject(sim, ctx, 'w', {}, 'u0')!
+    w.nodes = w.nodes.map((n) => (n.type === 'user' ? { ...n, data: { ...n.data, distributorGroupId: 'dg2', supervisors: { userIds: ['s2'] } } } : n))
+    publish(w)
+    const fresh = createObject(sim, ctx, 'w', {}, 'u0')!
+    const board = (userId: string) => distributionFor(sim, ctx, userId).flatMap((d) => d.waiting.map((i) => i.obj.id))
+    expect(board('d1')).toEqual([old.id])
+    expect(board('d2')).toEqual([fresh.id])
+    expect(workDistribute(sim, ctx, fresh.tokens[0]!.id, 'd1', 'u0').ok).toBe(false)
+    expect(workDistribute(sim, ctx, old.tokens[0]!.id, 'd1', 'u0').ok).toBe(true)
+    const watched = (userId: string) => supervisionFor(sim, ctx, userId).steps.flatMap((st) => st.items.map((i) => i.obj.id))
+    expect(watched('s1')).toEqual([old.id])
+    expect(watched('s2')).toEqual([fresh.id])
   })
 
   it('an administrator move stays within the item’s own version', () => {

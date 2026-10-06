@@ -32,16 +32,32 @@ the Modus logo in the top bar returns to the front page.
 2. Both futures start from the same live state with the same random numbers, so the difference
    is the change: more invoices finished, cycle time down, the bottleneck moves.
 3. Try *Arrivals +50%* to stress the process, or take the ERP offline for the run.
-4. Changes that map to the design (capacity, handling time, distribution, arrivals) can be
-   applied with one click. Staffing changes point you to People & Security.
+4. Changes that map to the design can be applied with one click. Capacity and arrivals change
+   at once; changes to steps (handling time, distribution) go into the workflow's draft, and
+   the confirmation offers **Publish…**. Staffing changes point you to People & Security.
 
-## 3. Change the process while it runs
+## 3. Change a process safely
 
-1. Click the `Amount > $10,000` path and change it to `25,000`: new invoices follow the new
-   rule at once. Work at a broken spot is parked as *stuck* and resumes when you fix the map.
-2. Select **AP clerk review** › **Live work**: ten clerks, load balanced; *Burst of 25* spreads
+1. Click the `Amount > $10,000` path and change it to `25,000`. The chip in the header turns
+   from **Version 1 · Live** to **Draft · 1 change**, and the map says *Draft: changes aren't
+   live until you publish*: nothing in flight is touched yet.
+2. Press **Publish…**. The dialog lists what changes; add a note and choose **Who uses version
+   2?** — *New items only* (recommended: invoices in flight finish on version 1), *New items
+   and items in flight* (move them now), or *Nobody yet* (keep the draft). Publish for new
+   items only.
+3. Now delete **Manager approval** from the map (invoices are waiting there) and **Publish…**
+   with *New items and items in flight*: the dialog asks where the invoices at *Manager
+   approval* should go. Leave them where they are for now; everything else moves to version 3,
+   and the map notes the invoices at a step it no longer has.
+4. **History** lists every version with its note, when it was published and how many invoices
+   run on it; *Restore as draft* starts the draft over from any version. Open one of the
+   invoices left at *Manager approval* (Monitor › Object explorer): the drawer says which
+   version it runs (*Version 2 of Invoice Approval (latest: 3)*), and **Move to version 3** asks
+   where it goes. Or, in History, *Move these items to the latest version* moves all of an old
+   version's work at once.
+5. Select **AP clerk review** › **Live work**: ten clerks, load balanced; *Burst of 25* spreads
    evenly. Reassign any item; **Redistribute** evens out the baskets.
-3. Select **Capture & match PO**: the service, its capacity, retries and failure policy. In
+6. Select **Capture & match PO**: the service, its capacity, retries and failure policy. In
    the **Live** tab an administrator can take an item off the automation and give it to a
    person in the fallback group.
 
