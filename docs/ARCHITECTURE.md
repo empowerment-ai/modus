@@ -139,6 +139,14 @@ business processes actually need. Each maps to a standard concept (see
   or the item stays on its version with the reason, and the move is audited. Work parked at a
   broken spot resumes once it runs a version that fixes it. A workflow without versions runs
   its map directly, as every workflow once did (the server's designs today).
+- **Access across versions.** Who may see and supervise an item is the *stricter* of the version
+  it runs and the live version: a process or task supervisor must hold in both (at a step the
+  live version dropped, only the live process supervisors qualify), field access is computed
+  under both and the strictest wins per field (hidden over read over edit), and the expedite
+  policy is the stricter of the two. So removing a supervisor or adding a lock reaches items in
+  flight at once, while adding a supervisor reaches only new work. Drafts grant and revoke
+  nothing until published. Who *works* a step (its group, dispatchers) stays with the item's
+  version, so work in flight always has someone to do it.
 
 ### Simulation vs live
 
@@ -457,7 +465,7 @@ customers who need hard separation.
 
 | | Milestone | Exit criteria |
 | --- | --- | --- |
-| **M1** | Kernel hardening | Split the engine's command handlers from the simulation drivers further (`decide/evolve` over typed events); property tests and a "one million simulated items, zero stuck tokens" fuzz run; versioned JSON Schemas for designs. *Partly done: live mode, tokens, split/join, subflows, OCEL export, separation of duties, line items, search, assistant, supervisors, expedite, workflow versions and migration; 109 tests across engine and server.* |
+| **M1** | Kernel hardening | Split the engine's command handlers from the simulation drivers further (`decide/evolve` over typed events); property tests and a "one million simulated items, zero stuck tokens" fuzz run; versioned JSON Schemas for designs. *Partly done: live mode, tokens, split/join, subflows, OCEL export, separation of duties, line items, search, assistant, supervisors, expedite, workflow versions and migration; 112 tests across engine and server.* |
 | **M2** | Server on Postgres | Kysely migrations; events + projections + outbox + timers with per-item locking; object types, objects, lists, attachments; OIDC login; single image + Compose. |
 | **M3** | Work service and Workspace on the server | Worklists and all distribution modes with SKIP LOCKED claims; delegation, out of office, SLA timers with business calendars; the studio's Workspace and Monitor wired to the API and the live stream. |
 | **M4** | Automation | Outbox dispatcher; REST/OpenAPI and MCP connectors; worker SDKs (TypeScript, Python, .NET, Java) from OpenAPI; retries, incidents, tracing. |

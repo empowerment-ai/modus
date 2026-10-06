@@ -17,11 +17,11 @@
 //   amount>10k  "line total">=500  vendor:acme  category:software   any field or line-item column, by label
 
 import { rowsOf } from '../model/tables'
-import { fieldVerdicts } from '../model/security'
+import type { FieldVerdict } from '../model/security'
 import type { ColumnDef, FieldDef, Id, ObjectType, Priority, TableRow } from '../model/types'
 import { formatFieldValue } from '../model/format'
 import type { AuditEntry } from './state'
-import { activeTokens, buildIndex, type Ctx, describeTokenText, hasRole, type Index, indexFor, PRIORITY_RANK, type SimObject, type SimState, supervisesProcess, urgencyRank } from './engine'
+import { activeTokens, buildIndex, type Ctx, describeTokenText, hasRole, type Index, indexFor, itemFieldVerdicts, PRIORITY_RANK, type SimObject, type SimState, supervisesProcess, urgencyRank } from './engine'
 
 // ---------- Parsing ----------
 
@@ -158,10 +158,21 @@ function mayRead(idx: Index, obj: SimObject, type: ObjectType, userId: Id | unde
 
 function hiddenFields(idx: Index, obj: SimObject, type: ObjectType, userId: Id | undefined): Set<Id> {
   if (!userId) return new Set()
-  // The field locks of the version the item runs.
-  const wf = indexFor(idx, obj).wf.get(obj.workflowId)
-  const v = fieldVerdicts({ type, wf, passed: obj.passed, userId, groups: idx.ctx.groups, admin: hasRole(idx, userId, 'admin') })
+  const v = readVerdicts(idx, obj, type, userId)
   return new Set(Object.entries(v).filter(([, x]) => x.access === 'hidden').map(([id]) => id))
+}
+
+/** Field access outside a work step: the locks of the item's version and of the live version, the stricter wins. */
+function readVerdicts(idx: Index, obj: SimObject, type: ObjectType, userId: Id): Record<Id, FieldVerdict> {
+  const admin = hasRole(idx, userId, 'admin')
+  return itemFieldVerdicts(idx, obj, (ix) => ({ type, wf: ix.wf.get(obj.workflowId), passed: obj.passed, userId, groups: ix.ctx.groups, admin }))
+}
+
+/** What a person may see and change of an item outside a work step (read views, the API). */
+export function itemReadVerdicts(ctx: Ctx, obj: SimObject, userId: Id): Record<Id, FieldVerdict> {
+  const idx = buildIndex(ctx)
+  const type = idx.type.get(obj.typeId)
+  return type ? readVerdicts(idx, obj, type, userId) : {}
 }
 
 /** May this person see this item at all? The same rule search uses. */
