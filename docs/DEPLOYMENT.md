@@ -20,8 +20,8 @@ today and what is planned.
 | Area | Today | Planned |
 | --- | --- | --- |
 | Packaging | One image (amd64 and arm64), Docker Compose, a Helm chart, CI that builds every PR and publishes `main` | Signed images, release bundles |
-| Storage | **In memory**, snapshotted to JSON files in `DATA_DIR` (design, live state, event log). One process holds all state. | PostgreSQL (M2), SQL Server (M6), Oracle (v1.1) behind the same storage ports |
-| Scale | One pod. Scale up (CPU and memory), not out. | Roles split across deployments, horizontal scaling, autoscaling |
+| Storage | **PostgreSQL** (`DB_DIALECT=postgres`, the Compose default): design, each application's live state and the event log, with versioned migrations run at startup. Or **in memory**, snapshotted to JSON files in `DATA_DIR`. Either way one process holds the live state. | Projection tables, outbox, timers and per-item locking in Postgres (rest of M2); SQL Server (M6), Oracle (v1.1) behind the same storage ports |
+| Scale | One server process per database or data volume. Scale up (CPU and memory), not out. | Roles split across deployments, horizontal scaling, autoscaling |
 | Identity | The `x-user-id` header: whoever calls the API says who they are | OIDC sign-in (Keycloak, Entra ID, Login.gov), SCIM group sync |
 | Tenancy | One organization per installation | Tenant id in every key; Postgres row-level security for hosted; a database per tenant for regulated customers |
 | Observability | JSON logs on stdout, live counts per step (`/overview`), OCEL 2.0 export | OpenTelemetry traces, Prometheus metrics |
@@ -49,20 +49,41 @@ pnpm --filter @modus-bpm/server build
 STATIC_DIR=$PWD/apps/studio/dist node apps/server/dist/server.mjs
 ```
 
+The server on a local PostgreSQL (any 16–18; the Compose one is fine):
+
+```bash
+docker compose up -d postgres                 # PostgreSQL 18 on 127.0.0.1:5432
+DB_DIALECT=postgres DATABASE_URL=postgres://modus:modus-dev-only@127.0.0.1:5432/modus \
+  pnpm --filter @modus-bpm/server dev
+TEST_DATABASE_URL=postgres://modus:modus-dev-only@127.0.0.1:5432/modus \
+  pnpm --filter @modus-bpm/server test:pg      # the storage contract suite against it
+```
+
+`pnpm test` runs the contract suite against the memory adapter only and skips Postgres unless
+`TEST_DATABASE_URL` is set; `test:pg` fails without it. Each Postgres test works in a schema of its
+own and drops it afterwards, so it never touches the tables Modus itself uses.
+
 With Docker:
 
 ```bash
-docker compose up --build                     # http://localhost:8787
+docker compose up --build                     # Modus and PostgreSQL: http://localhost:8787
 ANTHROPIC_API_KEY=… docker compose up -d      # with the language-model assistant
-docker compose down                           # stop; the modus-data volume keeps the state
+docker compose down                           # stop; the postgres-data volume keeps the state
+docker compose down -v                        # stop and delete the data
+DB_DIALECT=memory docker compose up --no-deps modus   # no database: JSON snapshots in modus-data
 ```
 
-`docker-compose.yml` also defines three optional profiles for the infrastructure on the roadmap:
-`postgres` (PostgreSQL 18), `nats` (NATS JetStream with an MQTT listener, for event ingest) and
-`keycloak` (OIDC). **Modus does not use any of them yet**; they exist so the pieces can be tried
-side by side. They never start unless named: `docker compose --profile nats up -d`.
+Compose starts `postgres` (PostgreSQL 18, data in the `postgres-data` volume, published on
+`127.0.0.1:5432`, or `POSTGRES_PORT`) and starts `modus` once Postgres reports healthy, with
+`DB_DIALECT=postgres` and a `DATABASE_URL` pointing at it. Modus applies its schema migrations
+at startup. The password is a development-only default (`modus-dev-only`); set
+`POSTGRES_PASSWORD` in an untracked `.env` before the volume is first created (it is spliced
+into the connection string, so use URL-safe characters). Two optional profiles hold
+infrastructure on the roadmap that Modus does not use yet: `nats` (NATS JetStream with an MQTT
+listener, for event ingest) and `keycloak` (OIDC). They never start unless named:
+`docker compose --profile nats up -d`.
 
-Or run the image directly:
+Or run the image directly (in memory, unless you pass `DB_DIALECT` and `DATABASE_URL`):
 
 ```bash
 docker run -d --name modus -p 8787:8787 -v modus-data:/data ghcr.io/empowerment-ai/modus:main
@@ -90,11 +111,12 @@ The simplest real deployment: one Linux VM with Docker Engine and the Compose pl
      reverse_proxy 127.0.0.1:8787
    }
    ```
-4. `restart: unless-stopped` brings Modus back after a reboot. Back up the `modus-data` volume
-   (see [Backups](#backups-and-upgrades)).
+4. `restart: unless-stopped` brings Modus and Postgres back after a reboot. Back up the
+   database (see [Backups](#backups-and-upgrades)).
 
 Sizing: an idle server uses about 50 MB of memory. Memory grows with the number of live items,
-since everything is held in memory today; 1 GB is plenty for pilots.
+since the live state is held in memory today (Postgres stores it, it does not page it); 1 GB is
+plenty for pilots.
 
 ## Kubernetes and SaaS
 
@@ -121,10 +143,13 @@ without an API token, and optionally an Ingress, a HorizontalPodAutoscaler and a
 PodDisruptionBudget. Pods run as user 1000 with a read-only root filesystem, no capabilities
 and the runtime-default seccomp profile.
 
-**The chart refuses what the server can't do yet.** While `database.dialect` is `memory`, it
-fails to render with more than one replica, more than one deployment, or autoscaling, because
-each pod would hold its own copy of the state. The Deployment uses the `Recreate` strategy, so
-an upgrade has a short gap while the old pod stops and the new one loads.
+**The chart refuses what the server can't do yet.** It fails to render with more than one
+replica, more than one deployment, or autoscaling, because each pod would hold its own copy of
+the live state. That holds for `database.dialect: postgres` too until per-item locking lands:
+Postgres stores the state durably but one process still owns it. With `postgres`, point
+`database.existingSecret` at a Secret holding `DATABASE_URL`; the server migrates the schema at
+startup. The Deployment uses the `Recreate` strategy, so an upgrade has a short gap while the
+old pod stops (and writes its state) and the new one loads.
 
 ### Ingress and TLS
 
@@ -186,7 +211,7 @@ The chart only references Secrets that already exist; it never creates one from 
 | Value | Secret key | Used for |
 | --- | --- | --- |
 | `assistant.existingSecret` | `assistant.apiKeyKey` (default `ANTHROPIC_API_KEY`) | The language-model assistant |
-| `database.existingSecret` | `database.urlKey` (default `DATABASE_URL`) | SQL storage (planned) |
+| `database.existingSecret` | `database.urlKey` (default `DATABASE_URL`) | PostgreSQL storage (`database.dialect: postgres`) |
 
 ### Observability
 
@@ -235,7 +260,7 @@ a message that names the variable.
 | --- | --- | --- |
 | `PORT` | `8787` | Port the HTTP server listens on. |
 | `HOST` | `127.0.0.1` (image: `0.0.0.0`) | Interface to bind. |
-| `DATA_DIR` | unset (image: `/data`) | Where the in-memory store writes its snapshots: `design.json`, `state-<app>.json`, `events.jsonl`. Unset: nothing is written and a restart starts from the sample design. |
+| `DATA_DIR` | unset (image: `/data`) | Where the in-memory store writes its snapshots: `design.json`, `state-<app>.json`, `events.jsonl`. Unset: nothing is written and a restart starts from the sample design. Ignored, with a warning, for `postgres`. |
 | `TIME_SCALE` | `1` | Simulated minutes per real minute for timers, due dates and escalations. Demos may run faster. |
 | `STATIC_DIR` | unset (image: `/app/public`) | A built studio to serve at `/`, with single-page-app fallback. `/api/*` stays the API. Unset: API only. The directory must contain `index.html`. |
 | `LOG_LEVEL` | `info` | `fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent`. |
@@ -243,8 +268,8 @@ a message that names the variable.
 | `MODUS_ASSISTANT_MODEL` | `claude-opus-5-5` | The Claude model the assistant uses. |
 | `MODUS_ASSISTANT_EFFORT` | `medium` | Reasoning effort: `low`, `medium`, `high`, `xhigh`, `max`, or `off` for models without the setting. |
 | `MODUS_ASSISTANT_FALLBACKS` | `default` | `default` lets the API retry a declined question on its recommended fallback model; `off` for models or platforms without server-side fallback. |
-| `DB_DIALECT` | `memory` | Storage. Only `memory` is implemented. `postgres`, `mssql` and `oracle` are validated (with `DATABASE_URL`) and then refused with a clear message until their adapters ship. |
-| `DATABASE_URL` | unset | Connection string for a SQL dialect (`postgres://`, `mssql://` or `sqlserver://`, `oracle://`). Secret. Ignored, with a warning, for `memory`. |
+| `DB_DIALECT` | `memory` (Compose: `postgres`) | Storage: `memory` or `postgres`. `mssql` and `oracle` are validated (with `DATABASE_URL`) and then refused with a clear message until their adapters ship. |
+| `DATABASE_URL` | unset | Connection string, required for a SQL dialect: `postgres://` or `postgresql://` (`mssql://` or `sqlserver://`, `oracle://` later). Secret: the startup log shows only host, port and database. Ignored, with a warning, for `memory`. |
 | `TENANT_MODE` | `single` | `multi` is planned; accepted with a warning, runs as one tenant. |
 | `MODUS_ROLES` | all six | Comma-separated roles this process plays (`api,engine,automation,scheduler,ingest,realtime`). Unknown roles stop the server; a subset is accepted with a warning and every role still runs. |
 | `NODE_ENV` | image: `production` | Standard Node.js setting. |
@@ -258,16 +283,34 @@ The example worker (`apps/server/examples/worker.ts`) reads `MODUS_URL` (default
 | Endpoint | Meaning | Use for |
 | --- | --- | --- |
 | `GET /api/health` | The process is up and serving: `{ ok: true, apps }`. | Liveness probe, Docker `HEALTHCHECK`, load-balancer checks |
-| `GET /api/ready` | The design and state are loaded and the server is not shutting down: `200 { ok: true, apps, storage }`, or `503` while stopping. | Readiness probe |
+| `GET /api/ready` | The design and state are loaded, storage answers (for Postgres, a `select 1`) and the server is not shutting down: `200 { ok: true, apps, storage }`, or `503` while stopping or while the database is unreachable. | Readiness probe |
 
 On `SIGTERM` the server stops accepting connections (new requests get `503`), ends open live
 streams, finishes in-flight commands, writes a final snapshot and exits; this takes well under
-a second, inside the default 30-second grace period. The image's `HEALTHCHECK` calls
-`/api/health` every 30 seconds.
+a second, inside the default 30-second grace period, then closes its database connections. The
+image's `HEALTHCHECK` calls `/api/health` every 30 seconds.
+
+If Postgres goes away while the server runs, readiness turns `503`, failed event-log writes and
+state snapshots are logged and retried until the database is back, and the process keeps
+serving reads from memory. At startup the server exits with a message if it cannot reach the
+database or apply its migrations (Compose and Kubernetes restart it).
 
 ## Backups and upgrades
 
-**What to back up:** the `/data` volume, which holds `design.json` (applications, workflows,
+**PostgreSQL:** back up the database with your usual tooling: `pg_dump` for a logical copy, or
+base backups with WAL archiving (pgBackRest, Barman, a managed service's point-in-time
+recovery). With Compose:
+
+```bash
+docker compose exec -T postgres pg_dump -U modus -Fc modus > modus-$(date +%F).dump
+docker compose exec -T postgres pg_restore -U modus -d modus --clean < modus-2026-10-06.dump   # restore
+```
+
+The state of each application is written every five seconds and on shutdown, and events as
+each command completes, so a dump of a running server can have events a few seconds newer than
+the state. Stop `modus` first for an exact point in time.
+
+**In memory:** back up the `/data` volume, which holds `design.json` (applications, workflows,
 people), `state-<app>.json` (every live item, work item and counter) and `events.jsonl` (the
 append-only audit trail). Snapshots are rewritten every five seconds when something changed and
 on shutdown, each through a temporary file and an atomic rename, so copying a running volume
@@ -291,8 +334,10 @@ kubectl -n modus cp "$POD":/data ./modus-backup
 Modus is a prototype the snapshot format follows the engine's state shape and is not versioned
 or migrated: an upgrade can require starting with fresh state. The stored `design.json` always
 wins over the sample design built into the image; delete it to pick up a new sample. With
-PostgreSQL, schema migrations will run as a Helm pre-upgrade job, and SQL Server and Oracle
-installs will get migration scripts DBAs can review and run.
+PostgreSQL, the server applies pending schema migrations at startup (recorded in the
+`kysely_migration` table); the state inside the JSONB rows follows the same caveat as the
+snapshots. A Helm pre-upgrade migration job is planned, and SQL Server and Oracle installs will
+get migration scripts DBAs can review and run.
 
 ## The assistant and your data
 
