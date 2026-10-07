@@ -242,7 +242,8 @@ function hoursText(minutes: number): string {
 }
 
 /** One plain sentence on what the change did, plus whether that is good news. */
-export function verdict(result: ScenarioResult, changes: ScenarioChange[], ctx: Ctx): Verdict {
+/** One sentence on a run. `who` names the change when it isn't a list of changes (e.g. "Version 3"). */
+export function verdict(result: ScenarioResult, changes: ScenarioChange[], ctx: Ctx, who?: string): Verdict {
   const idx = buildIndex(ctx)
   const { baseline: b, scenario: s, hours } = result
   const noun = nounFor(ctx.app)
@@ -304,7 +305,7 @@ export function verdict(result: ScenarioResult, changes: ScenarioChange[], ctx: 
     effect = `${bn ? `${verb('moves')} the bottleneck to` : `${verb('creates')} a bottleneck at`} ${nodeLabel(idx, s.bottleneckId)}`
   }
 
-  const who = subject(idx, changes)
+  who ??= subject(idx, changes)
   if (!facts.length && !effect) return { tone: 'neutral', text: `${who} ${verb('makes')} no meaningful difference over ${hours} simulated hours.` }
   if (!effect) return { tone, text: `${who}: ${facts.join(', ')}.` }
   return { tone, text: `${who} ${effect}${facts.length ? `: ${facts.join(', ')}` : ''}.` }

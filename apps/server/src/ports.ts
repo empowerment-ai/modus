@@ -1,6 +1,7 @@
 // Storage ports: everything the server persists goes through these interfaces.
-// The in-memory adapter (adapters/memory.ts) ships today; Postgres comes next and
-// SQL Server / Oracle follow behind the same contract (see docs/ARCHITECTURE.md).
+// Two adapters ship: in memory (adapters/memory.ts) and PostgreSQL
+// (adapters/postgres.ts). SQL Server / Oracle follow behind the same contract,
+// which adapters/storage.contract.ts checks for every adapter (docs/ARCHITECTURE.md).
 
 import type { AuditEntry, Design, Id, SimState } from '@modus-bpm/core'
 
@@ -33,10 +34,18 @@ export interface LoggedEvent extends AuditEntry {
 export interface EventLog {
   append(events: LoggedEvent[]): Promise<void>
   read(filter: { appId?: Id; itemId?: Id; limit?: number }): Promise<LoggedEvent[]>
+  /** The highest position logged for each item of an application (the runtime numbers new entries after it). */
+  positions(appId: Id): Promise<Map<Id, number>>
 }
 
 export interface Storage {
+  /** Short name for the startup log and the readiness probe. */
+  name: string
   designs: DesignStore
   state: StateStore
   events: EventLog
+  /** Throws when the backing store cannot be reached (readiness). Absent: always reachable. */
+  ping?(): Promise<void>
+  /** Release connections on shutdown. */
+  close?(): Promise<void>
 }
