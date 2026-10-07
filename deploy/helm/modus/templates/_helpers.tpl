@@ -56,8 +56,9 @@ app.kubernetes.io/part-of: modus
 {{- end -}}
 
 {{/*
-Refuse values the server can't honour today. Storage is in memory in one
-process, so more than one pod would split the state.
+Refuse values the server can't honour today. One process holds the live state
+(in memory, or stored in Postgres but not yet shared), so more than one pod
+would split it.
 */}}
 {{- define "modus.validate" -}}
 {{- $enabled := include "modus.enabledDeployments" . | trim | splitList " " | compact -}}
@@ -69,19 +70,20 @@ process, so more than one pod would split the state.
 {{- if not $serving -}}
 {{- fail "At least one enabled deployment needs the api role." -}}
 {{- end -}}
-{{- if eq .Values.database.dialect "memory" -}}
+{{- /* Every dialect in this build keeps the live state in one process (Postgres stores it, it does not share it yet). */ -}}
+{{- $why := ternary "database.dialect=memory keeps all state in one process" "this build holds the live state in one process even on a SQL store (per-item locking is planned)" (eq .Values.database.dialect "memory") -}}
 {{- if gt (len $enabled) 1 -}}
-{{- fail "database.dialect=memory keeps all state in one process: enable exactly one deployment. Splitting roles needs a SQL store (planned)." -}}
+{{- fail (printf "%s: enable exactly one deployment." $why) -}}
 {{- end -}}
 {{- range $name, $d := .Values.deployments -}}
 {{- if and $d.enabled (gt (int $d.replicas) 1) -}}
-{{- fail (printf "deployments.%s.replicas must be 1 while database.dialect=memory (state lives in one process)." $name) -}}
+{{- fail (printf "deployments.%s.replicas must be 1: %s." $name $why) -}}
 {{- end -}}
 {{- end -}}
 {{- if .Values.autoscaling.enabled -}}
-{{- fail "autoscaling needs a SQL store (planned); keep autoscaling.enabled=false while database.dialect=memory." -}}
+{{- fail (printf "keep autoscaling.enabled=false: %s." $why) -}}
 {{- end -}}
-{{- else if not .Values.database.existingSecret -}}
+{{- if and (ne .Values.database.dialect "memory") (not .Values.database.existingSecret) -}}
 {{- fail (printf "database.existingSecret (a Secret holding %s) is required for database.dialect=%s." .Values.database.urlKey .Values.database.dialect) -}}
 {{- end -}}
 {{- end -}}
