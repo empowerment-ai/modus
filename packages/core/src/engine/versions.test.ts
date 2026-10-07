@@ -6,6 +6,7 @@ import { advance, burst, buildIndex, canSuperviseToken, createObject, type Ctx, 
 import { accessFor, adminMove, adminRelease, superviseAssign, superviseRedistribute, superviseSetPriority, workClaim, workDistribute, workNext, workSave } from './ops'
 import { canReadItem, itemReadVerdicts, searchItems } from './search'
 import { migrateItems, missingSteps, pinInFlight, versionUsage } from './versions'
+import { previewPublish } from './scenario'
 import { computeView, distributionFor, queuesFor, supervisionFor } from './view'
 
 // ---------- Builders ----------
@@ -460,5 +461,68 @@ describe('drafts and publishing', () => {
     expect(back.published).toBe(2)
     expect(hasDraftChanges(back)).toBe(true)
     expect(diffWorkflow(back, w.versions![0]!.snapshot).count).toBe(0)
+  })
+})
+
+// ---------- Trying a draft before publishing ----------
+
+describe('previewing a publish', () => {
+  function invoice(): Ctx {
+    const d = ensureVersions(seedDesign())
+    return { app: d.apps[0]!, users: d.users, groups: d.groups, services: d.services }
+  }
+  const faster = (w: Workflow) => {
+    for (const n of w.nodes) if (n.type === 'user') n.data.avgMinutes = Math.max(1, n.data.avgMinutes / 4)
+  }
+
+  it('an unchanged draft runs exactly like the live version', () => {
+    const ctx = invoice()
+    const sim = newSim('app_invoice', 11)
+    advance(sim, ctx, 6 * 60)
+    const p = previewPublish(sim, ctx, 'w_invoice', { who: 'all', hours: 4 })!
+    expect(p.version).toBe(2)
+    expect(p.scenario.completed).toBe(p.baseline.completed)
+    expect(p.scenario.wip).toBe(p.baseline.wip)
+  })
+
+  it('shows what a faster draft would do, without touching the live simulation or the design', () => {
+    const ctx = invoice()
+    const sim = newSim('app_invoice', 11)
+    advance(sim, ctx, 6 * 60)
+    const clock = sim.clock
+    const wfLive = ctx.app.workflows[0]!
+    faster(wfLive)
+    const before = JSON.stringify(sim)
+    const all = previewPublish(sim, ctx, 'w_invoice', { who: 'all', hours: 4 })!
+    const fresh = previewPublish(sim, ctx, 'w_invoice', { who: 'new', hours: 4 })!
+    expect(all.scenario.completed).toBeGreaterThan(all.baseline.completed)
+    expect(all.migration!.moved).toBeGreaterThan(0)
+    // Moving the work in flight helps more than new items alone.
+    expect(all.scenario.completed).toBeGreaterThanOrEqual(fresh.scenario.completed)
+    expect(fresh.migration).toBeUndefined()
+    expect(JSON.stringify(sim)).toBe(before)
+    expect(sim.clock).toBe(clock)
+    expect(wfLive.versions).toHaveLength(1)
+  })
+
+  it('reports items it could not move when a removed step is left unmapped', () => {
+    const ctx = invoice()
+    const sim = newSim('app_invoice', 11)
+    advance(sim, ctx, 6 * 60)
+    const w = ctx.app.workflows[0]!
+    const atManager = Object.values(sim.objects).filter((o) => o.status === 'active' && o.tokens.some((t) => t.nodeId === 'n_manager')).length
+    expect(atManager).toBeGreaterThan(0)
+    w.nodes = w.nodes.filter((n) => n.id !== 'n_manager')
+    w.edges = w.edges.filter((e) => e.source !== 'n_manager' && e.target !== 'n_manager')
+    const unmapped = previewPublish(sim, ctx, 'w_invoice', { who: 'all', hours: 2 })!
+    expect(unmapped.migration!.skipped.length).toBe(atManager)
+    const mapped = previewPublish(sim, ctx, 'w_invoice', { who: 'all', hours: 2, stepMap: { n_manager: 'n_controller' } })!
+    expect(mapped.migration!.skipped.length).toBe(0)
+  })
+
+  it('has nothing to preview for an unversioned workflow', () => {
+    const d = seedDesign()
+    const ctx = { app: d.apps[0]!, users: d.users, groups: d.groups, services: d.services }
+    expect(previewPublish(newSim('app_invoice', 1), ctx, 'w_invoice', { who: 'new', hours: 1 })).toBeUndefined()
   })
 })
