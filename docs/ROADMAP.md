@@ -79,7 +79,8 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | --- | --- |
 | Same engine in browser and server (live mode) | Skeleton |
 | REST API + live stream (SSE) | Skeleton |
-| PostgreSQL adapter, event log + projections + outbox + timers | Planned (M2) |
+| PostgreSQL storage: design, live state and the event log, with migrations at startup; Compose runs Modus on Postgres by default | Done (M2 first slice) |
+| Projection tables in the command's transaction, outbox, timers, per-item locking | Planned (M2) |
 | OIDC / SAML sign-in, SCIM group sync | Planned (M2–M6) |
 | SQL Server adapter (certified) | Planned (M6) |
 | Oracle adapter (certified) | Planned (v1.1) |
