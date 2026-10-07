@@ -16,6 +16,8 @@ export interface RuntimeOptions {
   tickMs?: number
   /** Start from the sample design when storage has none. */
   seedIfEmpty?: boolean
+  /** Background work (clock ticks, state snapshots) that failed, e.g. while the database is unreachable. It is retried. */
+  onError?: (err: unknown, during: 'tick' | 'snapshot' | 'log') => void
 }
 
 export interface Change {
@@ -38,11 +40,13 @@ export class Runtime {
   private lastTick = Date.now()
   private queue: Promise<unknown> = Promise.resolve()
   private stopping = false
+  private logBackoff = 0
+  private logRetryAt = 0
 
   private constructor(private readonly opts: Required<Omit<RuntimeOptions, 'storage'>> & { storage: Storage }) {}
 
   static async create(options: RuntimeOptions): Promise<Runtime> {
-    const rt = new Runtime({ timeScale: 1, tickMs: 1000, seedIfEmpty: true, ...options })
+    const rt = new Runtime({ timeScale: 1, tickMs: 1000, seedIfEmpty: true, onError: (err, during) => console.error(`Runtime ${during} failed:`, err), ...options })
     const stored = await rt.opts.storage.designs.load()
     rt.design = stored ?? seedDesign()
     if (!stored && rt.opts.seedIfEmpty) await rt.opts.storage.designs.save(rt.design)
@@ -59,8 +63,8 @@ export class Runtime {
   /** Start the clock and periodic state snapshots. */
   start() {
     this.lastTick = Date.now()
-    this.timer = setInterval(() => void this.tick(), this.opts.tickMs)
-    this.saver = setInterval(() => void this.persist(), 5000)
+    this.timer = setInterval(() => this.tick().catch((err) => this.opts.onError(err, 'tick')), this.opts.tickMs)
+    this.saver = setInterval(() => this.persist().catch((err) => this.opts.onError(err, 'snapshot')), 5000)
   }
 
   /** Loaded and not shutting down: the readiness probe. */
@@ -68,11 +72,25 @@ export class Runtime {
     return !this.stopping
   }
 
+  /** Readiness of the storage behind the runtime: its name, and the error when it cannot be reached. */
+  async checkStorage(): Promise<{ storage: string; error?: string }> {
+    const { storage } = this.opts
+    try {
+      await storage.ping?.()
+      return { storage: storage.name }
+    } catch (err) {
+      return { storage: storage.name, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
   async stop() {
     this.stopping = true
     if (this.timer) clearInterval(this.timer)
     if (this.saver) clearInterval(this.saver)
     await this.queue
+    // One last try for log entries held back by a failing log.
+    this.logRetryAt = 0
+    for (const app of this.design.apps) await this.flush(app.id)
     await this.persist()
   }
 
@@ -140,18 +158,33 @@ export class Runtime {
     const sim = this.state(appId)
     const batch: LoggedEvent[] = []
     const touched: Id[] = []
-    // The SQL adapters write events inside the command's transaction instead of scanning.
+    const written = new Map<string, number>()
+    // Later, the SQL adapters write events inside the command's transaction instead of scanning.
     for (const o of Object.values(sim.objects)) {
       const key = `${appId}:${o.id}`
       const done = this.logged.get(key) ?? 0
       if (o.history.length <= done) continue
       o.history.slice(done).forEach((e, i) => batch.push({ ...e, appId, itemId: o.id, itemNumber: o.number, seq: done + i + 1 }))
-      this.logged.set(key, o.history.length)
+      written.set(key, o.history.length)
       touched.push(o.id)
     }
     if (batch.length) {
-      await this.opts.storage.events.append(batch)
+      // The state changed whether or not the log write succeeds, so the next snapshot saves it either way.
       this.dirty.add(appId)
+      // While the log is failing, retry with backoff instead of on every command and tick. A failed write
+      // doesn't fail the command: the entries stay in the items' history (bounded by the state itself) and
+      // go out on the next attempt; appends are idempotent, so a batch that partly landed can't wedge the log.
+      if (Date.now() >= this.logRetryAt) {
+        try {
+          await this.opts.storage.events.append(batch)
+          for (const [key, n] of written) this.logged.set(key, n)
+          this.logBackoff = 0
+        } catch (err) {
+          this.logBackoff = Math.min(60_000, Math.max(1000, this.logBackoff * 2))
+          this.logRetryAt = Date.now() + this.logBackoff
+          this.opts.onError(err, 'log')
+        }
+      }
     }
     const change: Change = { appId, clock: sim.clock, itemIds: touched }
     for (const l of this.listeners) l(change)
@@ -160,7 +193,13 @@ export class Runtime {
   private async persist() {
     for (const appId of [...this.dirty]) {
       this.dirty.delete(appId)
-      await this.opts.storage.state.save(appId, this.state(appId))
+      try {
+        await this.opts.storage.state.save(appId, this.state(appId))
+      } catch (err) {
+        // Try again on the next snapshot.
+        this.dirty.add(appId)
+        throw err
+      }
     }
   }
 }
