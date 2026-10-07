@@ -291,8 +291,10 @@ a second, inside the default 30-second grace period, then closes its database co
 image's `HEALTHCHECK` calls `/api/health` every 30 seconds.
 
 If Postgres goes away while the server runs, readiness turns `503` (the reason goes to the log,
-not the response), commands keep working in memory, and failed event-log writes and state
-snapshots are logged and retried with backoff until the database is back. At startup the server exits with a message if it cannot reach the
+not the response) and changes are refused with `503` and `Retry-After`: nothing changes that
+can't be recorded in the audit log. A command caught mid-outage says its change was made but not
+yet recorded; its entries are written as soon as the database is back, before any other change.
+Reads keep working, and state snapshots are retried with backoff. At startup the server exits with a message if it cannot reach the
 database or apply its migrations (Compose and Kubernetes restart it).
 
 ## Backups and upgrades

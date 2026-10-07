@@ -89,6 +89,15 @@ export function storageContract(name: string, target: ContractTarget) {
       expect(all.map((e) => e.seq)).toEqual([1, 2, 3])
     })
 
+    it('refuses a batch that puts a different entry at a position already taken, and writes none of it', async () => {
+      const s = await create()
+      await s.events.append([event('app_a', 'i1', 1)])
+      const other = { ...event('app_a', 'i1', 1), text: 'something else' }
+      await expect(s.events.append([event('app_a', 'i2', 1), other])).rejects.toThrow(/conflict/)
+      const all = await (await reopen()).events.read({ appId: 'app_a' })
+      expect(all).toEqual([event('app_a', 'i1', 1)])
+    })
+
     it('filters by application and item, and returns the latest `limit`, oldest first', async () => {
       const s = await create()
       const batch: LoggedEvent[] = []
