@@ -29,6 +29,9 @@ export interface Change {
 
 export class NotFound extends Error {}
 
+/** Storage can't take writes right now (the HTTP layer answers 503). */
+export class StorageUnavailable extends Error {}
+
 export class Runtime {
   design!: Design
   private readonly sims = new Map<Id, SimState>()
@@ -89,8 +92,7 @@ export class Runtime {
     if (this.saver) clearInterval(this.saver)
     await this.queue
     // One last try for log entries held back by a failing log.
-    this.logRetryAt = 0
-    for (const app of this.design.apps) await this.flush(app.id)
+    for (const app of this.design.apps) await this.flush(app.id, true)
     await this.persist()
   }
 
@@ -117,8 +119,11 @@ export class Runtime {
     const next = this.queue.then(async () => {
       const ctx = this.ctx(appId)
       const sim = this.state(appId)
+      // Every change must reach the audit log: don't take a command while entries are still waiting to be written.
+      if (!(await this.flush(appId, true))) throw new StorageUnavailable('Storage is unavailable, so changes can’t be recorded. Try again shortly.')
       const result = fn(sim, ctx)
-      await this.flush(appId)
+      if (!(await this.flush(appId, true)))
+        throw new StorageUnavailable('The change was made but its audit entries aren’t written yet; they will be as soon as storage is back. Further changes wait until then.')
       return result
     })
     this.queue = next.catch(() => undefined)
@@ -153,8 +158,11 @@ export class Runtime {
     return () => this.listeners.delete(listener)
   }
 
-  /** Append new audit entries to the event log and tell listeners which items changed. */
-  private async flush(appId: Id) {
+  /**
+   * Append new audit entries to the event log and tell listeners which items changed. True when
+   * nothing is left unwritten. Commands always try (`now`); the clock backs off while the log fails.
+   */
+  private async flush(appId: Id, now = false): Promise<boolean> {
     const sim = this.state(appId)
     const batch: LoggedEvent[] = []
     const touched: Id[] = []
@@ -171,23 +179,27 @@ export class Runtime {
     if (batch.length) {
       // The state changed whether or not the log write succeeds, so the next snapshot saves it either way.
       this.dirty.add(appId)
-      // While the log is failing, retry with backoff instead of on every command and tick. A failed write
-      // doesn't fail the command: the entries stay in the items' history (bounded by the state itself) and
-      // go out on the next attempt; appends are idempotent, so a batch that partly landed can't wedge the log.
-      if (Date.now() >= this.logRetryAt) {
+      // Unwritten entries stay in the items' history (bounded by the state itself) and go out on the next
+      // attempt; appends are idempotent, so a batch that partly landed can't wedge the log.
+      let ok = false
+      if (now || Date.now() >= this.logRetryAt) {
         try {
           await this.opts.storage.events.append(batch)
           for (const [key, n] of written) this.logged.set(key, n)
           this.logBackoff = 0
+          this.logRetryAt = 0
+          ok = true
         } catch (err) {
           this.logBackoff = Math.min(60_000, Math.max(1000, this.logBackoff * 2))
           this.logRetryAt = Date.now() + this.logBackoff
           this.opts.onError(err, 'log')
         }
       }
+      if (!ok) return false
     }
     const change: Change = { appId, clock: sim.clock, itemIds: touched }
     for (const l of this.listeners) l(change)
+    return true
   }
 
   private async persist() {

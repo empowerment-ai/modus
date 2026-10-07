@@ -94,8 +94,7 @@ describe.skipIf(!url)('postgres', () => {
       await s.migrate()
       const e = (seq: number, itemId = 'i1') => ({ appId: 'app_a', itemId, itemNumber: 'A-1', seq, at: 0, kind: 'note', text: 'x' }) as never
       await s.events.append([e(1)])
-      // One process writes the log (the chart runs one replica), so a repeated position is that
-      // writer's own retry, not a second writer: it is skipped, not an error that blocks the log.
+      // An identical repeat is a retry of what already landed: skipped, not an error that blocks the log.
       await s.events.append([e(1, 'i2'), e(1)])
       expect((await s.events.read({ appId: 'app_a' })).map((x) => `${x.itemId}:${x.seq}`)).toEqual(['i1:1', 'i2:1'])
       await s.close()

@@ -125,7 +125,8 @@ What this slice does not do yet: the live state is still held by the one process
 back as a whole (every five seconds and on shutdown), not as projection tables updated in the
 command's transaction; there is no outbox, no timer table and no per-item locking, so run one
 server per database. A command's reply can go out before its events reach the database; a
-failed write is retried with backoff (up to a minute apart; appends are idempotent, so a
-batch that partly landed is safe to resend), but a crash in between loses it (and state written
+failed write makes the server refuse changes (`503`) until it is written (appends are
+idempotent, so a batch that partly landed is safe to resend; a different entry at a taken
+position is refused as a conflict), but a crash in between loses it (and state written
 back up to five seconds late). Those come next in milestone M2, along with OIDC sign-in. The Helm chart is in
 [`deploy/helm/modus`](../../deploy/helm/modus).

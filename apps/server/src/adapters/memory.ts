@@ -4,6 +4,7 @@
 
 import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import type { Design, Id, SimState } from '@modus-bpm/core'
 import type { DesignStore, EventLog, LoggedEvent, StateStore, Storage } from '../ports'
 
@@ -83,7 +84,14 @@ export function memoryStorage(dataDir?: string): Storage {
   const log: EventLog = {
     async append(batch) {
       await history
-      // Idempotent, like the SQL adapters: a batch sent again skips what already landed.
+      // Idempotent, like the SQL adapters: a batch sent again skips what already landed, and a
+      // different entry at a taken position refuses the whole batch.
+      for (const e of batch) {
+        if (e.seq > (lastSeq.get(`${e.appId}:${e.itemId}`) ?? 0)) continue
+        const had = events.findLast((x) => x.appId === e.appId && x.itemId === e.itemId && x.seq === e.seq)
+        if (had && !isDeepStrictEqual(had, JSON.parse(JSON.stringify(e))))
+          throw new Error(`Event log conflict: item ${e.itemNumber} already has a different entry at position ${e.seq}.`)
+      }
       batch = batch.filter((e) => e.seq > (lastSeq.get(`${e.appId}:${e.itemId}`) ?? 0))
       if (!batch.length) return
       for (const e of batch) lastSeq.set(`${e.appId}:${e.itemId}`, e.seq)
