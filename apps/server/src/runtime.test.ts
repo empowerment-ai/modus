@@ -41,4 +41,27 @@ describe('runtime with unreliable storage', () => {
     const saved = await storage.state.load('app_invoice')
     expect(Object.values(saved!.objects).some((o) => o.data.f_invno === 'RETRY-3')).toBe(true)
   })
+
+  it('restarts after a crash that lost recent state without reusing positions the log holds', async () => {
+    const storage = memoryStorage()
+    const first = await Runtime.create({ storage })
+    const make = (rt: Runtime, n: string, by = 'u_maya') => rt.run('app_invoice', (sim, ctx) => createObject(sim, ctx, 'w_invoice', { f_invno: n }, by))
+    await make(first, 'BEFORE')
+    const snapshot = await first.read('app_invoice', (sim) => structuredClone(sim))
+    const lost = await make(first, 'LOST')
+    // Crash: the log has LOST, the last state snapshot doesn't.
+    await storage.state.save('app_invoice', snapshot)
+
+    const second = await Runtime.create({ storage })
+    const lostEntries = (await storage.events.read({ itemId: lost!.id, limit: 1000 })).length
+    // Someone else creates the next item: different entries where the log already has the lost ones.
+    const again = await make(second, 'AFTER', 'u_jordan')
+    // The restored counters hand out the lost item's id again; its entries go after the logged ones.
+    expect(again!.id).toBe(lost!.id)
+    const log = await storage.events.read({ itemId: again!.id, limit: 1000 })
+    expect(log.length).toBe(lostEntries + again!.history.length)
+    expect(log.map((e) => e.seq)).toEqual(log.map((_, i) => i + 1))
+    expect(await make(second, 'NEXT')).toBeDefined()
+    await second.stop()
+  })
 })

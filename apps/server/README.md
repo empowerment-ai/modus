@@ -127,6 +127,8 @@ command's transaction; there is no outbox, no timer table and no per-item lockin
 server per database. A command's reply can go out before its events reach the database; a
 failed write makes the server refuse changes (`503`) until it is written (appends are
 idempotent, so a batch that partly landed is safe to resend; a different entry at a taken
-position is refused as a conflict), but a crash in between loses it (and state written
+position is refused as a conflict), but a crash in between loses it. After a crash the state can be a few seconds behind the log; at
+startup new entries are numbered after what the log holds, so the log keeps everything, though an
+item created in those lost seconds can have its number handed out again (and state written
 back up to five seconds late). Those come next in milestone M2, along with OIDC sign-in. The Helm chart is in
 [`deploy/helm/modus`](../../deploy/helm/modus).
