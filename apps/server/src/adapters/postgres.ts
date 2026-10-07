@@ -160,7 +160,9 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
     state,
     events,
     async migrate() {
-      const migrator = new Migrator({ db, provider: { getMigrations: async () => migrations } })
+      // Name the schema: Kysely otherwise finds a `kysely_migration` table in any schema (another install's, say).
+      const { rows } = await sql<{ name: string }>`select current_schema() as name`.execute(db)
+      const migrator = new Migrator({ db, provider: { getMigrations: async () => migrations }, migrationTableSchema: rows[0]?.name })
       const { error, results } = await migrator.migrateToLatest()
       const failed = results?.find((r) => r.status === 'Error')
       if (error) throw new Error(`Database migration ${failed?.migrationName ?? ''} failed: ${error instanceof Error ? error.message : String(error)}`)

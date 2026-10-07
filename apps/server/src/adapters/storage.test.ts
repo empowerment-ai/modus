@@ -76,6 +76,19 @@ describe.skipIf(!url)('postgres', () => {
       await s.close()
     })
 
+    it('ignores another schema’s migration history', async () => {
+      const decoy = await fresh()
+      await admin.query(`create table ${decoy}.kysely_migration (name varchar(255) primary key, timestamp varchar(255) not null)`)
+      const schema = await fresh()
+      const s = postgresStorage(url!, { schema })
+      await s.migrate()
+      await s.designs.save({ apps: [] } as never)
+      expect(await s.designs.load()).toEqual({ apps: [] })
+      await s.close()
+      await drop(decoy)
+      await drop(schema)
+    })
+
     it('rejects a second event at the same position in an item’s history, and the whole batch with it', async () => {
       const s = postgresStorage(url!, { schema: own })
       await s.migrate()
