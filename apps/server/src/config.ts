@@ -39,7 +39,7 @@ const env = z.object({
   /** Server-side refusal fallback (`default` lets the API pick a fallback model; `off` for models or platforms without it). */
   MODUS_ASSISTANT_FALLBACKS: z.enum(['default', 'off']).default('default'),
   LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
-  /** Storage backend. Only `memory` is implemented; the SQL dialects are validated and refused. */
+  /** Storage backend: `memory` (JSON snapshots in DATA_DIR) or `postgres` (DATABASE_URL). `mssql` and `oracle` are validated and refused. */
   DB_DIALECT: z.enum(DIALECTS).default('memory'),
   DATABASE_URL: z.string().optional(),
   /** `multi` is planned (tenant id in every key); accepted with a warning, runs as one tenant. */
@@ -55,7 +55,7 @@ export interface Config {
   timeScale: number
   staticDir?: string
   logLevel: (typeof LOG_LEVELS)[number]
-  db: { dialect: 'memory' }
+  db: { dialect: 'memory' } | { dialect: 'postgres'; url: string }
   tenantMode: 'single' | 'multi'
   roles: Role[]
   assistant: {
@@ -89,11 +89,10 @@ export function loadConfig(source: Record<string, string | undefined> = process.
     }
     if (!URL_SCHEMES[e.DB_DIALECT].includes(scheme))
       throw new ConfigError(`DATABASE_URL should start with ${URL_SCHEMES[e.DB_DIALECT].map((s) => `${s}//`).join(' or ')} for DB_DIALECT=${e.DB_DIALECT}.`)
-    throw new ConfigError(
-      `DB_DIALECT=${e.DB_DIALECT} is planned but not implemented in this build. Storage is in memory, snapshotted to JSON files in DATA_DIR. Unset DB_DIALECT (or set it to "memory") to start.`,
-    )
-  }
-  if (e.DATABASE_URL) warnings.push('DATABASE_URL is ignored: DB_DIALECT=memory.')
+    if (e.DB_DIALECT !== 'postgres')
+      throw new ConfigError(`DB_DIALECT=${e.DB_DIALECT} is planned but not implemented in this build. Use DB_DIALECT=postgres or memory.`)
+    if (e.DATA_DIR) warnings.push(`DATA_DIR is ignored: DB_DIALECT=${e.DB_DIALECT} keeps everything in the database.`)
+  } else if (e.DATABASE_URL) warnings.push('DATABASE_URL is ignored: DB_DIALECT=memory.')
   if (e.TENANT_MODE === 'multi') warnings.push('TENANT_MODE=multi is planned and not enforced yet; running as a single tenant.')
 
   const roles = [
@@ -115,7 +114,7 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       timeScale: e.TIME_SCALE,
       staticDir: e.STATIC_DIR,
       logLevel: e.LOG_LEVEL,
-      db: { dialect: 'memory' },
+      db: e.DB_DIALECT === 'postgres' ? { dialect: 'postgres', url: e.DATABASE_URL! } : { dialect: 'memory' },
       tenantMode: e.TENANT_MODE,
       roles: roles as Role[],
       assistant: {
@@ -129,8 +128,15 @@ export function loadConfig(source: Record<string, string | undefined> = process.
   }
 }
 
+/** Where a database URL points (host, port, database), without the user name or password. */
+function dbTarget(url: string): string {
+  const u = new URL(url)
+  return `${u.hostname}${u.port ? `:${u.port}` : ''}${u.pathname}`
+}
+
 /** One line for the startup log. Never includes secrets. */
 export function describeConfig(c: Config): string {
   const assistant = c.assistant.apiKey ? `model ${c.assistant.model}` : 'built-in (no ANTHROPIC_API_KEY)'
-  return `storage ${c.db.dialect}${c.dataDir ? ` → ${c.dataDir}` : ' (not persisted)'}; studio ${c.staticDir ?? 'not served'}; assistant ${assistant}; tenancy ${c.tenantMode}; time ×${c.timeScale}`
+  const storage = c.db.dialect === 'postgres' ? `postgres → ${dbTarget(c.db.url)}` : `memory${c.dataDir ? ` → ${c.dataDir}` : ' (not persisted)'}`
+  return `storage ${storage}; studio ${c.staticDir ?? 'not served'}; assistant ${assistant}; tenancy ${c.tenantMode}; time ×${c.timeScale}`
 }
