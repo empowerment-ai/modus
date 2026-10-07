@@ -163,6 +163,10 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
         }
       })
     },
+    async positions(appId) {
+      const rows = await db.selectFrom('event').select(['item_id', (eb) => eb.fn.max('seq').as('seq')]).where('app_id', '=', appId).groupBy('item_id').execute()
+      return new Map(rows.map((r) => [r.item_id as Id, Number(r.seq)]))
+    },
     async read({ appId, itemId, limit = 200 }) {
       let q = db.selectFrom('event').select(['app_id', 'item_id', 'item_number', 'seq', 'entry'])
       if (appId) q = q.where('app_id', '=', appId)

@@ -102,6 +102,15 @@ export function memoryStorage(dataDir?: string): Storage {
         await appendFile(join(dataDir, 'events.jsonl'), batch.map((e) => JSON.stringify(e)).join('\n') + '\n')
       }
     },
+    async positions(appId) {
+      await history
+      const out = new Map<Id, number>()
+      for (const [key, seq] of lastSeq) {
+        const at = key.indexOf(':')
+        if (key.slice(0, at) === appId) out.set(key.slice(at + 1), seq)
+      }
+      return out
+    },
     async read({ appId, itemId, limit = 200 }) {
       await history
       const out: LoggedEvent[] = []

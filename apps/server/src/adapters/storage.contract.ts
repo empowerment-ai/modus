@@ -89,6 +89,13 @@ export function storageContract(name: string, target: ContractTarget) {
       expect(all.map((e) => e.seq)).toEqual([1, 2, 3])
     })
 
+    it('says the highest position logged for each item of an application', async () => {
+      const s = await create()
+      await s.events.append([event('app_a', 'i1', 1), event('app_a', 'i1', 2), event('app_a', 'i2', 1), event('app_b', 'i9', 1)])
+      expect(await (await reopen()).events.positions('app_a')).toEqual(new Map([['i1', 2], ['i2', 1]]))
+      expect(await s.events.positions('app_none')).toEqual(new Map())
+    })
+
     it('refuses a batch that puts a different entry at a position already taken, and writes none of it', async () => {
       const s = await create()
       await s.events.append([event('app_a', 'i1', 1)])

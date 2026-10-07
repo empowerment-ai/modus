@@ -36,6 +36,10 @@ export class Runtime {
   design!: Design
   private readonly sims = new Map<Id, SimState>()
   private readonly logged = new Map<string, number>()
+  /** Positions the log holds beyond an item's history (after a crash lost recent state), per item. */
+  private readonly offset = new Map<string, number>()
+  /** What the log held per item at startup, for items the restored state no longer has. */
+  private readonly positions = new Map<Id, Map<Id, number>>()
   private readonly listeners = new Set<(c: Change) => void>()
   private readonly dirty = new Set<Id>()
   private timer?: ReturnType<typeof setInterval>
@@ -55,9 +59,20 @@ export class Runtime {
     if (!stored && rt.opts.seedIfEmpty) await rt.opts.storage.designs.save(rt.design)
     for (const app of rt.design.apps) {
       const s = await rt.opts.storage.state.load(app.id)
+      // The state is snapshotted every few seconds but the log is written as things happen, so after a
+      // crash the log can be ahead of the state (or, if the log failed, behind it). Line them up so new
+      // entries never reuse a position the log already holds, which would refuse every change from then on.
+      const logged = await rt.opts.storage.events.positions(app.id)
+      rt.positions.set(app.id, logged)
       if (s) {
         rt.sims.set(app.id, s)
-        for (const o of Object.values(s.objects)) rt.logged.set(`${app.id}:${o.id}`, o.history.length)
+        for (const o of Object.values(s.objects)) {
+          const key = `${app.id}:${o.id}`
+          const inLog = logged.get(o.id) ?? 0
+          // State ahead: log the entries the log is missing. Log ahead: number new entries after it.
+          rt.logged.set(key, Math.min(o.history.length, inLog))
+          rt.offset.set(key, Math.max(0, inLog - o.history.length))
+        }
       }
     }
     return rt
@@ -172,7 +187,9 @@ export class Runtime {
       const key = `${appId}:${o.id}`
       const done = this.logged.get(key) ?? 0
       if (o.history.length <= done) continue
-      o.history.slice(done).forEach((e, i) => batch.push({ ...e, appId, itemId: o.id, itemNumber: o.number, seq: done + i + 1 }))
+      let off = this.offset.get(key)
+      if (off === undefined) this.offset.set(key, (off = this.positions.get(appId)?.get(o.id) ?? 0))
+      o.history.slice(done).forEach((e, i) => batch.push({ ...e, appId, itemId: o.id, itemNumber: o.number, seq: off + done + i + 1 }))
       written.set(key, o.history.length)
       touched.push(o.id)
     }

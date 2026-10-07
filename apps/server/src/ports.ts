@@ -34,6 +34,8 @@ export interface LoggedEvent extends AuditEntry {
 export interface EventLog {
   append(events: LoggedEvent[]): Promise<void>
   read(filter: { appId?: Id; itemId?: Id; limit?: number }): Promise<LoggedEvent[]>
+  /** The highest position logged for each item of an application (the runtime numbers new entries after it). */
+  positions(appId: Id): Promise<Map<Id, number>>
 }
 
 export interface Storage {
