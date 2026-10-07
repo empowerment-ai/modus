@@ -29,10 +29,20 @@ describe('configuration', () => {
     expect(() => loadConfig({ MODUS_ROLES: 'api,cook' })).toThrow(/unknown roles: cook/)
   })
 
-  it('validates the planned SQL dialects and refuses them clearly', () => {
+  it('accepts postgres with a matching DATABASE_URL', () => {
+    const url = 'postgres://modus:s3cret-pw@db:5432/modus'
+    const { config, warnings } = loadConfig({ DB_DIALECT: 'postgres', DATABASE_URL: url })
+    expect(config.db).toEqual({ dialect: 'postgres', url })
+    expect(warnings).toEqual([])
+    expect(loadConfig({ DB_DIALECT: 'postgres', DATABASE_URL: 'postgresql://db/modus', DATA_DIR: '/data' }).warnings.join('\n')).toMatch(/DATA_DIR is ignored/)
     expect(() => loadConfig({ DB_DIALECT: 'postgres' })).toThrow(/DATABASE_URL is required/)
     expect(() => loadConfig({ DB_DIALECT: 'postgres', DATABASE_URL: 'mssql://db/modus' })).toThrow(/postgres:\/\//)
-    expect(() => loadConfig({ DB_DIALECT: 'postgres', DATABASE_URL: 'postgres://modus@db:5432/modus' })).toThrow(/planned but not implemented/)
+  })
+
+  it('validates the planned SQL dialects and refuses them clearly', () => {
+    expect(() => loadConfig({ DB_DIALECT: 'mssql', DATABASE_URL: 'mssql://db/modus' })).toThrow(/DB_DIALECT=mssql is planned but not implemented/)
+    expect(() => loadConfig({ DB_DIALECT: 'oracle', DATABASE_URL: 'oracle://db/modus' })).toThrow(/DB_DIALECT=oracle is planned but not implemented/)
+    expect(() => loadConfig({ DB_DIALECT: 'mssql', DATABASE_URL: 'postgres://db/modus' })).toThrow(/mssql:\/\//)
     expect(() => loadConfig({ DB_DIALECT: 'sybase' })).toThrow(/DB_DIALECT/)
   })
 
@@ -41,6 +51,14 @@ describe('configuration', () => {
     expect(warnings.join('\n')).toMatch(/TENANT_MODE=multi is planned/)
     expect(warnings.join('\n')).toMatch(/MODUS_ROLES=api,realtime/)
     expect(warnings.join('\n')).toMatch(/DATABASE_URL is ignored/)
+  })
+
+  it('never puts the database password or user in the startup line', () => {
+    const { config } = loadConfig({ DB_DIALECT: 'postgres', DATABASE_URL: 'postgres://modus:s3cret-pw@db:5432/modus' })
+    const line = describeConfig(config)
+    expect(line).toContain('storage postgres → db:5432/modus')
+    expect(line).not.toContain('s3cret-pw')
+    expect(line).not.toContain('modus:')
   })
 
   it('never puts the API key in the startup line', () => {

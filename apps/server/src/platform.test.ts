@@ -207,6 +207,19 @@ describe('health, readiness and the studio', () => {
     await server.close()
   })
 
+  it('says storage is unreachable without repeating the driver’s error', async () => {
+    const storage = memoryStorage()
+    storage.ping = () => Promise.reject(new Error('connect ECONNREFUSED db.internal:5432 for user "modus_admin"'))
+    const own = await Runtime.create({ storage })
+    const server = buildServer(own, { logger: false })
+    const res = await server.inject({ method: 'GET', url: '/api/ready' })
+    expect(res.statusCode).toBe(503)
+    expect(res.json()).toEqual({ ok: false, storage: 'memory', error: 'Storage unreachable' })
+    expect(res.body).not.toMatch(/db\.internal|modus_admin/)
+    await own.stop()
+    await server.close()
+  })
+
   it('serves the built studio with a single-page fallback, keeping /api for the API', async () => {
     const server = buildServer(rt, { staticDir: dir })
     const home = await server.inject({ method: 'GET', url: '/' })
