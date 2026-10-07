@@ -23,7 +23,7 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | DMN decision tables bound to object fields | Planned |
 | Case handling: stages, milestones, ad-hoc tasks | Planned |
 | Natural language → draft workflow (always editable as a diagram) | Planned |
-| Simulate a draft before publishing; the version differences drawn on the map | Planned (next) |
+| Try a draft before publishing: run the live state forward with and without the new version (new items only, or work in flight moved too) and compare; steps the draft adds or changes marked on the map | Prototype |
 | BPMN 2.0 XML export / import | Planned |
 
 ## Work and people
@@ -79,7 +79,8 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | --- | --- |
 | Same engine in browser and server (live mode) | Skeleton |
 | REST API + live stream (SSE) | Skeleton |
-| PostgreSQL adapter, event log + projections + outbox + timers | Planned (M2) |
+| PostgreSQL storage: design, live state and the event log, with migrations at startup; Compose runs Modus on Postgres by default | Done (M2 first slice) |
+| Projection tables in the command's transaction, outbox, timers, per-item locking | Planned (M2) |
 | OIDC / SAML sign-in, SCIM group sync | Planned (M2–M6) |
 | SQL Server adapter (certified) | Planned (M6) |
 | Oracle adapter (certified) | Planned (v1.1) |

@@ -58,7 +58,7 @@ import {
 } from '@modus-bpm/core'
 import { answer, type ModelAssistant } from './assistant'
 import { canRead, findItem, hitDto, itemDto, workItemDto } from './dto'
-import { NotFound, type Runtime } from './runtime'
+import { NotFound, type Runtime, StorageUnavailable } from './runtime'
 
 export interface ServerOptions {
   logger?: FastifyServerOptions['logger']
@@ -131,6 +131,10 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof NotFound) return reply.code(404).send({ ok: false, error: err.message })
     if (err instanceof Unauthorized) return reply.code(401).send({ ok: false, error: err.message })
+    if (err instanceof StorageUnavailable) {
+      reply.log.warn(err.message)
+      return reply.code(503).header('retry-after', '5').send({ ok: false, error: err.message })
+    }
     if (err instanceof z.ZodError) return reply.code(400).send({ ok: false, error: 'Invalid request', issues: err.issues })
     reply.log.error(err)
     return reply.code(500).send({ ok: false, error: 'Unexpected error' })
@@ -153,8 +157,17 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
   /** Liveness: the process is up and serving. */
   app.get('/api/health', quiet, async () => ({ ok: true, apps: rt.design.apps.length }))
 
-  /** Readiness: the design and state are loaded and the server is not shutting down. */
-  app.get('/api/ready', quiet, async (_req, reply) => (rt.ready ? { ok: true, apps: rt.design.apps.length, storage: 'memory' } : reply.code(503).send({ ok: false, error: 'Shutting down' })))
+  /** Readiness: the design and state are loaded, storage answers, and the server is not shutting down. */
+  app.get('/api/ready', quiet, async (req, reply) => {
+    if (!rt.ready) return reply.code(503).send({ ok: false, error: 'Shutting down' })
+    const { storage, error } = await rt.checkStorage()
+    if (error) {
+      // The probe is unauthenticated: driver errors can name hosts, users and databases, so they stay in the log.
+      req.log.warn({ storage, error }, 'Storage unreachable')
+      return reply.code(503).send({ ok: false, storage, error: 'Storage unreachable' })
+    }
+    return { ok: true, apps: rt.design.apps.length, storage }
+  })
 
   app.get('/api', async () => ({
     name: 'Modus API (prototype)',

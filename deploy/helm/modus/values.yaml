@@ -2,9 +2,10 @@
 #
 #   helm install modus deploy/helm/modus --set image.tag=main
 #
-# What is real today and what is planned: docs/DEPLOYMENT.md. In short, storage
-# is in memory with JSON snapshots on a volume, so the chart runs one pod and
-# refuses settings that would need a shared SQL store.
+# What is real today and what is planned: docs/DEPLOYMENT.md. In short, one
+# process holds the live state (in memory with JSON snapshots on a volume, or
+# stored in PostgreSQL), so the chart runs one pod and refuses settings that
+# would need a shared store with per-item locking.
 
 image:
   repository: ghcr.io/empowerment-ai/modus
@@ -25,8 +26,8 @@ fullnameOverride: ''
 #   ingest      stream intake and triage (NATS / MQTT / Kafka)
 #   realtime    the live event stream (SSE)
 # Today every process runs every role (MODUS_ROLES is accepted and logged) and
-# keeps state in memory, so keep the single all-in-one deployment at one replica.
-# Once a SQL store ships, split them, for example:
+# holds the live state, so keep the single all-in-one deployment at one replica.
+# Once the SQL store shares state with per-item locking, split them, for example:
 #   all:        { enabled: false }
 #   api:        { enabled: true, roles: [api, realtime], replicas: 3 }
 #   engine:     { enabled: true, roles: [engine, scheduler], replicas: 2 }
@@ -63,8 +64,9 @@ tenancy:
   mode: single
 
 database:
-  # memory is implemented. postgres, mssql and oracle are planned: the server validates
-  # DATABASE_URL and then refuses to start until their adapters ship.
+  # memory (JSON snapshots on the volume) or postgres (DATABASE_URL from existingSecret).
+  # mssql and oracle are planned: the server validates DATABASE_URL and refuses to start.
+  # Either way one process holds the live state today, so the chart allows one replica.
   dialect: memory
   # An existing Secret with the connection string (SQL dialects only).
   existingSecret: ''
@@ -111,7 +113,7 @@ ingress:
   #    hosts: [modus.example.com]
 
 autoscaling:
-  # Planned: needs a SQL store. The chart refuses it while database.dialect=memory.
+  # Planned: needs per-item locking in the SQL store. The chart refuses it in this build.
   enabled: false
   deployment: all
   minReplicas: 2

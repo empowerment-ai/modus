@@ -4,7 +4,9 @@
 // the engine is deterministic, any difference comes from the change.
 
 import type { App, Distribution, Group, Id, ServiceDef, User, WfNode, Workflow } from '../model/types'
+import { publishedVersion, publishWorkflow } from '../model/versions'
 import { advance, type Ctx, type SimState } from './engine'
+import { type Migration, migrateItems, pinInFlight } from './versions'
 import { computeView, type SimView } from './view'
 
 export type ScenarioChange =
@@ -156,4 +158,42 @@ export function runScenario(sim: SimState, ctx: Ctx, changes: ScenarioChange[], 
   advance(base, plain, hours * 60)
   advance(what, { ...changed, manualUserIds: [] }, hours * 60)
   return { hours, baseline: kpis(start, base, plain, hours), scenario: kpis(start, what, changed, hours) }
+}
+
+export interface PublishPreview extends ScenarioResult {
+  /** The version the draft would become. */
+  version: number
+  /** Items in flight moved onto it at the start of the run (only when everyone moves). */
+  migration?: Migration
+}
+
+/**
+ * Try a draft before publishing it: run the live simulation forward `hours`
+ * twice from the same state and random numbers — as it is, and with the
+ * workflow's working copy published as the next version. `new`: only new items
+ * start on it. `all`: the items in flight move onto it first (work at removed
+ * steps goes where `stepMap` says, or the item stays on its version).
+ */
+export function previewPublish(sim: SimState, ctx: Ctx, workflowId: Id, opts: { who: 'new' | 'all'; stepMap?: Record<Id, Id>; hours: number }): PublishPreview | undefined {
+  const wf = ctx.app.workflows.find((w) => w.id === workflowId)
+  if (!wf || publishedVersion(wf) === undefined) return undefined
+  const start = clone(sim)
+  start.flights = []
+  // Items with no pin would follow the publish; pin both copies alike, as publishing does.
+  pinInFlight(start, ctx)
+  const base = clone(start)
+  const what = clone(start)
+  const next = publishWorkflow(clone(wf), { at: sim.clock })
+  const version = next.published!
+  const changed: Ctx = { ...ctx, app: { ...ctx.app, workflows: ctx.app.workflows.map((w) => (w.id === workflowId ? next : w)) } }
+  let migration: Migration | undefined
+  if (opts.who === 'all') {
+    const r = migrateItems(what, changed, workflowId, version, { stepMap: opts.stepMap, actor: 'Preview' })
+    if (r.ok) migration = r.value
+  }
+  const plain = { ...ctx, manualUserIds: [] }
+  const mins = opts.hours * 60
+  advance(base, plain, mins)
+  advance(what, { ...changed, manualUserIds: [] }, mins)
+  return { hours: opts.hours, version, baseline: kpis(start, base, plain, opts.hours), scenario: kpis(start, what, changed, opts.hours), ...(migration ? { migration } : {}) }
 }
