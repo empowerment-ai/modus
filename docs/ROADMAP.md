@@ -23,7 +23,7 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | DMN decision tables bound to object fields | Planned |
 | Case handling: stages, milestones, ad-hoc tasks | Planned |
 | Natural language → draft workflow (always editable as a diagram) | Planned |
-| Simulate a draft before publishing; the version differences drawn on the map | Planned (next) |
+| Try a draft before publishing: run the live state forward with and without the new version (new items only, or work in flight moved too) and compare; steps the draft adds or changes marked on the map | Prototype |
 | BPMN 2.0 XML export / import | Planned |
 
 ## Work and people

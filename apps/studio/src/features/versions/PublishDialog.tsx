@@ -6,6 +6,7 @@ import { Badge, Button, cx, Field, Input, Modal } from '../../components/ui'
 import { ctxFor, useSimState } from '../../store/sim'
 import { type Audience, publishDraft } from './actions'
 import { ChangeList } from './ChangeList'
+import { DraftPreview } from './DraftPreview'
 import { StepMapping } from './StepMapping'
 
 /** Publish a workflow's draft as its next version, and choose who runs it. */
@@ -115,6 +116,7 @@ export function PublishDialog({ app, wf, onClose }: { app: App; wf: Workflow; on
           </p>
         )}
         {who === 'all' && <StepMapping missing={missing} targets={wf.nodes} toVersion={next} value={stepMap} onChange={setStepMap} />}
+        {who !== 'draft' && changes > 0 && <DraftPreview app={app} wf={wf} who={who} stepMap={stepMap} version={next} />}
       </div>
     </Modal>
   )

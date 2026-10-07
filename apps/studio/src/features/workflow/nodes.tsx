@@ -3,7 +3,7 @@ import { AlarmClock, Ban, Bot, ChevronRight, CircleCheck, CircleX, Eye, Filter, 
 import { memo } from 'react'
 import { cx } from '../../components/ui'
 import { DISTRIBUTION } from '../../components/icons'
-import type { NodeMetrics } from '@modus-bpm/core'
+import { draftChanges, type NodeMetrics } from '@modus-bpm/core'
 import { subflowOutcomes } from '@modus-bpm/core/model/templates'
 import type { Group, Id, User, WfNode, Workflow } from '@modus-bpm/core/model/types'
 import { formatDuration } from '@modus-bpm/core/model/util'
@@ -571,14 +571,60 @@ function WorkloadStrip({ node, metrics, group, users }: { node: Extract<WfNode, 
   )
 }
 
+// ---------- Draft marks: what the unpublished draft adds or changes ----------
+
+const marks = new WeakMap<Workflow, Map<Id, { kind: 'new' | 'changed'; detail?: string }>>()
+
+/** Steps the draft adds or changes compared with the published version (cached per workflow object). */
+function draftMarks(wf: Workflow) {
+  let m = marks.get(wf)
+  if (!m) {
+    const diff = draftChanges(wf)
+    m = new Map()
+    for (const s of diff?.steps.added ?? []) m.set(s.id, { kind: 'new' })
+    for (const s of diff?.steps.changed ?? []) m.set(s.id, { kind: 'changed', detail: s.detail })
+    marks.set(wf, m)
+  }
+  return m
+}
+
+function DraftMark({ id, workflowId }: { id: Id; workflowId: Id }) {
+  const wf = useWorkflow(workflowId)
+  const mark = wf ? draftMarks(wf).get(id) : undefined
+  if (!mark) return null
+  return (
+    <span
+      title={mark.kind === 'new' ? 'Added in the draft: not live until you publish' : `Changed in the draft (${mark.detail ?? 'settings'}): not live until you publish`}
+      className={cx(
+        'pointer-events-auto absolute -top-2.5 right-3 z-10 rounded-full px-1.5 py-px text-[10px] font-semibold tracking-wide uppercase shadow-sm ring-2 ring-white',
+        mark.kind === 'new' ? 'bg-amber-500 text-white' : 'bg-amber-100 text-amber-900',
+      )}
+    >
+      {mark.kind === 'new' ? 'New' : 'Changed'}
+    </span>
+  )
+}
+
+/** Every step, with a mark when the draft adds or changes it. */
+function marked<P extends NodeProps & { data: FlowNodeData }>(Node: React.ComponentType<P>) {
+  return memo(function Marked(props: P) {
+    return (
+      <div className="relative">
+        <Node {...props} />
+        <DraftMark id={props.id} workflowId={props.data.workflowId} />
+      </div>
+    )
+  })
+}
+
 export const nodeTypes = {
-  start: StartNode,
-  end: EndNode,
-  decision: DecisionNode,
-  split: SplitNode,
-  join: JoinNode,
-  wait: WaitNode,
-  subflow: SubflowNode,
-  auto: AutoNode,
-  user: UserNode,
+  start: marked(StartNode),
+  end: marked(EndNode),
+  decision: marked(DecisionNode),
+  split: marked(SplitNode),
+  join: marked(JoinNode),
+  wait: marked(WaitNode),
+  subflow: marked(SubflowNode),
+  auto: marked(AutoNode),
+  user: marked(UserNode),
 }
