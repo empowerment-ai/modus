@@ -154,10 +154,14 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
   app.get('/api/health', quiet, async () => ({ ok: true, apps: rt.design.apps.length }))
 
   /** Readiness: the design and state are loaded, storage answers, and the server is not shutting down. */
-  app.get('/api/ready', quiet, async (_req, reply) => {
+  app.get('/api/ready', quiet, async (req, reply) => {
     if (!rt.ready) return reply.code(503).send({ ok: false, error: 'Shutting down' })
     const { storage, error } = await rt.checkStorage()
-    if (error) return reply.code(503).send({ ok: false, storage, error: `Storage unreachable: ${error}` })
+    if (error) {
+      // The probe is unauthenticated: driver errors can name hosts, users and databases, so they stay in the log.
+      req.log.warn({ storage, error }, 'Storage unreachable')
+      return reply.code(503).send({ ok: false, storage, error: 'Storage unreachable' })
+    }
     return { ok: true, apps: rt.design.apps.length, storage }
   })
 

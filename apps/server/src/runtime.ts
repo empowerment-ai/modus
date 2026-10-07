@@ -17,7 +17,7 @@ export interface RuntimeOptions {
   /** Start from the sample design when storage has none. */
   seedIfEmpty?: boolean
   /** Background work (clock ticks, state snapshots) that failed, e.g. while the database is unreachable. It is retried. */
-  onError?: (err: unknown, during: 'tick' | 'snapshot') => void
+  onError?: (err: unknown, during: 'tick' | 'snapshot' | 'log') => void
 }
 
 export interface Change {
@@ -40,6 +40,8 @@ export class Runtime {
   private lastTick = Date.now()
   private queue: Promise<unknown> = Promise.resolve()
   private stopping = false
+  private logBackoff = 0
+  private logRetryAt = 0
 
   private constructor(private readonly opts: Required<Omit<RuntimeOptions, 'storage'>> & { storage: Storage }) {}
 
@@ -86,6 +88,9 @@ export class Runtime {
     if (this.timer) clearInterval(this.timer)
     if (this.saver) clearInterval(this.saver)
     await this.queue
+    // One last try for log entries held back by a failing log.
+    this.logRetryAt = 0
+    for (const app of this.design.apps) await this.flush(app.id)
     await this.persist()
   }
 
@@ -164,10 +169,22 @@ export class Runtime {
       touched.push(o.id)
     }
     if (batch.length) {
-      // The state changed whether or not the log write succeeds; a failed batch is sent again on the next flush.
+      // The state changed whether or not the log write succeeds, so the next snapshot saves it either way.
       this.dirty.add(appId)
-      await this.opts.storage.events.append(batch)
-      for (const [key, n] of written) this.logged.set(key, n)
+      // While the log is failing, retry with backoff instead of on every command and tick. A failed write
+      // doesn't fail the command: the entries stay in the items' history (bounded by the state itself) and
+      // go out on the next attempt; appends are idempotent, so a batch that partly landed can't wedge the log.
+      if (Date.now() >= this.logRetryAt) {
+        try {
+          await this.opts.storage.events.append(batch)
+          for (const [key, n] of written) this.logged.set(key, n)
+          this.logBackoff = 0
+        } catch (err) {
+          this.logBackoff = Math.min(60_000, Math.max(1000, this.logBackoff * 2))
+          this.logRetryAt = Date.now() + this.logBackoff
+          this.opts.onError(err, 'log')
+        }
+      }
     }
     const change: Change = { appId, clock: sim.clock, itemIds: touched }
     for (const l of this.listeners) l(change)
