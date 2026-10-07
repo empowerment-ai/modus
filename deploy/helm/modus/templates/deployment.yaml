@@ -15,8 +15,9 @@ spec:
   {{- end }}
   revisionHistoryLimit: 5
   strategy:
-    # In-memory state and a ReadWriteOnce volume: the old pod must stop before the new one starts.
-    type: {{ ternary "Recreate" "RollingUpdate" $memory }}
+    # The live state is held by one process (and, for memory, a ReadWriteOnce volume), whatever
+    # the dialect in this build: the old pod must stop and write its state before the new one loads it.
+    type: Recreate
   selector:
     matchLabels:
       {{- include "modus.selectorLabels" $ | nindent 6 }}
