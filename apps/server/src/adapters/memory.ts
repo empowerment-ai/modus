@@ -31,6 +31,8 @@ export function memoryStorage(dataDir?: string): Storage {
   let design: Design | undefined
   const states = new Map<Id, SimState>()
   const events: LoggedEvent[] = []
+  /** The highest position logged per item, so a batch sent again is not logged twice. */
+  const lastSeq = new Map<string, number>()
   const ready = dataDir ? mkdir(dataDir, { recursive: true }) : Promise.resolve(undefined)
   // The event log written before a restart, read once on first use (the latest MAX_EVENTS of it).
   const history = dataDir
@@ -38,6 +40,7 @@ export function memoryStorage(dataDir?: string): Storage {
         (text) => {
           const lines = text.split('\n').filter(Boolean).slice(-MAX_EVENTS)
           events.unshift(...lines.map((l) => JSON.parse(l) as LoggedEvent))
+          for (const e of events) lastSeq.set(`${e.appId}:${e.itemId}`, Math.max(e.seq, lastSeq.get(`${e.appId}:${e.itemId}`) ?? 0))
         },
         () => undefined,
       )
@@ -79,8 +82,11 @@ export function memoryStorage(dataDir?: string): Storage {
 
   const log: EventLog = {
     async append(batch) {
-      if (!batch.length) return
       await history
+      // Idempotent, like the SQL adapters: a batch sent again skips what already landed.
+      batch = batch.filter((e) => e.seq > (lastSeq.get(`${e.appId}:${e.itemId}`) ?? 0))
+      if (!batch.length) return
+      for (const e of batch) lastSeq.set(`${e.appId}:${e.itemId}`, e.seq)
       events.push(...batch)
       if (events.length > MAX_EVENTS) events.splice(0, events.length - MAX_EVENTS)
       if (dataDir) {

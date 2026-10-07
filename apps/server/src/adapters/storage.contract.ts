@@ -80,6 +80,15 @@ export function storageContract(name: string, target: ContractTarget) {
       expect(all).toEqual([...first, event('app_b', 'i9', 1), event('app_a', 'i2', 1)])
     })
 
+    it('takes a batch sent again without logging what already landed twice', async () => {
+      const s = await create()
+      await s.events.append([event('app_a', 'i1', 1), event('app_a', 'i1', 2)])
+      // The acknowledgement was lost; the runtime sends the whole batch again with one more entry.
+      await s.events.append([event('app_a', 'i1', 1), event('app_a', 'i1', 2), event('app_a', 'i1', 3)])
+      const all = await (await reopen()).events.read({ appId: 'app_a' })
+      expect(all.map((e) => e.seq)).toEqual([1, 2, 3])
+    })
+
     it('filters by application and item, and returns the latest `limit`, oldest first', async () => {
       const s = await create()
       const batch: LoggedEvent[] = []

@@ -290,9 +290,9 @@ streams, finishes in-flight commands, writes a final snapshot and exits; this ta
 a second, inside the default 30-second grace period, then closes its database connections. The
 image's `HEALTHCHECK` calls `/api/health` every 30 seconds.
 
-If Postgres goes away while the server runs, readiness turns `503`, failed event-log writes and
-state snapshots are logged and retried until the database is back, and the process keeps
-serving reads from memory. At startup the server exits with a message if it cannot reach the
+If Postgres goes away while the server runs, readiness turns `503` (the reason goes to the log,
+not the response), commands keep working in memory, and failed event-log writes and state
+snapshots are logged and retried with backoff until the database is back. At startup the server exits with a message if it cannot reach the
 database or apply its migrations (Compose and Kubernetes restart it).
 
 ## Backups and upgrades

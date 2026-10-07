@@ -140,7 +140,12 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
             kind: entry.kind,
             entry: json(entry),
           }))
-          await tx.insertInto('event').values(rows).execute()
+          // A batch sent again after a lost acknowledgement must not fail on what already landed.
+          await tx
+            .insertInto('event')
+            .values(rows)
+            .onConflict((oc) => oc.columns(['app_id', 'item_id', 'seq']).doNothing())
+            .execute()
         }
       })
     },

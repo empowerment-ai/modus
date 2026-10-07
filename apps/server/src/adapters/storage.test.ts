@@ -89,13 +89,15 @@ describe.skipIf(!url)('postgres', () => {
       await drop(schema)
     })
 
-    it('rejects a second event at the same position in an item’s history, and the whole batch with it', async () => {
+    it('keeps the first event at a position in an item’s history and lands the rest of the batch', async () => {
       const s = postgresStorage(url!, { schema: own })
       await s.migrate()
       const e = (seq: number, itemId = 'i1') => ({ appId: 'app_a', itemId, itemNumber: 'A-1', seq, at: 0, kind: 'note', text: 'x' }) as never
       await s.events.append([e(1)])
-      await expect(s.events.append([e(1, 'i2'), e(1)])).rejects.toThrow(/event_item_seq/)
-      expect((await s.events.read({ appId: 'app_a' })).map((x) => `${x.itemId}:${x.seq}`)).toEqual(['i1:1'])
+      // One process writes the log (the chart runs one replica), so a repeated position is that
+      // writer's own retry, not a second writer: it is skipped, not an error that blocks the log.
+      await s.events.append([e(1, 'i2'), e(1)])
+      expect((await s.events.read({ appId: 'app_a' })).map((x) => `${x.itemId}:${x.seq}`)).toEqual(['i1:1', 'i2:1'])
       await s.close()
     })
 
