@@ -416,8 +416,8 @@ Core server tier feasible; see [backend options](research/backend-options.md#3-m
 | Engine | Own deterministic TypeScript engine (`@modus-bpm/core`), shared by simulator and server | **Done** (prototype) |
 | Studio + Workspace | React 19, Vite, Tailwind CSS 4, React Flow 12, Zustand | **Done** (prototype) |
 | API edge | Node.js LTS, Fastify 5, zod 4 → OpenAPI 3.1; SSE for live updates | **Skeleton** |
-| Data access | Kysely behind storage ports; contract test suite | Planned (M2) |
-| Database | PostgreSQL first; SQL Server, then Oracle | Planned (M2, M6, v1.1) |
+| Data access | Kysely behind storage ports; contract test suite | **Skeleton** (design, state, event log; M2) |
+| Database | PostgreSQL first; SQL Server, then Oracle | PostgreSQL **skeleton** (M2); SQL Server, Oracle planned (M6, v1.1) |
 | Jobs, timers, outbox | Own tables + SKIP LOCKED / READPAST claims | Planned (M3–M4) |
 | Automation | REST/OpenAPI connector; MCP client (TypeScript SDK v2, spec 2026-07-28); long-poll worker protocol (gRPC later); JSONata mapping | Protocol **skeleton**; connectors planned (M4) |
 | Event ingest | NATS JetStream (incl. MQTT listener); Kafka connector optional | Planned (M5) |
@@ -426,7 +426,7 @@ Core server tier feasible; see [backend options](research/backend-options.md#3-m
 | Process mining | OCEL 2.0 export from the event log (`exportOcel`); XES (IEEE 1849-2023) next | OCEL **done**; XES planned |
 | Search | Query language in the core; Postgres FTS + `pg_trgm` + field/row indexes; optional `pgvector`, OpenSearch | In-engine **done**; database-backed planned (M3) |
 | Assistant | Built-in interpreter in the core; Claude with tool use on the server (Anthropic API, Bedrock, Vertex, or a local endpoint) | Built-in **done**; model path in the server |
-| Packaging | One OCI image (server + studio), Docker Compose with optional Postgres/NATS/Keycloak, Helm chart, GHCR images | **Done** (in-memory storage) |
+| Packaging | One OCI image (server + studio), Docker Compose with Postgres (optional NATS/Keycloak), Helm chart, GHCR images | **Done** |
 
 ## Security model
 
@@ -446,8 +446,9 @@ Core server tier feasible; see [backend options](research/backend-options.md#3-m
 ## Deployment
 
 Packaging is real today: one image (`ghcr.io/empowerment-ai/modus`) serves the API and the
-studio, `docker compose up` runs it, and `deploy/helm/modus` deploys it to Kubernetes. Storage is
-still in-memory with a JSON snapshot until M2. See [DEPLOYMENT.md](DEPLOYMENT.md) and
+studio, `docker compose up` runs it on PostgreSQL, and `deploy/helm/modus` deploys it to
+Kubernetes. Storage is PostgreSQL (`DB_DIALECT=postgres`) or in memory with a JSON snapshot; the
+Postgres adapter keeps whole-application state as JSONB until the projection tables of M2 land. See [DEPLOYMENT.md](DEPLOYMENT.md) and
 [TECH-STACK.md › SaaS architecture](TECH-STACK.md#saas-architecture).
 
 | Tier | Shape |
@@ -466,7 +467,7 @@ customers who need hard separation.
 | | Milestone | Exit criteria |
 | --- | --- | --- |
 | **M1** | Kernel hardening | Split the engine's command handlers from the simulation drivers further (`decide/evolve` over typed events); property tests and a "one million simulated items, zero stuck tokens" fuzz run; versioned JSON Schemas for designs. *Partly done: live mode, tokens, split/join, subflows, OCEL export, separation of duties, line items, search, assistant, supervisors, expedite, workflow versions and migration; 112 tests across engine and server.* |
-| **M2** | Server on Postgres | Kysely migrations; events + projections + outbox + timers with per-item locking; object types, objects, lists, attachments; OIDC login; single image + Compose. |
+| **M2** | Server on Postgres | Kysely migrations; events + projections + outbox + timers with per-item locking; object types, objects, lists, attachments; OIDC login; single image + Compose. *First slice done: a PostgreSQL adapter (Kysely, versioned migrations in code, run at startup) stores the design, each application's state (JSONB) and the event log (`UNIQUE (app_id, item_id, seq)`); a shared storage contract suite runs against memory and Postgres; Docker Compose runs Modus on Postgres by default. Next: projection tables written in the command's transaction, the outbox, timers and per-item locking (so more than one server can share a database), then OIDC.* |
 | **M3** | Work service and Workspace on the server | Worklists and all distribution modes with SKIP LOCKED claims; delegation, out of office, SLA timers with business calendars; the studio's Workspace and Monitor wired to the API and the live stream. |
 | **M4** | Automation | Outbox dispatcher; REST/OpenAPI and MCP connectors; worker SDKs (TypeScript, Python, .NET, Java) from OpenAPI; retries, incidents, tracing. |
 | **M5** | Scale, ingest, analytics | Stream ingest and triage; OCEL/XES export; simulation calibrated from the log; Helm chart; load tests (target 100 signals/s sustained, 1,000 concurrent Workspace users). |
