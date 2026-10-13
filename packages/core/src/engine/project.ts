@@ -4,7 +4,7 @@
 
 import { objectTitle } from '../model/format'
 import type { Id, Priority } from '../model/types'
-import { buildIndex } from './engine'
+import { buildIndex, type Index } from './engine'
 import type { AuditEntry, Ctx, SimObject, SimState, Token, TokenState } from './state'
 import { workItemOf } from './view'
 
@@ -19,6 +19,7 @@ export interface ItemRow {
   dueAt?: number
   createdAt: number
   endedAt?: number
+  /** The item's live data object, not a copy: storage must copy or serialize it. */
   data: Record<string, unknown>
 }
 
@@ -42,10 +43,10 @@ export interface ProjectedItem {
   workItems: WorkItemRow[]
 }
 
-export function projectItem(sim: SimState, ctx: Ctx, itemId: Id): ProjectedItem | undefined {
+/** Pass `idx` when projecting many items, so the index is built once. */
+export function projectItem(sim: SimState, ctx: Ctx, itemId: Id, idx: Index = buildIndex(ctx)): ProjectedItem | undefined {
   const obj = sim.objects[itemId]
   if (!obj) return undefined
-  const idx = buildIndex(ctx)
   const type = ctx.app.objectTypes.find((t) => t.id === obj.typeId)
   const item: ItemRow = {
     itemId: obj.id,
@@ -92,15 +93,21 @@ export interface Changes {
   outbox: OutboxMessage[]
 }
 
-const jobKey = (t: Token) => `${t.id}#${t.attempt ?? 0}`
+// Per step and attempt, so a call that leads straight into another service step is a new job.
+// A loop back into the same step within one command is not distinguished.
+const jobKey = (t: Token) => `${t.id}#${t.nodeId}#${t.attempt ?? 1}`
 const isJob = (t: Token) => t.state === 'auto' && !!t.serviceId && !t.manual
 /** What projections show of a token; any difference means the item's rows change. */
 const tokenSig = (o: SimObject) => o.tokens.map((t) => `${t.id}|${t.nodeId}|${t.state}|${t.userId ?? ''}|${t.serviceId ?? ''}|${t.enteredAt}`).join(',')
 
-/** What a command changed: the audit entries to log, the items to re-project, and messages for the outbox. */
+/**
+ * What a command changed: the audit entries to log, the items to re-project, and messages for the outbox.
+ * `before` must be a deep snapshot (structuredClone); a shallow copy shares the objects and reports nothing.
+ */
 export function changesBetween(before: SimState, after: SimState): Changes {
   const out: Changes = { itemIds: [], entries: [], outbox: [] }
   const ids = new Set<Id>([...after.activeIds, ...before.activeIds])
+  // Also items outside both active lists that gained entries (e.g. a note on a finished item).
   for (const [id, o] of Object.entries(after.objects)) if (o.history.length !== (before.objects[id]?.history.length ?? 0)) ids.add(id)
   for (const id of [...ids].sort()) {
     const now = after.objects[id]
@@ -109,6 +116,7 @@ export function changesBetween(before: SimState, after: SimState): Changes {
     const added = now.history.slice(was?.history.length ?? 0)
     const ready = new Set((was?.tokens ?? []).filter(isJob).map(jobKey))
     const jobs = now.tokens.filter((t) => isJob(t) && !ready.has(jobKey(t)))
+    // A projected field that can change without an audit entry or a token change must be added here.
     const moved = !was || added.length > 0 || tokenSig(was) !== tokenSig(now) || was.status !== now.status || was.priority !== now.priority
     if (!moved) continue
     out.itemIds.push(id)

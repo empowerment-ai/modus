@@ -16,7 +16,7 @@
 
 1. **Storage numbers audit entries, not the runtime.** The runtime sends new entries without `seq`; the adapter numbers each item's entries after the highest `seq` it already holds (under the row lock, so it's safe). This removes every offset/position concept from the runtime, and logs written by the old crash recovery (log ahead of state) keep working after the upgrade instead of hitting the unique constraint forever.
 2. **The runtime works on a copy.** Inside the transaction it runs the command on `stored.state` (when another replica moved it) or a `structuredClone` of the cache, and adopts it only after the commit. A failed command or commit leaves the cache untouched, with no restore step.
-3. **Outbox and touched items come from diffing before/after**, not only from audit entries: `job.ready` is a token that is now `auto` with a `serviceId` and not `manual`, at an attempt it wasn't at before (dispatch writes no audit entry). `notify` comes from new `notify` and `escalated` entries.
+3. **Outbox and touched items come from diffing before/after**, not only from audit entries: `job.ready` is a token that is now `auto` with a `serviceId` and not `manual`, at a step and attempt it wasn't at before (dispatch writes no audit entry; keying on the step too catches a call that leads straight into another service step, where the attempt resets to 1). `notify` comes from new `notify` and `escalated` entries.
 4. **`work_item.state` stores the engine's `TokenState` as is** (`auto`, `queued`, `unassigned`, `assigned`, `working`, `waiting`, `joining`, `stuck`), not the four states sketched in the design. Times (`due_at`, `entered_at`, `created_at`, `ended_at`) are simulated minutes (`double precision`), like `event.at`.
 5. **Clock leadership is per owner.** `tryClock(appId, owner)` / `releaseClocks(owner)`. Postgres ignores `owner` (the dedicated connection is the owner, so use one storage per runtime); the memory adapter uses it so two runtimes can share one in-memory store in tests.
 6. **Idle ticks don't move the cached clock.** A tick that wrote no audit entries and is under 30 s since `ticked_at` rolls back, so reads show a clock up to 30 s old on a quiet application. Accepted.
@@ -294,7 +294,7 @@ export interface Changes {
   outbox: OutboxMessage[]
 }
 
-const jobKey = (t: Token) => `${t.id}#${t.attempt ?? 0}`
+const jobKey = (t: Token) => `${t.id}#${t.nodeId}#${t.attempt ?? 1}`
 const isJob = (t: Token) => t.state === 'auto' && !!t.serviceId && !t.manual
 /** What projections show of a token; any difference means the item's rows change. */
 const tokenSig = (o: SimObject) => o.tokens.map((t) => `${t.id}|${t.nodeId}|${t.state}|${t.userId ?? ''}|${t.serviceId ?? ''}|${t.enteredAt}`).join(',')

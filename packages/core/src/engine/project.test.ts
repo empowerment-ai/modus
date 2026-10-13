@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { seedDesign } from '../model/seed'
 import { advance, completeJob, createObject, type Ctx, failJob, newSim, pollJobs } from './engine'
+import { adminCancel } from './ops'
 import { changesBetween, projectItem } from './project'
 
 function live(): Ctx {
@@ -112,6 +113,35 @@ describe('changesBetween', () => {
       { itemId: o.id, kind: 'notify', payload: { at: 5, kind: 'notify', nodeId: 'n_x', text: 'Email to someone' } },
       { itemId: o.id, kind: 'notify', payload: { at: 6, kind: 'escalated', nodeId: 'n_x', tokenId: 't1', text: 'Escalated' } },
     ])
+  })
+
+  it('reports a job at the next service step when one call leads straight into another', () => {
+    const ctx = live()
+    // Rewire the invoice map so the ERP match leads straight into Post to ERP (also svc_erp).
+    const wf = ctx.app.workflows.find((w) => w.id === 'w_invoice')!
+    wf.edges = wf.edges.map((e) => (e.id === 'e_2' ? { ...e, target: 'n_post' } : e))
+    const sim = newSim('app_invoice')
+    const o = createObject(sim, ctx, 'w_invoice', { f_invno: 'C-6' }, 'u_maya')!
+    const [job] = pollJobs(sim, ctx, 'svc_erp', 'w1')
+    const before = structuredClone(sim)
+    expect(completeJob(sim, ctx, job!.id, { matched: true })).toBe(true)
+    const t = o.tokens[0]!
+    expect(t).toMatchObject({ nodeId: 'n_post', state: 'auto', serviceId: 'svc_erp' })
+    expect(changesBetween(before, sim).outbox).toEqual([{ itemId: o.id, kind: 'job.ready', payload: { tokenId: t.id, serviceId: 'svc_erp', nodeId: 'n_post', attempt: 1 } }])
+  })
+
+  it('touches an item that finished in the command and projects it as ended', () => {
+    const ctx = live()
+    const sim = newSim('app_invoice')
+    const o = createObject(sim, ctx, 'w_invoice', { f_invno: 'C-7' }, 'u_maya')!
+    const before = structuredClone(sim)
+    expect(adminCancel(sim, ctx, o.id, 'Duplicate')).toMatchObject({ ok: true })
+    expect(sim.activeIds).not.toContain(o.id)
+    expect(changesBetween(before, sim).itemIds).toEqual([o.id])
+    const p = projectItem(sim, ctx, o.id)!
+    expect(p.item.status).not.toBe('active')
+    expect(p.item.endedAt).toBe(sim.clock)
+    expect(p.workItems).toEqual([])
   })
 
   it('counts a token that moved without an audit entry as a touch', () => {
