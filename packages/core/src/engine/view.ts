@@ -263,6 +263,46 @@ export function computeView(sim: SimState, ctx: Ctx): SimView {
 
 // ---------- Workspace selectors ----------
 
+/** Expedited items at each step right now. Subflow steps count the items running inside them, once per item. */
+export function expeditedByStep(sim: SimState): Record<Id, number> {
+  const out: Record<Id, number> = {}
+  for (const obj of activeObjects(sim)) {
+    if (!obj.expedite) continue
+    const seen = new Set<Id>()
+    for (const t of obj.tokens) {
+      seen.add(t.nodeId)
+      for (const c of t.calls) seen.add(c.nodeId)
+    }
+    for (const id of seen) out[id] = (out[id] ?? 0) + 1
+  }
+  return out
+}
+
+export interface WorkingOn {
+  itemId: Id
+  number: string
+  stepId: Id
+  startedAt?: number
+}
+
+/**
+ * What each person is working on right now. The simulation keeps one current
+ * item per simulated person; real people (and manual ones in the studio) start
+ * work themselves and may have several going, so the latest started one wins.
+ */
+export function workingNow(sim: SimState): Record<Id, WorkingOn> {
+  const out: Record<Id, WorkingOn> = {}
+  const rank = new Map<Id, number>()
+  for (const t of activeTokens(sim)) {
+    if (t.state !== 'working' || !t.userId) continue
+    const r = sim.users[t.userId]?.currentId === t.id ? Infinity : (t.startedAt ?? 0)
+    if ((rank.get(t.userId) ?? -1) >= r) continue
+    rank.set(t.userId, r)
+    out[t.userId] = { itemId: t.objectId, number: sim.objects[t.objectId]!.number, stepId: t.nodeId, startedAt: t.startedAt }
+  }
+  return out
+}
+
 export interface WorkItem {
   token: Token
   obj: SimObject

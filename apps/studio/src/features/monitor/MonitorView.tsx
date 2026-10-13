@@ -1,8 +1,7 @@
 import { Activity, ArrowRight, Download, FastForward, FlaskConical, Play, TriangleAlert } from 'lucide-react'
-import { activeObjects, exportOcel, type SimState } from '@modus-bpm/core'
+import { expeditedByStep, exportOcel } from '@modus-bpm/core'
 import { type ReactNode, useMemo } from 'react'
 import { Button, Card, cx, EmptyState } from '../../components/ui'
-import type { Id } from '@modus-bpm/core/model/types'
 import { formatClock, formatDuration } from '@modus-bpm/core/model/util'
 import { useApp, useDesign } from '../../store/design'
 import { ctxFor, useSim, useSimState, useSimView } from '../../store/sim'
@@ -27,21 +26,6 @@ function downloadEventLog(appId: string) {
   a.click()
   URL.revokeObjectURL(a.href)
   useUi.getState().toast('Event log exported as OCEL 2.0.', 'success')
-}
-
-/** Expedited items at each step right now. Subflow steps count the items running inside them, once per item. */
-function expeditedByStep(sim: SimState): Record<Id, number> {
-  const out: Record<Id, number> = {}
-  for (const obj of activeObjects(sim)) {
-    if (!obj.expedite) continue
-    const seen = new Set<Id>()
-    for (const t of obj.tokens) {
-      seen.add(t.nodeId)
-      for (const c of t.calls) seen.add(c.nodeId)
-    }
-    for (const id of seen) out[id] = (out[id] ?? 0) + 1
-  }
-  return out
 }
 
 // The administrator's live view of the open application's simulated work:
