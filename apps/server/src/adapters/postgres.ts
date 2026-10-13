@@ -174,9 +174,6 @@ const migrations: Record<string, Migration> = {
   },
 }
 
-// LISTEN/NOTIFY and the clock lock land in the next step of M2.
-const notYet = () => new Error('not yet: PostgreSQL LISTEN and the clock lock are still to come')
-
 /** Thrown inside a Kysely transaction to roll it back while still returning a value. */
 class Rollback {
   constructor(
@@ -209,7 +206,12 @@ export interface PostgresOptions {
 export function postgresStorage(connectionString: string, options: PostgresOptions = {}): PostgresStorage {
   const { schema, max = 10 } = options
   if (schema !== undefined && !/^[a-z_][a-z0-9_]*$/.test(schema)) throw new Error(`Not a plain schema name: ${schema}`)
-  const pool = new pg.Pool({ connectionString, max, options: schema ? `-c search_path=${schema}` : undefined })
+  const searchPath = schema ? `-c search_path=${schema}` : undefined
+  // NOTIFY and advisory locks are database-wide: each schema (install) gets its own channel and lock keys.
+  const channel = schema ? `modus_change_${schema}` : 'modus_change'
+  if (channel.length > 63) throw new Error(`Schema name too long for a notification channel: ${schema}`)
+  const clockKey = (appId: Id) => (schema ? `modus-clock:${schema}:${appId}` : `modus-clock:${appId}`)
+  const pool = new pg.Pool({ connectionString, max, options: searchPath })
   // An idle client losing its connection (database restart) must not crash the process; the next query reconnects.
   pool.on('error', () => undefined)
   const db = new Kysely<Tables>({ dialect: new PostgresDialect({ pool }) })
@@ -422,7 +424,7 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
         const itemIds = w.items.map((p) => p.item.itemId)
         const notice: ChangeNotice = { appId, version: next, ...(itemIds.length <= NOTICE_ITEMS ? { itemIds } : {}) }
         // Delivered to listeners on commit, not before.
-        await sql`select pg_notify('modus_change', ${JSON.stringify(notice)})`.execute(tx)
+        await sql`select pg_notify(${channel}, ${JSON.stringify(notice)})`.execute(tx)
         return { value: out.value, version: next, committed: true }
       })
     } catch (err) {
@@ -475,6 +477,87 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
     },
   }
 
+  // One dedicated connection (outside the pool) per storage, opened lazily: it LISTENs for
+  // every replica's commits and holds the clock locks, which die with it.
+  let session: pg.Client | undefined
+  let opening: Promise<pg.Client> | undefined
+  let retry: ReturnType<typeof setTimeout> | undefined
+  let backoff = 1000
+  let shut = false
+  const held = new Set<Id>()
+  const changeHandlers = new Set<(n: ChangeNotice) => void>()
+  const reconnectHandlers = new Set<() => void>()
+  const closedError = () => new Error('Storage is closed.')
+
+  /** Run a handler on its own: a throw or rejection is the handler's, not the connection's. */
+  const isolate = (f: () => unknown) =>
+    void Promise.resolve()
+      .then(f)
+      .catch(() => undefined)
+
+  async function open(): Promise<pg.Client> {
+    const c = new pg.Client({ connectionString, options: searchPath })
+    c.on('notification', (m) => {
+      if (m.channel !== channel || !m.payload) return
+      const payload = m.payload
+      // Each handler parses its own copy.
+      for (const h of changeHandlers) isolate(() => h(JSON.parse(payload) as ChangeNotice))
+    })
+    c.on('error', () => drop(c))
+    c.on('end', () => drop(c))
+    try {
+      await c.connect()
+      await c.query(`listen ${channel}`)
+    } catch (err) {
+      await c.end().catch(() => undefined)
+      throw err
+    }
+    if (shut) {
+      await c.end().catch(() => undefined)
+      throw closedError()
+    }
+    session = c
+    backoff = 1000
+    return c
+  }
+
+  function dedicated(): Promise<pg.Client> {
+    if (shut) return Promise.reject(closedError())
+    if (session) return Promise.resolve(session)
+    return (opening ??= open().finally(() => {
+      opening = undefined
+    }))
+  }
+
+  function drop(c: pg.Client) {
+    if (session !== c) return
+    session = undefined
+    // Advisory locks die with the connection.
+    held.clear()
+    void c.end().catch(() => undefined)
+    schedule()
+  }
+
+  function schedule() {
+    if (shut || retry) return
+    retry = setTimeout(() => void reconnect(), backoff)
+    retry.unref()
+  }
+
+  /** Reconnect in the background, backing off to 30 s; listeners then reload what they may have missed. */
+  async function reconnect() {
+    retry = undefined
+    if (shut) return
+    try {
+      await dedicated()
+    } catch {
+      backoff = Math.min(backoff * 2, 30_000)
+      schedule()
+      return
+    }
+    for (const h of reconnectHandlers) isolate(h)
+  }
+
   let closed: Promise<void> | undefined
   return {
     name: 'postgres',
@@ -483,9 +566,42 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
     events,
     projections,
     transact,
-    listen: () => Promise.reject(notYet()),
-    tryClock: () => Promise.reject(notYet()),
-    releaseClocks: () => Promise.reject(notYet()),
+    async listen(onChange, onReconnect) {
+      changeHandlers.add(onChange)
+      if (onReconnect) reconnectHandlers.add(onReconnect)
+      const stop = async () => {
+        changeHandlers.delete(onChange)
+        if (onReconnect) reconnectHandlers.delete(onReconnect)
+      }
+      try {
+        await dedicated()
+      } catch (err) {
+        await stop()
+        throw err
+      }
+      return stop
+    },
+    // `owner` is the dedicated connection: one storage per runtime.
+    async tryClock(appId) {
+      // Advisory locks are reentrant and counted: don't take one twice.
+      if (held.has(appId)) return true
+      try {
+        const c = await dedicated()
+        const { rows } = await c.query<{ ok: boolean }>('select pg_try_advisory_lock(hashtext($1)) as ok', [clockKey(appId)])
+        // A connection lost meanwhile took the lock with it.
+        if (!rows[0]?.ok || session !== c) return false
+        held.add(appId)
+        return true
+      } catch {
+        return false
+      }
+    },
+    async releaseClocks() {
+      const c = session
+      // A lost connection has released them already.
+      if (c) await c.query('select pg_advisory_unlock_all()').catch(() => undefined)
+      held.clear()
+    },
     async migrate() {
       // Name the schema: Kysely otherwise finds a `kysely_migration` table in any schema (another install's, say).
       const { rows } = await sql<{ name: string }>`select current_schema() as name`.execute(db)
@@ -499,7 +615,17 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
     },
     // Idempotent: a test (or shutdown path) may close a storage that something else closes too.
     close() {
-      return (closed ??= db.destroy())
+      return (closed ??= (async () => {
+        shut = true
+        if (retry) clearTimeout(retry)
+        retry = undefined
+        await opening?.catch(() => undefined)
+        const c = session
+        session = undefined
+        held.clear()
+        if (c) await c.end().catch(() => undefined)
+        await db.destroy()
+      })())
     },
   }
 }

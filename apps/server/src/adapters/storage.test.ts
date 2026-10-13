@@ -9,8 +9,10 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { newSim } from '@modus-bpm/core'
 import pg from 'pg'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import type { ChangeNotice } from '../ports'
 import { memoryStorage } from './memory'
 import { postgresStorage } from './postgres'
 import { storageContract } from './storage.contract'
@@ -110,6 +112,67 @@ describe.skipIf(!url)('postgres', () => {
       await s.events.append([e(1, 'i2'), e(1)])
       expect((await s.events.read({ appId: 'app_a' })).map((x) => `${x.itemId}:${x.seq}`)).toEqual(['i1:1', 'i2:1'])
       await s.close()
+    })
+
+    it('lets one connection hold an application’s clock, and frees it when that connection closes', async () => {
+      const a = postgresStorage(url!, { schema: own })
+      const b = postgresStorage(url!, { schema: own })
+      expect(await a.tryClock('app_a', 'a')).toBe(true)
+      expect(await a.tryClock('app_a', 'a')).toBe(true)
+      expect(await b.tryClock('app_a', 'b')).toBe(false)
+      await a.close()
+      expect(await b.tryClock('app_a', 'b')).toBe(true)
+      await b.close()
+    })
+
+    it('delivers a commit on one connection to listeners on another', async () => {
+      const a = postgresStorage(url!, { schema: own })
+      const b = postgresStorage(url!, { schema: own })
+      const heard: ChangeNotice[] = []
+      await b.listen((n) => heard.push(n))
+      await a.transact('app_n', 0, () => ({ value: 0, write: { state: newSim('app_n', 1), entries: [], items: [], outbox: [], tickedAt: 0 } }))
+      await vi.waitFor(() => expect(heard).toEqual([{ appId: 'app_n', version: 1, itemIds: [] }]))
+      await a.close()
+      await b.close()
+    })
+
+    it('reconnects after losing its connection, dropping its clocks and telling listeners to reload', async () => {
+      const a = postgresStorage(url!, { schema: own })
+      const b = postgresStorage(url!, { schema: own })
+      const heard: ChangeNotice[] = []
+      let reloads = 0
+      await a.listen(
+        (n) => heard.push(n),
+        () => reloads++,
+      )
+      expect(await a.tryClock('app_r', 'a')).toBe(true)
+      // The dedicated connection's last statement was the clock lock.
+      await admin.query(`select pg_terminate_backend(pid) from pg_stat_activity where pid <> pg_backend_pid() and query like '%pg_try_advisory_lock%' and datname = current_database()`)
+      await vi.waitFor(() => expect(reloads).toBe(1), { timeout: 5000 })
+      expect(await b.tryClock('app_r', 'b')).toBe(true)
+      expect(await a.tryClock('app_r', 'a')).toBe(false)
+      await b.transact('app_r', 0, () => ({ value: 0, write: { state: newSim('app_r', 1), entries: [], items: [], outbox: [], tickedAt: 0 } }))
+      await vi.waitFor(() => expect(heard).toEqual([{ appId: 'app_r', version: 1, itemIds: [] }]))
+      await a.close()
+      await b.close()
+    })
+
+    it('keeps one schema’s notices from another schema’s listeners', async () => {
+      const other = await fresh()
+      const a = postgresStorage(url!, { schema: own })
+      const b = postgresStorage(url!, { schema: other })
+      await b.migrate()
+      const heardA: ChangeNotice[] = []
+      const heardB: ChangeNotice[] = []
+      await a.listen((n) => heardA.push(n))
+      await b.listen((n) => heardB.push(n))
+      await a.transact('app_s', 0, () => ({ value: 0, write: { state: newSim('app_s', 1), entries: [], items: [], outbox: [], tickedAt: 0 } }))
+      await b.transact('app_t', 0, () => ({ value: 0, write: { state: newSim('app_t', 1), entries: [], items: [], outbox: [], tickedAt: 0 } }))
+      await vi.waitFor(() => expect(heardB).toEqual([{ appId: 'app_t', version: 1, itemIds: [] }]))
+      await vi.waitFor(() => expect(heardA).toEqual([{ appId: 'app_s', version: 1, itemIds: [] }]))
+      await a.close()
+      await b.close()
+      await drop(other)
     })
 
     it('refuses odd schema names and reports an unreachable database through ping', async () => {
