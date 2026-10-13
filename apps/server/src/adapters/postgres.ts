@@ -67,7 +67,7 @@ interface Tables {
 }
 
 /** Versioned migrations, applied in name order and recorded in `kysely_migration`. Never edit one that has shipped; add the next. */
-const migrations: Record<string, Migration> = {
+export const migrations: Record<string, Migration> = {
   '0001_storage': {
     async up(db) {
       // One published design per database (one tenant): a single row.
@@ -211,14 +211,17 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
   const { schema, max = 10, lockTimeoutMs = 5000 } = options
   if (schema !== undefined && !/^[a-z_][a-z0-9_]*$/.test(schema)) throw new Error(`Not a plain schema name: ${schema}`)
   if (!Number.isFinite(lockTimeoutMs) || lockTimeoutMs <= 0) throw new Error(`Not a usable lock timeout: ${lockTimeoutMs}`)
-  // SET takes no bind parameters: an integer formatted here, from a number checked above.
-  const setLockTimeout = sql.raw(`set local lock_timeout = '${Math.ceil(lockTimeoutMs)}ms'`)
+  // For this transaction only: wait so long for the row lock (then StorageBusy), and never hold it for
+  // long either. A stalled statement or a client gone quiet mid-transaction (a hung process, a lost
+  // network) would otherwise keep the application locked for every server.
+  const setTimeouts = sql`select set_config('lock_timeout', ${`${Math.ceil(lockTimeoutMs)}ms`}, true),
+    set_config('statement_timeout', '30s', true), set_config('idle_in_transaction_session_timeout', '15s', true)`
   const searchPath = schema ? `-c search_path=${schema}` : undefined
   // NOTIFY and advisory locks are database-wide: each schema (install) gets its own channel and lock keys.
   const channel = schema ? `modus_change_${schema}` : 'modus_change'
   if (channel.length > 63) throw new Error(`Schema name too long for a notification channel: ${schema}`)
   const clockKey = (appId: Id) => (schema ? `modus-clock:${schema}:${appId}` : `modus-clock:${appId}`)
-  const pool = new pg.Pool({ connectionString, max, options: searchPath })
+  const pool = new pg.Pool({ connectionString, max, options: searchPath, keepAlive: true })
   // An idle client losing its connection (database restart) must not crash the process; the next query reconnects.
   pool.on('error', () => undefined)
   const db = new Kysely<Tables>({ dialect: new PostgresDialect({ pool }) })
@@ -346,7 +349,7 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
   async function transact<T>(appId: Id, known: number, work: (stored: Stored) => Work<T> | Promise<Work<T>>) {
     try {
       return await db.transaction().execute(async (tx) => {
-        await setLockTimeout.execute(tx)
+        await setTimeouts.execute(tx)
         // Something to lock before the application's first commit; a rollback takes it away again.
         await tx
           .insertInto('app_state')

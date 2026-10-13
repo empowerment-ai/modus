@@ -9,12 +9,15 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { newSim } from '@modus-bpm/core'
+import { createObject, newSim, setExpedite } from '@modus-bpm/core'
+import { Kysely, PostgresDialect } from 'kysely'
+import { Migrator } from 'kysely/migration'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { type ChangeNotice, type Storage, StorageBusy } from '../ports'
+import { Runtime } from '../runtime'
 import { memoryStorage } from './memory'
-import { postgresStorage } from './postgres'
+import { migrations, postgresStorage } from './postgres'
 import { storageContract } from './storage.contract'
 
 let dir = ''
@@ -94,6 +97,48 @@ describe.skipIf(!url)('postgres', () => {
       const { rows } = await admin.query(`select table_name, column_name from information_schema.columns where table_schema = $1 order by 1, 2`, [schema])
       const cols = rows.map((r) => `${r.table_name}.${r.column_name}`)
       expect(cols).toEqual(expect.arrayContaining(['app_state.version', 'app_state.ticked_at', 'item.data', 'work_item.token_id', 'outbox.sent_at']))
+      await s.close()
+      await drop(schema)
+    })
+
+    it('upgrades a database written before M2: backfills projections, starts the clock, numbers after the stored log', async () => {
+      const schema = await fresh()
+      // The schema as the release before M2 left it: 0001 only.
+      const old = new Kysely<never>({ dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: url, max: 1, options: `-c search_path=${schema}` }) }) })
+      const migrated = await new Migrator({ db: old, provider: { getMigrations: async () => migrations }, migrationTableSchema: schema }).migrateTo('0001_storage')
+      expect(migrated.error).toBeUndefined()
+      await old.destroy()
+      // A state with two items, made by a runtime in memory, stored the old way: no version, no clock.
+      const mem = await Runtime.create({ storage: memoryStorage() })
+      for (const n of ['OLD-1', 'OLD-2']) await mem.run('app_invoice', (sim, ctx) => createObject(sim, ctx, 'w_invoice', { f_invno: n }, 'u_maya'))
+      const legacy = mem.state('app_invoice')
+      await mem.stop()
+      const [first] = Object.keys(legacy.objects)
+      await admin.query(`insert into ${schema}.design (id, doc) values (1, $1)`, [JSON.stringify(mem.design)])
+      await admin.query(`insert into ${schema}.app_state (app_id, state) values ('app_invoice', $1)`, [JSON.stringify(legacy)])
+      for (const seq of [1, 2, 3])
+        await admin.query(`insert into ${schema}.event (app_id, item_id, item_number, seq, at, kind, entry) values ('app_invoice', $1, 'X', $2, 0, 'created', '{}')`, [first, seq])
+
+      const s = postgresStorage(url!, { schema })
+      await s.migrate()
+      // 0002 counts a stored state as version 1, with no clock time yet.
+      const after = await admin.query(`select version, ticked_at from ${schema}.app_state`)
+      expect(after.rows).toEqual([{ version: '1', ticked_at: null }])
+
+      const rt = await Runtime.create({ storage: s })
+      // The backfill is the first commit under M2, and starts keeping a clock time.
+      const filled = await admin.query(`select version, ticked_at is not null as ticked from ${schema}.app_state`)
+      expect(filled.rows).toEqual([{ version: '2', ticked: true }])
+      const items = await admin.query(`select count(*)::int as n from ${schema}.item`)
+      const work = await admin.query(`select count(*)::int as n from ${schema}.work_item`)
+      expect(items.rows[0].n).toBe(2)
+      expect(work.rows[0].n).toBeGreaterThan(0)
+      // The legacy item's next entry follows what the log already holds for it.
+      const r = await rt.run('app_invoice', (sim, ctx) => setExpedite(sim, ctx, first!, 'u_maya', true, 'upgrade test'))
+      expect(r.ok).toBe(true)
+      const seqs = await admin.query(`select seq from ${schema}.event where item_id = $1 order by seq`, [first])
+      expect(seqs.rows.map((x) => x.seq).slice(0, 4)).toEqual([1, 2, 3, 4])
+      await rt.stop()
       await s.close()
       await drop(schema)
     })

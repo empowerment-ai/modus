@@ -74,17 +74,26 @@ export class Runtime {
     const stored = await storage.designs.load()
     rt.design = stored ?? seedDesign()
     if (!stored && rt.opts.seedIfEmpty) await storage.designs.save(rt.design)
-    for (const app of rt.design.apps) {
-      const s = await storage.state.load(app.id)
-      if (!s?.state) continue
-      rt.cache.set(app.id, { version: s.version, sim: s.state, tickedAt: s.tickedAt })
-      // Projections arrived after this state was first written: fill them in once.
-      if (Object.keys(s.state.objects).length && !(await storage.projections.any(app.id))) await rt.backfill(app.id)
-    }
+    // Listen before loading, so a commit another server makes meanwhile isn't missed.
     rt.unlisten = await storage.listen(
       (n) => void rt.heard(n),
       () => void rt.reloadAll(),
     )
+    try {
+      for (const app of rt.design.apps) {
+        // In the application's queue, so a reload heard meanwhile runs before or after, not during.
+        await rt.serial(app.id, async () => {
+          const s = await storage.state.load(app.id)
+          if (!s?.state) return
+          rt.adopt(app.id, { version: s.version, sim: s.state, tickedAt: s.tickedAt })
+          // Projections arrived after this state was first written: fill them in once.
+          if (Object.keys(s.state.objects).length && !(await storage.projections.any(app.id))) await rt.backfill(app.id)
+        })
+      }
+    } catch (err) {
+      await rt.stop().catch(() => undefined)
+      throw err
+    }
     return rt
   }
 

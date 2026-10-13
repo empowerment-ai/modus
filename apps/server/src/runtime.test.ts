@@ -253,6 +253,54 @@ describe('runtime', () => {
     await b.stop()
   })
 
+  it('hears a commit another server makes while it is still loading', async () => {
+    const storage = memoryStorage()
+    const a = await Runtime.create({ storage })
+    await make(a, 'BEFORE')
+    // b's first load returns the state as it was, and a commits before b has it in memory.
+    let first = true
+    const slow: Storage = {
+      ...storage,
+      state: {
+        load: async (appId) => {
+          const s = await storage.state.load(appId)
+          if (appId === 'app_invoice' && first) {
+            first = false
+            await make(a, 'DURING')
+          }
+          return s
+        },
+      },
+    }
+    const b = await Runtime.create({ storage: slow })
+    await vi.waitFor(async () => expect(await numbers(b)).toEqual(['BEFORE', 'DURING']))
+    await a.stop()
+    await b.stop()
+  })
+
+  it('stops listening when loading fails', async () => {
+    const storage = memoryStorage()
+    let listening = 0
+    const failing: Storage = {
+      ...storage,
+      listen: async (onChange, onReconnect) => {
+        const stop = await storage.listen(onChange, onReconnect)
+        listening++
+        return async () => {
+          listening--
+          await stop()
+        }
+      },
+      state: {
+        load: async () => {
+          throw new Error('disk on fire')
+        },
+      },
+    }
+    await expect(Runtime.create({ storage: failing })).rejects.toThrow('disk on fire')
+    expect(listening).toBe(0)
+  })
+
   it('is not ready while it can’t hear other servers’ changes', async () => {
     const storage = memoryStorage()
     let listening = true
