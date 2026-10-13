@@ -540,14 +540,16 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
 
   // ----- Live stream (Server-Sent Events): counts per step and which items changed -----
 
-  const streams = new Map<FastifyReply, NodeJS.Timeout>()
+  const streams = new Map<FastifyReply, { ping: NodeJS.Timeout; unsubscribe: () => void }>()
   const pingMs = opts.streamPingMs ?? 25_000
   // Open streams would otherwise hold a graceful shutdown until the orchestrator kills the process.
   app.addHook('preClose', async () => {
-    for (const [s, ping] of streams) {
+    for (const [s, { ping, unsubscribe }] of streams) {
       clearInterval(ping)
+      unsubscribe()
       s.raw.end()
     }
+    streams.clear()
   })
 
   app.get('/api/apps/:app/stream', async (req, reply) => {
@@ -562,9 +564,11 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     // writeHead only queues the headers; the first write sends them, so the client sees the stream open now.
     reply.raw.write(': connected\n\n')
     // Proxies cut idle connections (often after 60 s); a comment line keeps a quiet stream alive.
-    const ping = setInterval(() => reply.raw.write(': ping\n\n'), pingMs)
+    // A slow client's buffer is already full: a ping adds nothing, so skip it rather than queue more.
+    const ping = setInterval(() => {
+      if (!reply.raw.writableNeedDrain) reply.raw.write(': ping\n\n')
+    }, pingMs)
     ping.unref()
-    streams.set(reply, ping)
     let last = 0
     const unsubscribe = rt.subscribe((c) => {
       if (c.appId !== appId) return
@@ -572,11 +576,16 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
       if (!c.itemIds.length && now - last < 1000) return
       last = now
       void rt.read(appId, (sim, ctx) => {
+        // Still backed up: drop this event rather than grow the buffer without bound (and skip
+        // computing it). The next event carries the current counts anyway, so a slow client
+        // catches up once it drains.
+        if (reply.raw.writableNeedDrain) return
         const v = computeView(sim, ctx)
         const counts = Object.fromEntries(Object.entries(v.nodes).map(([id, m]) => [id, m.total]))
         reply.raw.write(`event: change\ndata: ${JSON.stringify({ clock: c.clock, items: c.itemIds, counts, active: v.active })}\n\n`)
       })
     })
+    streams.set(reply, { ping, unsubscribe })
     req.raw.on('close', () => {
       unsubscribe()
       clearInterval(ping)
