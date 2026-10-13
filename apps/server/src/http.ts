@@ -657,6 +657,9 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
 
   app.get('/api/apps/:app/stream', async (req, reply) => {
     const { app: appId } = appParams.parse(req.params)
+    // Any named user, like the design: events carry ids and counts, never data the caller may not read.
+    // Checked before the headers go out, so a stranger gets a 401 rather than an open stream.
+    void who(req)
     rt.ctx(appId)
     reply.raw.writeHead(200, {
       'content-type': 'text/event-stream',

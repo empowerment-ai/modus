@@ -24,13 +24,18 @@ async function observer(opts: { settleMs?: number; idleMs?: number } = {}) {
   return { obs, base, clock }
 }
 
-/** A stand-in for a Modus server's live stream: every client gets what the test pushes. */
+/** A stand-in for a Modus server's live stream: every named client gets what the test pushes. */
 async function fakeSSE() {
   const clients = new Set<ServerResponse>()
   let connections = 0
   let refuse = 0
+  const users: string[] = []
   const server = createServer((req, res) => {
     connections++
+    // Like the server: no x-user-id, no stream.
+    const user = req.headers['x-user-id']
+    if (typeof user !== 'string' || !user) return void res.writeHead(401).end('name yourself')
+    users.push(user)
     if (refuse > 0) {
       refuse--
       return void res.writeHead(503).end('busy')
@@ -52,6 +57,7 @@ async function fakeSSE() {
     base,
     clients,
     connections: () => connections,
+    users,
     /** Answer the next `n` connections with 503. */
     refuseNext: (n: number) => (refuse = n),
     push: (text: string) => clients.forEach((c) => c.write(text)),
@@ -165,6 +171,8 @@ describe('streams', () => {
     // A change event whose JSON spans two data lines.
     sse.push('event: change\ndata: {"clock":1,"items":["a"],\ndata: "counts":{},"active":0}\n\n')
     await vi.waitFor(() => expect(obs.stats().streams.events).toBe(2))
+    // Named as a seed administrator, as a Monitor would be.
+    expect(sse.users).toEqual(['u_avery', 'u_avery'])
 
     sse.drop()
     await vi.waitFor(() => expect(sse.connections()).toBe(4))
