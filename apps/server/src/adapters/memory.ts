@@ -7,7 +7,6 @@
 
 import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { isDeepStrictEqual } from 'node:util'
 import type { Design, Id, OutboxMessage, ProjectedItem, SimState } from '@modus-bpm/core'
 import type { ChangeNotice, DesignStore, EventLog, LoggedEvent, Projections, StateStore, Storage, Stored, Work } from '../ports'
 
@@ -50,7 +49,7 @@ export function memoryStorage(dataDir?: string): Storage {
   /** Clock owner per application. */
   const clocks = new Map<Id, string>()
   const events: LoggedEvent[] = []
-  /** The highest position logged per item, so a batch sent again is not logged twice. */
+  /** The highest position logged per item: new entries are numbered after it. */
   const lastSeq = new Map<string, number>()
   const ready = dataDir ? mkdir(dataDir, { recursive: true }) : Promise.resolve(undefined)
   // The event log written before a restart, read once on first use (the latest MAX_EVENTS of it).
@@ -112,17 +111,6 @@ export function memoryStorage(dataDir?: string): Storage {
 
   const state: StateStore = {
     async load(appId) {
-      return (await current(appId))?.state
-    },
-    async save(appId, s) {
-      const was = held.get(appId)
-      held.set(appId, { version: (was?.version ?? 0) + 1, tickedAt: was?.tickedAt, state: s })
-      if (dataDir) {
-        await ready
-        await writeAtomic(join(dataDir, `state-${appId}.json`), JSON.stringify(s))
-      }
-    },
-    async get(appId) {
       const h = await current(appId)
       return h && stored(h, true)
     },
@@ -199,35 +187,6 @@ export function memoryStorage(dataDir?: string): Storage {
   }
 
   const log: EventLog = {
-    async append(batch) {
-      await history
-      // Idempotent, like the SQL adapters: a batch sent again skips what already landed, and a
-      // different entry at a taken position refuses the whole batch.
-      for (const e of batch) {
-        if (e.seq > (lastSeq.get(`${e.appId}:${e.itemId}`) ?? 0)) continue
-        const had = events.findLast((x) => x.appId === e.appId && x.itemId === e.itemId && x.seq === e.seq)
-        if (had && !isDeepStrictEqual(had, JSON.parse(JSON.stringify(e))))
-          throw new Error(`Event log conflict: item ${e.itemNumber} already has a different entry at position ${e.seq}.`)
-      }
-      batch = batch.filter((e) => e.seq > (lastSeq.get(`${e.appId}:${e.itemId}`) ?? 0))
-      if (!batch.length) return
-      for (const e of batch) lastSeq.set(`${e.appId}:${e.itemId}`, e.seq)
-      events.push(...batch)
-      if (events.length > MAX_EVENTS) events.splice(0, events.length - MAX_EVENTS)
-      if (dataDir) {
-        await ready
-        await appendFile(join(dataDir, 'events.jsonl'), '\n' + batch.map((e) => JSON.stringify(e)).join('\n') + '\n')
-      }
-    },
-    async positions(appId) {
-      await history
-      const out = new Map<Id, number>()
-      for (const [key, seq] of lastSeq) {
-        const at = key.indexOf(':')
-        if (key.slice(0, at) === appId) out.set(key.slice(at + 1), seq)
-      }
-      return out
-    },
     async read({ appId, itemId, limit = 200 }) {
       await history
       const out: LoggedEvent[] = []

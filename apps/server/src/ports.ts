@@ -2,6 +2,10 @@
 // Two adapters ship: in memory (adapters/memory.ts) and PostgreSQL
 // (adapters/postgres.ts). SQL Server / Oracle follow behind the same contract,
 // which adapters/storage.contract.ts checks for every adapter (docs/ARCHITECTURE.md).
+//
+// Every change to an application goes through `Storage.transact`: state, audit
+// entries, projections and outbox commit together under the application's lock.
+// The other ports are read-only, except the design, which is saved on publish.
 
 import type { AuditEntry, Design, Id, OutboxMessage, ProjectedItem, SimState } from '@modus-bpm/core'
 
@@ -13,22 +17,20 @@ export interface DesignStore {
 
 /**
  * Live state of one application: items, their tokens (where each branch is),
- * work items and counters. In SQL this becomes projection tables (`case`,
- * `work_item`, `object`, `object_field_idx`) updated in the same transaction as
- * the events that changed them.
+ * work items and counters, stored whole and written only by `Storage.transact`.
+ * The queryable side (items, work items, outbox) is `Projections`, written in
+ * the same transaction.
  */
 export interface StateStore {
-  load(appId: Id): Promise<SimState | undefined>
-  save(appId: Id, state: SimState): Promise<void>
   /** Version, clock time and state as stored (undefined: never written). */
-  get(appId: Id): Promise<Stored | undefined>
+  load(appId: Id): Promise<Stored | undefined>
 }
 
 /** What storage holds for an application when a transaction starts. */
 export interface Stored {
   /** 0: nothing stored yet. Bumped by every commit. */
   version: number
-  /** Present only when `version` differs from the caller's `known` version (or on `get`). */
+  /** Present only when `version` differs from the caller's `known` version (always on `StateStore.load`). */
   state?: SimState
   /** Wall time (epoch ms) the stored clock corresponds to. Absent: never ticked. */
   tickedAt?: number
@@ -72,7 +74,7 @@ export interface Projections {
   any(appId: Id): Promise<boolean>
 }
 
-/** One entry in the append-only event log: the audit trail, the process-mining source, and replay input. */
+/** One entry in the append-only event log: the audit trail, the process-mining source, and replay input. Written by `Storage.transact`. */
 export interface LoggedEvent extends AuditEntry {
   appId: Id
   itemId: Id
@@ -82,10 +84,8 @@ export interface LoggedEvent extends AuditEntry {
 }
 
 export interface EventLog {
-  append(events: LoggedEvent[]): Promise<void>
+  /** The latest `limit` entries (default 200) matching the filter, oldest first. */
   read(filter: { appId?: Id; itemId?: Id; limit?: number }): Promise<LoggedEvent[]>
-  /** The highest position logged for each item of an application (the runtime numbers new entries after it). */
-  positions(appId: Id): Promise<Map<Id, number>>
 }
 
 export interface Storage {

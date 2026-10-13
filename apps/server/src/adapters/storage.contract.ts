@@ -26,6 +26,17 @@ function ctxOf(design = seedDesign(), appId = 'app_invoice'): Ctx {
   return { app: design.apps.find((a) => a.id === appId)!, users: design.users, groups: design.groups, services: design.services, live: true }
 }
 
+/** Commit `entries` as one write (state: `state`, or an empty one), grouped per item in order. Storage numbers them, so their `seq` must be what it will give. */
+function commitEntries(s: Storage, appId: string, version: number, entries: LoggedEvent[], state = newSim(appId, 1)) {
+  const groups: Write['entries'] = []
+  for (const { appId: _, itemId, itemNumber, seq: __, ...entry } of entries) {
+    const last = groups.at(-1)
+    if (last?.itemId === itemId) last.entries.push(entry as AuditEntry)
+    else groups.push({ itemId, itemNumber, entries: [entry as AuditEntry] })
+  }
+  return s.transact(appId, version, () => ({ value: 0, write: { state, entries: groups, items: [], outbox: [], tickedAt: 0 } }))
+}
+
 /** A command as the runtime will run it: on a copy, committing whatever changed. */
 function writeFor(before: SimState, after: SimState, ctx: Ctx, tickedAt = 0): Write {
   const c = changesBetween(before, after)
@@ -68,61 +79,37 @@ export function storageContract(name: string, target: ContractTarget) {
       expect((await (await reopen()).designs.load())?.apps[0]?.name).toBe('Renamed')
     })
 
-    it('keeps each application’s state separately, replacing on save', async () => {
+    it('keeps each application’s state separately, replacing it on each commit', async () => {
       const s = await create()
       const a = newSim('app_a', 1)
       const b = newSim('app_b', 2)
-      await s.state.save('app_a', a)
-      await s.state.save('app_b', b)
+      await commitEntries(s, 'app_a', 0, [], a)
+      await commitEntries(s, 'app_b', 0, [], b)
       a.clock = 42
-      await s.state.save('app_a', a)
+      await commitEntries(s, 'app_a', 1, [], a)
       const again = await reopen()
-      expect((await again.state.load('app_a'))?.clock).toBe(42)
-      expect(await again.state.load('app_b')).toEqual(JSON.parse(JSON.stringify(b)))
+      expect(await again.state.load('app_a')).toMatchObject({ version: 2, state: { clock: 42 } })
+      expect(await again.state.load('app_b')).toEqual({ version: 1, tickedAt: 0, state: JSON.parse(JSON.stringify(b)) })
       expect(await again.state.load('app_c')).toBeUndefined()
     })
 
-    it('appends events and reads them back in order, with every field', async () => {
+    it('logs committed entries and reads them back in order, with every field', async () => {
       const s = await create()
-      await s.events.append([])
       const first = [event('app_a', 'i1', 1, { userId: 'u_maya', fieldIds: ['f_1', 'f_2'], comment: 'ok' }), event('app_a', 'i1', 2)]
-      await s.events.append(first)
-      await s.events.append([event('app_b', 'i9', 1), event('app_a', 'i2', 1)])
+      await commitEntries(s, 'app_a', 0, [])
+      await commitEntries(s, 'app_a', 1, first)
+      await commitEntries(s, 'app_b', 0, [event('app_b', 'i9', 1)])
+      await commitEntries(s, 'app_a', 2, [event('app_a', 'i2', 1)])
       const all = await (await reopen()).events.read({})
       expect(all).toEqual([...first, event('app_b', 'i9', 1), event('app_a', 'i2', 1)])
-    })
-
-    it('takes a batch sent again without logging what already landed twice', async () => {
-      const s = await create()
-      await s.events.append([event('app_a', 'i1', 1), event('app_a', 'i1', 2)])
-      // The acknowledgement was lost; the runtime sends the whole batch again with one more entry.
-      await s.events.append([event('app_a', 'i1', 1), event('app_a', 'i1', 2), event('app_a', 'i1', 3)])
-      const all = await (await reopen()).events.read({ appId: 'app_a' })
-      expect(all.map((e) => e.seq)).toEqual([1, 2, 3])
-    })
-
-    it('says the highest position logged for each item of an application', async () => {
-      const s = await create()
-      await s.events.append([event('app_a', 'i1', 1), event('app_a', 'i1', 2), event('app_a', 'i2', 1), event('app_b', 'i9', 1)])
-      expect(await (await reopen()).events.positions('app_a')).toEqual(new Map([['i1', 2], ['i2', 1]]))
-      expect(await s.events.positions('app_none')).toEqual(new Map())
-    })
-
-    it('refuses a batch that puts a different entry at a position already taken, and writes none of it', async () => {
-      const s = await create()
-      await s.events.append([event('app_a', 'i1', 1)])
-      const other = { ...event('app_a', 'i1', 1), text: 'something else' }
-      await expect(s.events.append([event('app_a', 'i2', 1), other])).rejects.toThrow(/conflict/)
-      const all = await (await reopen()).events.read({ appId: 'app_a' })
-      expect(all).toEqual([event('app_a', 'i1', 1)])
     })
 
     it('filters by application and item, and returns the latest `limit`, oldest first', async () => {
       const s = await create()
       const batch: LoggedEvent[] = []
       for (let i = 1; i <= 250; i++) batch.push(event('app_a', i % 2 ? 'odd' : 'even', Math.ceil(i / 2)))
-      batch.push(event('app_b', 'odd', 1))
-      await s.events.append(batch)
+      await commitEntries(s, 'app_a', 0, batch)
+      await commitEntries(s, 'app_b', 0, [event('app_b', 'odd', 1)])
 
       expect(await s.events.read({ appId: 'app_b' })).toEqual([event('app_b', 'odd', 1)])
       const odd = await s.events.read({ appId: 'app_a', itemId: 'odd' })
@@ -170,7 +157,7 @@ export function storageContract(name: string, target: ContractTarget) {
       await projected(s)
       const again = await reopen()
       if (target.persistsProjections) await projected(again)
-      expect(await again.state.get('app_invoice')).toMatchObject({ version: 1, tickedAt: 1000 })
+      expect(await again.state.load('app_invoice')).toMatchObject({ version: 1, tickedAt: 1000 })
       const logged = await again.events.read({ itemId: o.id })
       expect(logged.map((e) => e.seq)).toEqual(o.history.map((_, i) => i + 1))
     })
@@ -183,7 +170,7 @@ export function storageContract(name: string, target: ContractTarget) {
         }),
       ).rejects.toThrow('boom')
       expect(await s.transact('app_x', 0, () => ({ value: 7 }))).toEqual({ value: 7, version: 0, committed: false })
-      expect(await s.state.get('app_x')).toBeUndefined()
+      expect(await s.state.load('app_x')).toBeUndefined()
       expect(await s.events.read({})).toEqual([])
       expect(await s.projections.outbox('app_x')).toEqual([])
     })

@@ -25,7 +25,7 @@ describe('runtime', () => {
     const storage = memoryStorage()
     const rt = await Runtime.create({ storage })
     await make(rt, 'OK-1')
-    expect((await storage.state.get('app_invoice'))?.version).toBe(1)
+    expect((await storage.state.load('app_invoice'))?.version).toBe(1)
 
     const transact = storage.transact
     storage.transact = () => Promise.reject(new Error('database unreachable'))
@@ -50,7 +50,7 @@ describe('runtime', () => {
       }),
     ).rejects.toBeInstanceOf(TypeError)
     expect(await numbers(rt)).toEqual([])
-    expect(await storage.state.get('app_invoice')).toBeUndefined()
+    expect(await storage.state.load('app_invoice')).toBeUndefined()
     await rt.stop()
   })
 
@@ -77,13 +77,13 @@ describe('runtime', () => {
       await writeFile(join(dir, 'design.json'), JSON.stringify(seedDesign()))
       await writeFile(join(dir, 'state-app_invoice.json'), JSON.stringify(legacy))
       const storage = memoryStorage(dir)
-      const before = await storage.state.get('app_invoice')
+      const before = await storage.state.load('app_invoice')
       expect(before?.version).toBe(1)
       expect(before?.tickedAt).toBeUndefined()
       const rt = await Runtime.create({ storage, timeScale: 60 })
       await make(rt, 'L-1')
       expect(await rt.read('app_invoice', (sim) => sim.clock)).toBe(500)
-      expect(await storage.state.get('app_invoice')).toMatchObject({ version: 2, tickedAt: Date.now() })
+      expect(await storage.state.load('app_invoice')).toMatchObject({ version: 2, tickedAt: Date.now() })
       vi.setSystemTime(Date.now() + 60_000)
       await make(rt, 'L-2')
       expect(await rt.read('app_invoice', (sim) => sim.clock)).toBeCloseTo(560)
@@ -100,7 +100,7 @@ describe('runtime', () => {
     await first.stop()
     // Simulate a store from before projections: same state, no rows.
     const bare = memoryStorage()
-    const state = (await storage.state.get('app_invoice'))!.state!
+    const state = (await storage.state.load('app_invoice'))!.state!
     await bare.transact('app_invoice', 0, () => ({ value: 0, write: { state, entries: [], items: [], outbox: [], tickedAt: Date.now() } }))
     await bare.designs.save(first.design)
     const second = await Runtime.create({ storage: bare })
@@ -174,10 +174,10 @@ describe('runtime', () => {
   it('doesn’t reload its own commits', async () => {
     const storage = memoryStorage()
     const rt = await Runtime.create({ storage })
-    const get = vi.spyOn(storage.state, 'get')
+    const load = vi.spyOn(storage.state, 'load')
     for (let i = 0; i < 10; i++) await make(rt, `OWN-${i}`)
     expect(await numbers(rt)).toHaveLength(10)
-    expect(get).not.toHaveBeenCalled()
+    expect(load).not.toHaveBeenCalled()
     await rt.stop()
   })
 
@@ -209,7 +209,7 @@ describe('runtime', () => {
     const errors: string[] = []
     const a = await Runtime.create({ storage })
     const b = await Runtime.create({ storage, onError: (_e, during) => errors.push(during) })
-    storage.state.get = () => Promise.reject(new Error('database unreachable'))
+    storage.state.load = () => Promise.reject(new Error('database unreachable'))
     await make(a, 'UNHEARD')
     await vi.waitFor(() => expect(errors).toContain('listen'))
     await a.stop()
@@ -226,7 +226,7 @@ describe('runtime', () => {
     storage.tryClock = (appId, owner) => (appId === first!.id ? Promise.reject(new Error('lock lost')) : tryClock(appId, owner))
     await rt.tick()
     expect(errors).toEqual([['tick', 'lock lost']])
-    for (const app of rest) expect((await storage.state.get(app.id))?.version).toBe(1)
+    for (const app of rest) expect((await storage.state.load(app.id))?.version).toBe(1)
     await rt.stop()
   })
 
@@ -237,19 +237,19 @@ describe('runtime', () => {
     const b = await Runtime.create({ storage })
     await a.tick()
     await b.tick()
-    expect((await storage.state.get('app_invoice'))?.version).toBe(1)
+    expect((await storage.state.load('app_invoice'))?.version).toBe(1)
     // Under 30 s with nothing logged: rolled back.
     vi.setSystemTime(Date.now() + 10_000)
     await a.tick()
-    expect((await storage.state.get('app_invoice'))?.version).toBe(1)
+    expect((await storage.state.load('app_invoice'))?.version).toBe(1)
     vi.setSystemTime(Date.now() + 30_000)
     await a.tick()
-    expect((await storage.state.get('app_invoice'))?.version).toBe(2)
+    expect((await storage.state.load('app_invoice'))?.version).toBe(2)
     await a.stop()
     // a let go of its clocks: b takes over.
     vi.setSystemTime(Date.now() + 30_000)
     await b.tick()
-    expect((await storage.state.get('app_invoice'))?.version).toBe(3)
+    expect((await storage.state.load('app_invoice'))?.version).toBe(3)
     await b.stop()
   })
 
