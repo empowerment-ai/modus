@@ -5,10 +5,10 @@ import { fieldVerdicts } from '../model/security'
 import { normalizeData, rowsOf } from '../model/tables'
 import type { ObjectType } from '../model/types'
 import { ask, translateQuestion } from './assistant'
-import { activeTokens, advance, createObject, type Ctx, newSim, workStepOf, buildIndex, supervisesStep } from './engine'
-import { adminUpdateData, canExpedite, setExpedite, superviseAssign, superviseRedistribute, superviseRelease, workDelegate, workNext, workSave } from './ops'
+import { activeTokens, advance, createObject, type Ctx, newSim, workStepOf, buildIndex, supervisesStep, ustat } from './engine'
+import { adminUpdateData, canExpedite, setExpedite, superviseAssign, superviseRedistribute, superviseRelease, workDelegate, workNext, workSave, workStart } from './ops'
 import { canReadItem, parseQuery, searchItems, visibleHistory } from './search'
-import { computeView, supervisionFor } from './view'
+import { computeView, expeditedByStep, supervisionFor, workingNow } from './view'
 
 function seedCtx(appIndex = 0, manual: string[] = []): Ctx {
   const d = seedDesign()
@@ -112,6 +112,69 @@ describe('expedite', () => {
     const v = computeView(sim, ctx)
     expect(sim.expFinished).toBeGreaterThan(10)
     expect(v.expeditedCycle).toBeLessThan(v.normalCycle)
+  })
+})
+
+// ---------- Monitor read models ----------
+
+describe('monitor read models', () => {
+  it('counts expedited items per step, subflow steps once per item', () => {
+    const ctx = seedCtx()
+    const sim = newSim('app_invoice', 3)
+    sim.arrivals = false
+    createObject(sim, ctx, 'w_invoice', { f_lines: lines([1, 300]) }, 'u_maya')
+    const rush = createObject(sim, ctx, 'w_invoice', { f_lines: lines([1, 300]) }, 'u_maya', undefined, { expedite: { reason: 'Deadline' } })!
+    const steps = new Set(rush.tokens.flatMap((t) => [t.nodeId, ...t.calls.map((c) => c.nodeId)]))
+    expect(expeditedByStep(sim)).toEqual(Object.fromEntries([...steps].map((id) => [id, 1])))
+    rush.expedite = undefined
+    expect(expeditedByStep(sim)).toEqual({})
+  })
+
+  it('says what each person is working on, whether the simulation or the person started it', () => {
+    const ctx = seedCtx(0, ['u_maya', 'u_jordan', 'u_aisha', 'u_tom', 'u_grace'])
+    const sim = newSim('app_invoice', 5)
+    advance(sim, ctx, 3 * 60)
+    const tok = activeTokens(sim).find((t) => t.state === 'assigned' && t.userId && ctx.manualUserIds!.includes(t.userId))!
+    expect(tok).toBeTruthy()
+    expect(workingNow(sim)[tok.userId!]).toBeUndefined()
+    expect(workStart(sim, ctx, tok.id, tok.userId!).ok).toBe(true)
+    const obj = sim.objects[tok.objectId]!
+    expect(workingNow(sim)[tok.userId!]).toEqual({ itemId: obj.id, number: obj.number, stepId: tok.nodeId, startedAt: sim.clock, also: 0 })
+  })
+
+  it('simulated people: exactly the item the simulation has them on', () => {
+    const ctx = seedCtx()
+    const sim = newSim('app_invoice', 5)
+    let checked = 0
+    for (let i = 0; i < 48 && !checked; i++) {
+      advance(sim, ctx, 30)
+      const now = workingNow(sim)
+      for (const [userId, u] of Object.entries(computeView(sim, ctx).users)) {
+        const cur = u.currentId ? activeTokens(sim).find((t) => t.id === u.currentId && t.state === 'working' && t.userId === userId) : undefined
+        if (!cur) continue
+        expect(now[userId]).toMatchObject({ itemId: cur.objectId, stepId: cur.nodeId, also: 0 })
+        checked++
+      }
+    }
+    expect(checked).toBeGreaterThan(0)
+  })
+
+  it('the simulation’s current item wins over a later manual start; else the later of two manual starts', () => {
+    const ctx = seedCtx(0, ['u_maya', 'u_jordan', 'u_aisha', 'u_tom', 'u_grace'])
+    const sim = newSim('app_invoice', 5)
+    advance(sim, ctx, 3 * 60)
+    const [a, b] = activeTokens(sim).filter((t) => t.state === 'assigned' && t.userId && ctx.manualUserIds!.includes(t.userId))
+    expect(a && b).toBeTruthy()
+    // Two items in one person's hands, started an hour apart.
+    const user = a!.userId!
+    b!.userId = user
+    expect(workStart(sim, ctx, a!.id, user).ok).toBe(true)
+    sim.clock += 60
+    expect(workStart(sim, ctx, b!.id, user).ok).toBe(true)
+    expect(workingNow(sim)[user]).toMatchObject({ itemId: b!.objectId, startedAt: sim.clock, also: 1 })
+    // The simulation's current item outranks any manual start, even a later one.
+    ustat(sim, user).currentId = a!.id
+    expect(workingNow(sim)[user]).toMatchObject({ itemId: a!.objectId, also: 1 })
   })
 })
 

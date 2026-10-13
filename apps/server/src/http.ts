@@ -30,6 +30,13 @@ import {
   createObject,
   type Ctx,
   distributionFor,
+  expeditedByStep,
+  explorerCache,
+  type ExplorerCache,
+  exploreItems,
+  type ExplorerKey,
+  explorerRow,
+  explorerSteps,
   exportOcel,
   failJob,
   findToken,
@@ -58,9 +65,10 @@ import {
   workReturn,
   workSave,
   workStart,
+  workingNow,
 } from '@modus-bpm/core'
 import { answer, type ModelAssistant } from './assistant'
-import { canRead, findItem, hitDto, itemDto, workItemDto } from './dto'
+import { canRead, designDto, findItem, hitDto, itemDto, workItemDto } from './dto'
 import { liveChanges } from './live'
 import { NotFound, type Runtime, StorageUnavailable } from './runtime'
 import type { Sender } from './sender'
@@ -75,6 +83,8 @@ export interface ServerOptions {
   sender?: Pick<Sender, 'wake'>
   /** How often a quiet live stream gets a keep-alive comment (default 25 s, under common 60 s proxy idle timeouts). */
   streamPingMs?: number
+  /** The item explorer's search text per application (given here so tests can watch it). */
+  explorerCaches?: Map<Id, ExplorerCache>
 }
 
 // ---------- Request helpers ----------
@@ -184,6 +194,19 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     routes: app.printRoutes({ commonPrefix: false }).split('\n').filter(Boolean),
   }))
 
+  /** 401 without a named user, 403 unless they're an administrator. */
+  const requireAdmin = (req: FastifyRequest, error: string): Refusal | undefined => (isAdmin(rt.design.users, who(req)) ? undefined : refuse(403, error))
+
+  /**
+   * The published design (applications, people, groups, services without their connection details).
+   * The Studio's live Monitor draws it; the Workspace will too.
+   * TODO: once OIDC lands, review who may read it and whether people's roles should go out to everyone.
+   */
+  app.get('/api/design', async (req) => {
+    void who(req) // any named user; 401 otherwise
+    return designDto(rt.design)
+  })
+
   app.get('/api/apps', async () =>
     rt.design.apps.map((a) => ({ id: a.id, name: a.name, description: a.description, workflows: a.workflows.map((w) => ({ id: w.id, name: w.name, kind: w.kind ?? 'process' })) })),
   )
@@ -194,6 +217,83 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     return rt.read(appId, (sim, ctx) => {
       const v = computeView(sim, ctx)
       return { clock: v.clock, active: v.active, completed: v.completed, rejected: v.rejected, stuck: v.stuck, overdue: v.overdue, bottleneckId: v.bottleneckId, steps: v.nodes, services: v.services }
+    })
+  })
+
+  // ----- The Monitor: administrators only, read from memory -----
+
+  const monitorOnly = 'Only an administrator can see the Monitor.'
+
+  /** The Studio's Monitor view, ready made: its size grows with steps, people and services, not items. */
+  app.get('/api/apps/:app/monitor', async (req, reply) => {
+    const { app: appId } = appParams.parse(req.params)
+    const refused = requireAdmin(req, monitorOnly)
+    if (refused) return send(reply, refused)
+    return rt.read(appId, (sim, ctx) => ({ clock: sim.clock, view: computeView(sim, ctx), expeditedByStep: expeditedByStep(sim), working: workingNow(sim) }))
+  })
+
+  /** Work in flight over time (a point every 15 sim minutes, the last 3000): only points after `since` when given. */
+  const seriesQuery = z.object({ since: z.string().trim().min(1).pipe(z.coerce.number()).optional() })
+  app.get('/api/apps/:app/monitor/series', async (req, reply) => {
+    const { app: appId } = appParams.parse(req.params)
+    const refused = requireAdmin(req, monitorOnly)
+    if (refused) return send(reply, refused)
+    const { since } = seriesQuery.parse(req.query)
+    return rt.read(appId, (sim) => ({ points: since === undefined ? sim.series.slice() : sim.series.filter((p) => p.t > since) }))
+  })
+
+  /** The activity feed, newest first (the engine keeps the last 300). */
+  const feedQuery = z.object({ limit: z.coerce.number().int().min(1).max(300).default(100) })
+  app.get('/api/apps/:app/monitor/feed', async (req, reply) => {
+    const { app: appId } = appParams.parse(req.params)
+    const refused = requireAdmin(req, monitorOnly)
+    if (refused) return send(reply, refused)
+    const { limit } = feedQuery.parse(req.query)
+    return rt.read(appId, (sim) => ({ entries: sim.feed.slice(0, limit) }))
+  })
+
+  // The cursor is where the last row sorts. Sort keys never change, so later pages neither repeat
+  // nor skip items that existed at the first; newer items sort before it and wait for a fresh read.
+  const cursorKey = z.tuple([z.number(), z.string(), z.string()])
+  const encodeCursor = (k: ExplorerKey) => Buffer.from(JSON.stringify([k.createdAt, k.number, k.id])).toString('base64url')
+  const cursor = z
+    .string()
+    .max(1000)
+    .transform((s, c): ExplorerKey => {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(Buffer.from(s, 'base64url').toString())
+      } catch {}
+      const key = cursorKey.safeParse(parsed)
+      if (key.success) return { createdAt: key.data[0], number: key.data[1], id: key.data[2] }
+      c.addIssue({ code: 'custom', message: 'Invalid cursor' })
+      return z.NEVER
+    })
+  const itemsQuery = z.object({
+    status: z.enum(['all', 'active', 'completed', 'rejected']).default('all'),
+    type: z.string().max(200).optional(),
+    step: z.string().max(200).optional(),
+    assignee: z.string().max(200).optional(),
+    q: z.string().max(500).default(''),
+    limit: z.coerce.number().int().min(1).max(200).default(50),
+    cursor: cursor.optional(),
+  })
+
+  // Kept across requests (and commits): without it every search formats every item again.
+  const explorerCaches = opts.explorerCaches ?? new Map<Id, ExplorerCache>()
+  const explorerCacheFor = (appId: Id) => explorerCaches.get(appId) ?? explorerCaches.set(appId, explorerCache()).get(appId)!
+
+  /** The item explorer over every item, newest first, with the Studio's filters and text search (core's explorer). */
+  app.get('/api/apps/:app/monitor/items', async (req, reply) => {
+    const { app: appId } = appParams.parse(req.params)
+    const refused = requireAdmin(req, monitorOnly)
+    if (refused) return send(reply, refused)
+    const f = itemsQuery.parse(req.query)
+    return rt.read(appId, (sim, ctx) => {
+      const r = exploreItems(sim, ctx, { status: f.status, typeId: f.type, stepId: f.step, assignee: f.assignee, q: f.q }, { limit: f.limit, after: f.cursor, cache: explorerCacheFor(appId) })
+      const steps = explorerSteps(ctx.app)
+      const last = r.items[r.items.length - 1]
+      return { items: r.items.map((o) => explorerRow(o, ctx, sim.clock, steps)), total: r.total, ...(r.more && last ? { next: encodeCursor(last) } : {}) }
     })
   })
 
@@ -481,20 +581,17 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
   // ----- The outbox: administrators only -----
   // Deliveries carry the endpoint's name only, never its URL or secret.
 
-  const requireAdmin = (req: FastifyRequest): Refusal | undefined => {
-    return isAdmin(rt.design.users, who(req)) ? undefined : refuse(403, 'Only an administrator can see or retry outbox deliveries.')
-  }
-
+  const outboxOnly = 'Only an administrator can see or retry outbox deliveries.'
   const outboxQuery = z.object({ status: z.enum(['pending', 'delivered', 'failed']).optional(), limit: z.coerce.number().int().min(1).max(500).default(100) })
   app.get('/api/admin/outbox', async (req, reply) => {
-    const refused = requireAdmin(req)
+    const refused = requireAdmin(req, outboxOnly)
     if (refused) return send(reply, refused)
     const filter = outboxQuery.parse(req.query)
     return { deliveries: await rt.deliveries.list(filter) }
   })
 
   app.post('/api/admin/outbox/:id/retry', async (req, reply) => {
-    const refused = requireAdmin(req)
+    const refused = requireAdmin(req, outboxOnly)
     if (refused) return send(reply, refused)
     const { id } = z.object({ id: z.coerce.number().int().positive() }).parse(req.params)
     if (!(await rt.deliveries.retry(id, Date.now()))) return send(reply, refuse(404, 'That message has no failed deliveries.'))
