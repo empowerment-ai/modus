@@ -180,8 +180,11 @@ clock (timers, SLAs, escalations, retries). If it stops, another takes over on i
 - **Readiness.** Each replica keeps one extra connection open to `LISTEN` for the others'
   changes. While that connection is down, `/api/ready` answers `503` so traffic goes to replicas
   that are current. When it comes back, the replica reloads every application.
-- **Connections.** Each replica uses a pool of up to 10 connections plus the listening one, all
-  from `DATABASE_URL`. Size `max_connections` (or your pooler) for that. `DATABASE_URL` must
+- **Connections.** Each replica uses up to `DB_POOL_MAX + 1` connections (the pool, default 10,
+  plus the listening one), all from `DATABASE_URL`. Replicas × (`DB_POOL_MAX` + 1), plus the
+  extra pods a rolling update starts, must stay under Postgres `max_connections` minus its
+  reserved connections (`superuser_reserved_connections` and any others), or under your pooler's
+  limit. In the chart, set `database.poolMax`. `DATABASE_URL` must
   point at Postgres directly or at a session-mode pooler (PgBouncer `pool_mode = session`).
   Transaction pooling breaks `LISTEN` and the session advisory locks that pick each clock's
   ticker.
@@ -309,6 +312,7 @@ a message that names the variable.
 | `MODUS_ASSISTANT_FALLBACKS` | `default` | `default` lets the API retry a declined question on its recommended fallback model; `off` for models or platforms without server-side fallback. |
 | `DB_DIALECT` | `memory` (Compose: `postgres`) | Storage: `memory` or `postgres`. `mssql` and `oracle` are validated (with `DATABASE_URL`) and then refused with a clear message until their adapters ship. |
 | `DATABASE_URL` | unset | Connection string, required for a SQL dialect: `postgres://` or `postgresql://` (`mssql://` or `sqlserver://`, `oracle://` later). Secret: the startup log shows only host, port and database. Ignored, with a warning, for `memory`. |
+| `DB_POOL_MAX` | `10` | Most database connections each process keeps in its pool, 1 to 200 (`postgres`). Each process also holds one more to listen for other replicas' changes. Ignored, with a warning, for `memory`. |
 | `TENANT_MODE` | `single` | `multi` is planned; accepted with a warning, runs as one tenant. |
 | `MODUS_ROLES` | all six | Comma-separated roles this process plays (`api,engine,automation,scheduler,ingest,realtime`). Unknown roles stop the server; a subset is accepted with a warning and every role still runs. |
 | `NODE_ENV` | image: `production` | Standard Node.js setting. |

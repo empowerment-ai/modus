@@ -14,6 +14,9 @@ data:
   STATIC_DIR: {{ ternary "/app/public" "" .Values.config.serveStudio | quote }}
   DATA_DIR: "/data"
   DB_DIALECT: {{ .Values.database.dialect | quote }}
+  {{- if ne .Values.database.dialect "memory" }}
+  DB_POOL_MAX: {{ .Values.database.poolMax | quote }}
+  {{- end }}
   TENANT_MODE: {{ .Values.tenancy.mode | quote }}
   MODUS_ASSISTANT_MODEL: {{ .Values.assistant.model | quote }}
   MODUS_ASSISTANT_EFFORT: {{ .Values.assistant.effort | quote }}

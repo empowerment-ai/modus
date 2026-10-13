@@ -26,7 +26,7 @@ const { config, warnings } = loaded
 
 let storage: Storage
 if (config.db.dialect === 'postgres') {
-  const pg = postgresStorage(config.db.url)
+  const pg = postgresStorage(config.db.url, { max: config.db.poolMax })
   try {
     await pg.migrate()
   } catch (err) {
