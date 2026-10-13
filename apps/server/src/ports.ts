@@ -98,11 +98,16 @@ export interface Storage {
   /**
    * Run `work` holding the application's lock, and commit what it returns in one transaction:
    * state (version + 1), audit entries, projections, outbox, and a change notice to every
-   * listener. Throws StorageBusy when the lock isn't granted within 5 s; any other failure
+   * listener. Throws StorageBusy when the lock isn't granted within
+   * the adapter's lock timeout (Postgres: 5 s by default); any other failure
    * rolls everything back and rethrows.
    */
   transact<T>(appId: Id, known: number, work: (stored: Stored) => Work<T> | Promise<Work<T>>): Promise<{ value: T; version: number; committed: boolean }>
-  /** Hear every committed change, this process's included. Returns a stop function. */
+  /**
+   * Hear every committed change, this process's included. Returns a stop function. Handlers must
+   * catch their own errors: the adapter swallows a throw or rejection. `onReconnect` runs after a
+   * lost (or never opened) connection comes back: reload anything that may have been missed.
+   */
   listen(onChange: (n: ChangeNotice) => void, onReconnect?: () => void): Promise<() => Promise<void>>
   /** Become (or stay) the one ticker for this application's clock. */
   tryClock(appId: Id, owner: string): Promise<boolean>

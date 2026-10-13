@@ -137,7 +137,11 @@ describe.skipIf(!url)('postgres', () => {
     })
 
     it('reconnects after losing its connection, dropping its clocks and telling listeners to reload', async () => {
-      const a = postgresStorage(url!, { schema: own })
+      // A name of its own, so cutting the connection can't touch another test run's.
+      const name = `modus_reconnect_${process.pid}`
+      const named = new URL(url!)
+      named.searchParams.set('application_name', name)
+      const a = postgresStorage(named.toString(), { schema: own })
       const b = postgresStorage(url!, { schema: own })
       const heard: ChangeNotice[] = []
       let reloads = 0
@@ -146,8 +150,7 @@ describe.skipIf(!url)('postgres', () => {
         () => reloads++,
       )
       expect(await a.tryClock('app_r', 'a')).toBe(true)
-      // The dedicated connection's last statement was the clock lock.
-      await admin.query(`select pg_terminate_backend(pid) from pg_stat_activity where pid <> pg_backend_pid() and query like '%pg_try_advisory_lock%' and datname = current_database()`)
+      await admin.query('select pg_terminate_backend(pid) from pg_stat_activity where application_name = $1', [name])
       await vi.waitFor(() => expect(reloads).toBe(1), { timeout: 5000 })
       expect(await b.tryClock('app_r', 'b')).toBe(true)
       expect(await a.tryClock('app_r', 'a')).toBe(false)
@@ -155,6 +158,27 @@ describe.skipIf(!url)('postgres', () => {
       await vi.waitFor(() => expect(heard).toEqual([{ appId: 'app_r', version: 1, itemIds: [] }]))
       await a.close()
       await b.close()
+    })
+
+    it('takes a clock once when two calls race for it', async () => {
+      const a = postgresStorage(url!, { schema: own })
+      const b = postgresStorage(url!, { schema: own })
+      expect(await Promise.all([a.tryClock('app_c', 'a'), a.tryClock('app_c', 'a')])).toEqual([true, true])
+      expect(await b.tryClock('app_c', 'b')).toBe(false)
+      await a.releaseClocks('a')
+      expect(await b.tryClock('app_c', 'b')).toBe(true)
+      await a.close()
+      await b.close()
+    })
+
+    it('listens without a database, holds no clock, and stops retrying on close', async () => {
+      const down = postgresStorage('postgres://nobody:pw@127.0.0.1:1/none')
+      const stop = await down.listen(() => undefined, () => undefined)
+      expect(await down.tryClock('app_d', 'd')).toBe(false)
+      // A retry is pending: fails at once instead of opening another connection.
+      expect(await down.tryClock('app_d', 'd')).toBe(false)
+      await stop()
+      await down.close()
     })
 
     it('keeps one schema’s notices from another schema’s listeners', async () => {
@@ -200,11 +224,14 @@ describe.skipIf(!url)('postgres', () => {
       await commit(0)
       const other = new pg.Client({ connectionString: url })
       await other.connect()
-      await other.query('begin')
-      await other.query(`select 1 from ${own}.app_state where app_id = 'app_busy' for update`)
-      await expect(commit(1)).rejects.toBeInstanceOf(StorageBusy)
-      await other.query('commit')
-      await other.end()
+      try {
+        await other.query('begin')
+        await other.query(`select 1 from ${own}.app_state where app_id = 'app_busy' for update`)
+        await expect(commit(1)).rejects.toBeInstanceOf(StorageBusy)
+      } finally {
+        await other.query('commit')
+        await other.end()
+      }
       expect(await commit(1)).toMatchObject({ version: 2, committed: true })
       await s.close()
     })

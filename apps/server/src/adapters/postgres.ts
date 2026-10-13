@@ -488,9 +488,11 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
   let session: pg.Client | undefined
   let opening: Promise<pg.Client> | undefined
   let retry: ReturnType<typeof setTimeout> | undefined
+  let beat: ReturnType<typeof setInterval> | undefined
   let backoff = 1000
   let shut = false
   const held = new Set<Id>()
+  const taking = new Map<Id, Promise<boolean>>()
   const changeHandlers = new Set<(n: ChangeNotice) => void>()
   const reconnectHandlers = new Set<() => void>()
   const closedError = () => new Error('Storage is closed.')
@@ -502,7 +504,8 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
       .catch(() => undefined)
 
   async function open(): Promise<pg.Client> {
-    const c = new pg.Client({ connectionString, options: searchPath })
+    // Keepalive and the heartbeat notice a half-open connection, whose clocks Postgres has already released.
+    const c = new pg.Client({ connectionString, options: searchPath, keepAlive: true, keepAliveInitialDelayMillis: 10_000, connectionTimeoutMillis: 10_000 })
     c.on('notification', (m) => {
       if (m.channel !== channel || !m.payload) return
       const payload = m.payload
@@ -524,20 +527,48 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
     }
     session = c
     backoff = 1000
+    beat = setInterval(() => heartbeat(c), 15_000)
+    beat.unref()
     return c
   }
 
+  /** `select 1` within 5 s, or the connection counts as lost. */
+  function heartbeat(c: pg.Client) {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const late = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('heartbeat timed out')), 5000)
+      timer.unref()
+    })
+    Promise.race([c.query('select 1'), late]).then(
+      () => clearTimeout(timer),
+      () => {
+        clearTimeout(timer)
+        drop(c)
+      },
+    )
+  }
+
+  /** The open connection, or a new one. While a retry is pending, fails at once rather than opening another. */
   function dedicated(): Promise<pg.Client> {
     if (shut) return Promise.reject(closedError())
     if (session) return Promise.resolve(session)
-    return (opening ??= open().finally(() => {
-      opening = undefined
-    }))
+    if (retry) return Promise.reject(new Error('Not connected to the database; retrying.'))
+    return (opening ??= open()
+      .catch((err) => {
+        // Someone wants this connection: keep trying in the background, backing off to 30 s.
+        schedule()
+        backoff = Math.min(backoff * 2, 30_000)
+        throw err
+      })
+      .finally(() => {
+        opening = undefined
+      }))
   }
 
   function drop(c: pg.Client) {
     if (session !== c) return
     session = undefined
+    clearInterval(beat)
     // Advisory locks die with the connection.
     held.clear()
     void c.end().catch(() => undefined)
@@ -550,15 +581,13 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
     retry.unref()
   }
 
-  /** Reconnect in the background, backing off to 30 s; listeners then reload what they may have missed. */
+  /** Reconnect in the background (a failure reschedules itself); listeners then reload what they may have missed. */
   async function reconnect() {
     retry = undefined
     if (shut) return
     try {
       await dedicated()
     } catch {
-      backoff = Math.min(backoff * 2, 30_000)
-      schedule()
       return
     }
     for (const h of reconnectHandlers) isolate(h)
@@ -573,34 +602,40 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
     projections,
     transact,
     async listen(onChange, onReconnect) {
+      if (shut) throw closedError()
       changeHandlers.add(onChange)
       if (onReconnect) reconnectHandlers.add(onReconnect)
-      const stop = async () => {
+      // Unreachable now: the retry connects later, and `onReconnect` reloads what was missed.
+      await dedicated().catch(() => undefined)
+      return async () => {
         changeHandlers.delete(onChange)
         if (onReconnect) reconnectHandlers.delete(onReconnect)
       }
-      try {
-        await dedicated()
-      } catch (err) {
-        await stop()
-        throw err
-      }
-      return stop
     },
     // `owner` is the dedicated connection: one storage per runtime.
     async tryClock(appId) {
       // Advisory locks are reentrant and counted: don't take one twice.
       if (held.has(appId)) return true
-      try {
-        const c = await dedicated()
-        const { rows } = await c.query<{ ok: boolean }>('select pg_try_advisory_lock(hashtext($1)) as ok', [clockKey(appId)])
-        // A connection lost meanwhile took the lock with it.
-        if (!rows[0]?.ok || session !== c) return false
-        held.add(appId)
-        return true
-      } catch {
-        return false
+      // Concurrent calls share one lock query.
+      let p = taking.get(appId)
+      if (!p) {
+        p = (async () => {
+          try {
+            const c = await dedicated()
+            const { rows } = await c.query<{ ok: boolean }>('select pg_try_advisory_lock(hashtextextended($1, 0)) as ok', [clockKey(appId)])
+            // A connection lost meanwhile took the lock with it.
+            if (!rows[0]?.ok || session !== c) return false
+            held.add(appId)
+            return true
+          } catch {
+            return false
+          } finally {
+            taking.delete(appId)
+          }
+        })()
+        taking.set(appId, p)
       }
+      return p
     },
     async releaseClocks() {
       const c = session
@@ -625,6 +660,7 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
         shut = true
         if (retry) clearTimeout(retry)
         retry = undefined
+        clearInterval(beat)
         await opening?.catch(() => undefined)
         const c = session
         session = undefined
