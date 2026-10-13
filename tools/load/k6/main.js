@@ -16,6 +16,10 @@ const CLERKS = Number(__ENV.CLERKS || CLERKS_BY_PROFILE[PROFILE])
 const RUN = Date.now().toString(36)
 
 const KINDS = ['create', 'basket', 'queues', 'next', 'open', 'save', 'release', 'poll', 'complete', 'fail']
+// The design's soft limits are per class (reads p95 < 300 ms, changes < 500 ms); percentiles don't
+// add up across kinds, so k6 keeps the classes' own. `my/next` and a poll take work: changes.
+const READS = ['basket', 'queues', 'open']
+const op = (kind) => (READS.includes(kind) ? 'read' : 'change')
 
 // Always-true thresholds: they only make k6 keep per-kind numbers in its summary for the report.
 // The soft limits are the report's to judge; nothing here fails or stops a run.
@@ -23,7 +27,10 @@ const perKind = {}
 for (const k of KINDS) {
   perKind[`http_req_duration{kind:${k}}`] = ['max>=0']
   perKind[`http_req_failed{kind:${k}}`] = ['rate>=0']
+  perKind[`http_reqs{kind:${k}}`] = ['count>=0']
+  perKind[`busy{kind:${k}}`] = ['count>=0']
 }
+for (const o of ['read', 'change']) perKind[`http_req_duration{op:${o}}`] = ['max>=0']
 
 export const options = {
   scenarios: scenarios(PROFILE),
@@ -58,7 +65,7 @@ function params(kind, { user, body, ok, read } = {}) {
   // No content type without a body: Fastify refuses an empty JSON body.
   if (body !== undefined) headers['content-type'] = 'application/json'
   // `name` too, so URLs with ids don't each become their own series.
-  const p = { headers, tags: { kind, name: kind } }
+  const p = { headers, tags: { kind, name: kind, op: op(kind) } }
   // Only when given: an undefined callback switches off http_req_failed for the request.
   if (ok) p.responseCallback = ok
   if (read) p.responseType = 'text'
