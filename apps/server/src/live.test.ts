@@ -71,7 +71,7 @@ describe('live changes', () => {
 
   it('says items: null when too much changed while held', async () => {
     const c = slowClient()
-    const live = liveChanges(c.out, snapshots().read, 3)
+    const live = liveChanges(c.out, snapshots().read, { cap: 3 })
     live.change(1, ['first'])
     await settle()
     live.change(2, ['a', 'b'])
@@ -87,6 +87,45 @@ describe('live changes', () => {
     live.change(5, ['f'])
     await settle()
     expect(c.events().map((e) => e.items)).toEqual([['first'], null, ['f']])
+  })
+
+  it('reports a failed read and sends its ids with the next event', async () => {
+    const c = slowClient()
+    const snap = snapshots()
+    let fail = true
+    const errors: unknown[] = []
+    const live = liveChanges(c.out, () => (fail ? Promise.reject(new Error('boom')) : snap.read()), { onError: (e) => errors.push(e) })
+    live.change(1, ['lost?'])
+    await settle()
+    expect(errors).toHaveLength(1)
+    expect(c.events()).toEqual([])
+
+    fail = false
+    live.change(2, ['next'])
+    await settle()
+    expect(c.events().map((e) => e.items)).toEqual([['lost?', 'next']])
+  })
+
+  it('reports a failed read after a drain and keeps the held ids', async () => {
+    const c = slowClient()
+    const snap = snapshots()
+    let fail = false
+    const errors: unknown[] = []
+    const live = liveChanges(c.out, () => (fail ? Promise.reject(new Error('boom')) : snap.read()), { onError: (e) => errors.push(e) })
+    live.change(1, ['first'])
+    await settle()
+    live.change(2, ['held'])
+    fail = true
+    await c.catchUp()
+    await settle()
+    expect(errors).toHaveLength(1)
+    expect(c.events().map((e) => e.items)).toEqual([['first']])
+
+    // Not stuck waiting for a drain that won't come: the next change carries the held ids.
+    fail = false
+    live.change(3, ['later'])
+    await settle()
+    expect(c.events().map((e) => e.items)).toEqual([['first'], ['held', 'later']])
   })
 
   it('writes nothing once the stream has ended', async () => {
