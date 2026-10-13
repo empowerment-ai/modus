@@ -24,7 +24,7 @@ x-modus: &modus
     DATA_DIR: ''
     # No key: the built-in assistant, never a paid model, under load.
     ANTHROPIC_API_KEY: ''
-    # The observer (Task 3) measures delivery lag; until it runs, deliveries retry.
+    # The observer measures delivery lag.
     WEBHOOK_URL: http://observer:8791/hook
     WEBHOOK_SECRET: modus-load-webhook-secret
     WEBHOOKS_ALLOW_HTTP: 'true'
@@ -86,3 +86,27 @@ services:
     depends_on:
       modus1:
         condition: service_healthy
+
+  # Webhook receiver and live-screen watcher (observer/server.mjs): no dependencies, so stock Node
+  # with the file mounted. Servers reach it at http://observer:8791/hook; the runner uses the port.
+  observer:
+    image: node:22.22.0-alpine
+    command: ['node', '/observer/server.mjs']
+    volumes:
+      - ./observer/server.mjs:/observer/server.mjs:ro
+    environment:
+      WEBHOOK_SECRET: modus-load-webhook-secret
+      PORT: '8791'
+    ports:
+      - '127.0.0.1:8791:8791'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1:8791/stats || exit 1']
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    # Small next to the servers, so it never competes with what it measures.
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256m
