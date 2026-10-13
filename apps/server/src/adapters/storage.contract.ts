@@ -270,7 +270,10 @@ export function storageContract(name: string, target: ContractTarget) {
         return (await s.projections.outbox(appId)).slice(-messages.length).map((m) => m.id)
       }
       const toA = () => ['a']
+      // Endpoint names that sort the same in any collation, so Postgres's order can't differ from JavaScript's.
+      const toBoth = () => ['b2', 'a1']
       const keys = (ds: Delivery[]) => ds.map((d) => `${d.outboxId}:${d.endpoint}`)
+      const find = async (s: Storage, outboxId: number, endpoint: string) => (await s.deliveries.list({})).find((d) => d.outboxId === outboxId && d.endpoint === endpoint)
 
       it('fans each message out to its endpoints once, and marks a message with none sent', async () => {
         const s = await create()
@@ -280,7 +283,7 @@ export function storageContract(name: string, target: ContractTarget) {
         const made = await s.deliveries.list({})
         expect(made.map((d) => d.endpoint).sort()).toEqual(['a', 'b'])
         for (const d of made)
-          expect(d).toMatchObject({ outboxId: routed, appId: 'app_a', itemId: 'i2', kind: 'notify', payload: { itemId: 'i2' }, createdAt: expect.any(Number), status: 'pending', attempts: 0, nextAt: T })
+          expect(d).toMatchObject({ outboxId: routed, appId: 'app_a', itemId: 'i2', kind: 'notify', payload: { itemId: 'i2' }, createdAt: expect.any(Number), status: 'pending', attempts: 0, since: T, nextAt: T })
         expect(Math.abs(made[0]!.createdAt - Date.now())).toBeLessThan(60_000)
         expect((await s.projections.outbox('app_a')).map((m) => m.id)).toEqual([routed])
         expect(await s.deliveries.fanOut(route, T, 10)).toBe(0)
@@ -293,15 +296,15 @@ export function storageContract(name: string, target: ContractTarget) {
         expect(await s.deliveries.fanOut(toA, T, 2)).toBe(1)
       })
 
-      it('claims due deliveries oldest first, and keeps them from everyone else until the lease runs out', async () => {
+      it('claims due deliveries oldest first, then by endpoint, and keeps them from everyone else until the lease runs out', async () => {
         const s = await create()
-        const ids = await write(s, 'app_a', [msg('i1'), msg('i2'), msg('i3')])
-        await s.deliveries.fanOut(toA, T, 10)
-        expect(keys(await s.deliveries.claim(T, 1000, 2))).toEqual([`${ids[0]}:a`, `${ids[1]}:a`])
-        expect(keys(await s.deliveries.claim(T, 1000, 10))).toEqual([`${ids[2]}:a`])
+        const [x, y] = await write(s, 'app_a', [msg('i1'), msg('i2')])
+        await s.deliveries.fanOut(toBoth, T, 10)
+        expect(keys(await s.deliveries.claim(T, 1000, 3))).toEqual([`${x}:a1`, `${x}:b2`, `${y}:a1`])
+        expect(keys(await s.deliveries.claim(T, 1000, 10))).toEqual([`${y}:b2`])
         expect(await s.deliveries.claim(T + 999, 1000, 10)).toEqual([])
         const again = await s.deliveries.claim(T + 1000, 1000, 10)
-        expect(keys(again)).toEqual(ids.map((id) => `${id}:a`))
+        expect(keys(again)).toEqual([`${x}:a1`, `${x}:b2`, `${y}:a1`, `${y}:b2`])
         expect(again[0]).toMatchObject({ status: 'pending', attempts: 0, nextAt: T + 2000, itemId: 'i1' })
       })
 
@@ -323,13 +326,30 @@ export function storageContract(name: string, target: ContractTarget) {
       it('records a delivery, and counts the message sent once every endpoint is settled', async () => {
         const s = await create()
         const [id] = await write(s, 'app_a', [msg('i1')])
-        await s.deliveries.fanOut(() => ['a', 'b'], T, 10)
+        await s.deliveries.fanOut(toBoth, T, 10)
         await s.deliveries.claim(T, 1000, 10)
-        await s.deliveries.record(id!, 'a', { status: 'delivered', lastStatus: 200 }, T + 5)
-        expect((await s.deliveries.list({ status: 'delivered' }))[0]).toMatchObject({ outboxId: id, endpoint: 'a', attempts: 1, deliveredAt: T + 5, lastStatus: 200 })
+        expect(await s.deliveries.record(id!, 'a1', T + 1000, { status: 'delivered', lastStatus: 200 }, T + 5)).toBe(true)
+        expect((await s.deliveries.list({ status: 'delivered' }))[0]).toMatchObject({ outboxId: id, endpoint: 'a1', attempts: 1, deliveredAt: T + 5, lastStatus: 200 })
         expect((await s.projections.outbox('app_a')).map((m) => m.id)).toEqual([id])
-        await s.deliveries.record(id!, 'b', { status: 'failed', lastStatus: 404, lastError: 'Not Found' }, T + 6)
+        expect(await s.deliveries.record(id!, 'b2', T + 1000, { status: 'failed', lastStatus: 404, lastError: 'Not Found' }, T + 6)).toBe(true)
         expect(await s.projections.outbox('app_a')).toEqual([])
+      })
+
+      it('ignores a result from a claim whose lease ran out', async () => {
+        const s = await create()
+        const [id] = await write(s, 'app_a', [msg('i1')])
+        await s.deliveries.fanOut(toA, T, 10)
+        expect(await s.deliveries.claim(T, 1000, 10)).toMatchObject([{ nextAt: T + 1000 }])
+        expect(await s.deliveries.claim(T + 1000, 1000, 10)).toMatchObject([{ nextAt: T + 2000 }])
+        // The first claimer answers late, while the second still holds it: nothing changes.
+        expect(await s.deliveries.record(id!, 'a', T + 1000, { status: 'failed', lastStatus: 400 }, T + 1500)).toBe(false)
+        expect(await find(s, id!, 'a')).toMatchObject({ status: 'pending', attempts: 0, nextAt: T + 2000 })
+        expect(await s.deliveries.record(id!, 'a', T + 2000, { status: 'delivered', lastStatus: 200 }, T + 1600)).toBe(true)
+        // And once it is settled.
+        expect(await s.deliveries.record(id!, 'a', T + 1000, { status: 'failed', lastStatus: 400 }, T + 1700)).toBe(false)
+        expect(await find(s, id!, 'a')).toMatchObject({ status: 'delivered', attempts: 1, lastStatus: 200, deliveredAt: T + 1600 })
+        expect(await s.projections.outbox('app_a')).toEqual([])
+        expect(await s.deliveries.record(id!, 'nowhere', T + 2000, { status: 'delivered' }, T + 1800)).toBe(false)
       })
 
       it('holds a retried delivery until its next attempt, and lists failures with their last answer', async () => {
@@ -337,28 +357,72 @@ export function storageContract(name: string, target: ContractTarget) {
         const [id] = await write(s, 'app_a', [msg('i1')])
         await s.deliveries.fanOut(toA, T, 10)
         await s.deliveries.claim(T, 60_000, 10)
-        await s.deliveries.record(id!, 'a', { status: 'pending', nextAt: T + 10_000, lastStatus: 500, lastError: 'Internal Server Error' }, T)
+        await s.deliveries.record(id!, 'a', T + 60_000, { status: 'pending', nextAt: T + 10_000, lastStatus: 500, lastError: 'Internal Server Error' }, T)
         expect(await s.deliveries.claim(T + 9_999, 60_000, 10)).toEqual([])
         expect(await s.deliveries.claim(T + 10_000, 60_000, 10)).toMatchObject([{ outboxId: id, attempts: 1, lastStatus: 500 }])
-        await s.deliveries.record(id!, 'a', { status: 'failed', lastStatus: 400, lastError: 'Bad Request' }, T + 10_001)
+        await s.deliveries.record(id!, 'a', T + 70_000, { status: 'failed', lastStatus: 400, lastError: 'Bad Request' }, T + 10_001)
         expect(await s.deliveries.list({ status: 'failed' })).toMatchObject([{ outboxId: id, endpoint: 'a', status: 'failed', attempts: 2, lastStatus: 400, lastError: 'Bad Request' }])
         expect(await s.deliveries.list({ status: 'pending' })).toEqual([])
       })
 
-      it('sends a failed message again on retry', async () => {
+      it('clears the last answer when an attempt records none', async () => {
         const s = await create()
-        const [failed, delivered] = await write(s, 'app_a', [msg('i1'), msg('i2')])
+        const [id] = await write(s, 'app_a', [msg('i1')])
         await s.deliveries.fanOut(toA, T, 10)
-        await s.deliveries.claim(T, 60_000, 10)
-        await s.deliveries.record(failed!, 'a', { status: 'failed', lastStatus: 400 }, T)
-        await s.deliveries.record(delivered!, 'a', { status: 'delivered', lastStatus: 200 }, T)
+        await s.deliveries.claim(T, 1000, 10)
+        await s.deliveries.record(id!, 'a', T + 1000, { status: 'pending', nextAt: T + 10, lastStatus: 503, lastError: 'Service Unavailable' }, T)
+        await s.deliveries.claim(T + 10, 1000, 10)
+        await s.deliveries.record(id!, 'a', T + 1010, { status: 'delivered' }, T + 20)
+        const d = await find(s, id!, 'a')
+        expect(d).toMatchObject({ status: 'delivered', attempts: 2 })
+        expect(d?.lastStatus).toBeUndefined()
+        expect(d?.lastError).toBeUndefined()
+      })
+
+      it('sends a failed delivery again on retry, with a fresh schedule, leaving delivered ones alone', async () => {
+        const s = await create()
+        const [id, other] = await write(s, 'app_a', [msg('i1'), msg('i2')])
+        await s.deliveries.fanOut(toBoth, T, 10)
+        await s.deliveries.claim(T, 1000, 10)
+        await s.deliveries.record(id!, 'a1', T + 1000, { status: 'delivered', lastStatus: 200 }, T)
+        await s.deliveries.record(id!, 'b2', T + 1000, { status: 'pending', nextAt: T + 10, lastStatus: 503 }, T)
+        await s.deliveries.claim(T + 10, 1000, 10)
+        await s.deliveries.record(id!, 'b2', T + 1010, { status: 'failed', lastStatus: 400, lastError: 'Bad Request' }, T + 10)
+        await s.deliveries.record(other!, 'a1', T + 1000, { status: 'delivered', lastStatus: 200 }, T)
+        await s.deliveries.record(other!, 'b2', T + 1000, { status: 'delivered', lastStatus: 200 }, T)
         expect(await s.projections.outbox('app_a')).toEqual([])
-        expect(await s.deliveries.retry(failed!, T + 20)).toBe(true)
-        expect((await s.projections.outbox('app_a')).map((m) => m.id)).toEqual([failed])
-        expect(keys(await s.deliveries.claim(T + 20, 60_000, 10))).toEqual([`${failed}:a`])
-        expect(await s.deliveries.retry(delivered!, T + 20)).toBe(false)
-        expect(await s.deliveries.retry(failed!, T + 20)).toBe(false)
+
+        expect(await s.deliveries.retry(id!, T + 20)).toBe(true)
+        expect(await find(s, id!, 'b2')).toMatchObject({ status: 'pending', attempts: 0, since: T + 20, nextAt: T + 20, lastStatus: 400, lastError: 'Bad Request' })
+        expect(await find(s, id!, 'a1')).toMatchObject({ status: 'delivered', attempts: 1, since: T, deliveredAt: T })
+        expect((await s.projections.outbox('app_a')).map((m) => m.id)).toEqual([id])
+        expect(keys(await s.deliveries.claim(T + 20, 60_000, 10))).toEqual([`${id}:b2`])
+
+        expect(await s.deliveries.retry(other!, T + 20)).toBe(false)
+        expect(await s.deliveries.retry(id!, T + 20)).toBe(false)
         expect(await s.deliveries.retry(999_999, T + 20)).toBe(false)
+      })
+
+      it('lists newest first, 100 unless told otherwise', async () => {
+        const s = await create()
+        const ids = await write(s, 'app_a', Array.from({ length: 105 }, (_, i) => msg(`i${i}`)))
+        await s.deliveries.fanOut(toA, T, 200)
+        const all = await s.deliveries.list({})
+        expect(all.map((d) => d.outboxId)).toEqual(ids.slice(-100).reverse())
+        expect(await s.deliveries.list({ limit: 105 })).toHaveLength(105)
+        expect((await s.deliveries.list({ limit: 2 })).map((d) => d.outboxId)).toEqual([ids[104], ids[103]])
+      })
+
+      it('hands out copies: changing a returned delivery changes nothing stored', async () => {
+        const s = await create()
+        const [id] = await write(s, 'app_a', [msg('i1')])
+        await s.deliveries.fanOut(toA, T, 10)
+        for (const d of [...(await s.deliveries.claim(T, 1000, 10)), ...(await s.deliveries.list({}))]) {
+          d.status = 'failed'
+          d.nextAt = 0
+          d.payload.itemId = 'changed'
+        }
+        expect(await find(s, id!, 'a')).toMatchObject({ status: 'pending', nextAt: T + 1000, payload: { itemId: 'i1' } })
       })
 
       it('prunes messages sent long enough ago, keeping failed ones longer and pending ones always', async () => {
@@ -367,9 +431,10 @@ export function storageContract(name: string, target: ContractTarget) {
         // i5 is routed nowhere: skipped and sent at T.
         await s.deliveries.fanOut((m) => (m.kind === 'notify' ? ['a'] : []), T, 10)
         await s.deliveries.claim(T, 60_000, 10)
-        await s.deliveries.record(oldSent!, 'a', { status: 'delivered' }, T)
-        await s.deliveries.record(oldFailed!, 'a', { status: 'failed', lastStatus: 400 }, T)
-        await s.deliveries.record(recent!, 'a', { status: 'delivered' }, T + 9 * DAY)
+        const lease = T + 60_000
+        await s.deliveries.record(oldSent!, 'a', lease, { status: 'delivered' }, T)
+        await s.deliveries.record(oldFailed!, 'a', lease, { status: 'failed', lastStatus: 400 }, T)
+        await s.deliveries.record(recent!, 'a', lease, { status: 'delivered' }, T + 9 * DAY)
         expect(await s.deliveries.prune(T + 10 * DAY, 7 * DAY, 30 * DAY)).toBe(2)
         expect((await s.deliveries.list({})).map((d) => d.outboxId).sort((x, y) => x - y)).toEqual([oldFailed, recent, pending])
         expect(await s.deliveries.prune(T + 31 * DAY, 7 * DAY, 30 * DAY)).toBe(2)

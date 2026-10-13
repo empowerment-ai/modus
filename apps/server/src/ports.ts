@@ -99,14 +99,19 @@ export interface Delivery {
   /** When the message was written (epoch ms). */
   createdAt: number
   status: 'pending' | 'delivered' | 'failed'
-  /** Attempts recorded so far. */
+  /** Attempts recorded since `since`. */
   attempts: number
-  /** Due (pending), or claimed until then. */
+  /** When its retry schedule started: fan-out, or the last `retry`. The sender gives up 24 h after it. */
+  since: number
+  /** Due (pending), or claimed until then: the lease `claim` returns, which `record` must present. */
   nextAt: number
   lastStatus?: number
   lastError?: string
   deliveredAt?: number
 }
+
+/** What one attempt came to. */
+export type Attempt = { status: 'pending'; nextAt: number; lastStatus?: number; lastError?: string } | { status: 'delivered' | 'failed'; lastStatus?: number; lastError?: string }
 
 /**
  * The outbox sender's side of storage (webhooks.ts, sender.ts). Every server runs a sender over
@@ -118,11 +123,16 @@ export interface Deliveries {
   fanOut(route: (m: { appId: Id; kind: string }) => string[], now: number, limit: number): Promise<number>
   /** Take up to `limit` pending deliveries due at `now` (earliest due first), pushing their nextAt to now + leaseMs so no one else takes them. */
   claim(now: number, leaseMs: number, limit: number): Promise<Delivery[]>
-  /** Record an attempt (attempts + 1): delivered, retry at `nextAt`, or failed. Sets the message's sent_at once none of its deliveries is pending. */
-  record(outboxId: number, endpoint: string, result: { status: 'delivered' | 'pending' | 'failed'; nextAt?: number; lastStatus?: number; lastError?: string }, now: number): Promise<void>
+  /**
+   * Record an attempt (attempts + 1): delivered, retry at `nextAt`, or failed. Applies only while the delivery is
+   * pending and still under the claim that returned `claimedUntil` (its nextAt); otherwise the lease ran out and
+   * someone else may hold it, so nothing changes and it returns false. Omitted lastStatus/lastError clear the
+   * previous ones. Sets the message's sent_at once none of its deliveries is pending.
+   */
+  record(outboxId: number, endpoint: string, claimedUntil: number, result: Attempt, now: number): Promise<boolean>
   /** Newest message first, then endpoint; `limit` defaults to 100. */
   list(filter: { status?: Delivery['status']; limit?: number }): Promise<Delivery[]>
-  /** Put a message's failed deliveries back to pending, due now, and clear its sent_at. False when it has none failed. */
+  /** Put a message's failed deliveries back to pending, due now, with a fresh schedule (attempts 0, since now; the last answer kept), and clear its sent_at. False when it has none failed. */
   retry(outboxId: number, now: number): Promise<boolean>
   /** Delete messages (and deliveries) sent before now - keepMs, or failed before now - keepFailedMs. Returns how many messages. */
   prune(now: number, keepMs: number, keepFailedMs: number): Promise<number>
