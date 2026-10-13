@@ -6,9 +6,9 @@ import { normalizeData, rowsOf } from '../model/tables'
 import type { ObjectType } from '../model/types'
 import { ask, translateQuestion } from './assistant'
 import { activeTokens, advance, createObject, type Ctx, newSim, workStepOf, buildIndex, supervisesStep } from './engine'
-import { adminUpdateData, canExpedite, setExpedite, superviseAssign, superviseRedistribute, superviseRelease, workDelegate, workNext, workSave } from './ops'
+import { adminUpdateData, canExpedite, setExpedite, superviseAssign, superviseRedistribute, superviseRelease, workDelegate, workNext, workSave, workStart } from './ops'
 import { canReadItem, parseQuery, searchItems, visibleHistory } from './search'
-import { computeView, supervisionFor } from './view'
+import { computeView, expeditedByStep, supervisionFor, workingNow } from './view'
 
 function seedCtx(appIndex = 0, manual: string[] = []): Ctx {
   const d = seedDesign()
@@ -112,6 +112,40 @@ describe('expedite', () => {
     const v = computeView(sim, ctx)
     expect(sim.expFinished).toBeGreaterThan(10)
     expect(v.expeditedCycle).toBeLessThan(v.normalCycle)
+  })
+})
+
+// ---------- Monitor read models ----------
+
+describe('monitor read models', () => {
+  it('counts expedited items per step, subflow steps once per item', () => {
+    const ctx = seedCtx()
+    const sim = newSim('app_invoice', 3)
+    sim.arrivals = false
+    createObject(sim, ctx, 'w_invoice', { f_lines: lines([1, 300]) }, 'u_maya')
+    const rush = createObject(sim, ctx, 'w_invoice', { f_lines: lines([1, 300]) }, 'u_maya', undefined, { expedite: { reason: 'Deadline' } })!
+    const steps = new Set(rush.tokens.flatMap((t) => [t.nodeId, ...t.calls.map((c) => c.nodeId)]))
+    expect(expeditedByStep(sim)).toEqual(Object.fromEntries([...steps].map((id) => [id, 1])))
+    rush.expedite = undefined
+    expect(expeditedByStep(sim)).toEqual({})
+  })
+
+  it('says what each person is working on, whether the simulation or the person started it', () => {
+    const ctx = seedCtx(0, ['u_maya', 'u_jordan', 'u_aisha', 'u_tom', 'u_grace'])
+    const sim = newSim('app_invoice', 5)
+    advance(sim, ctx, 3 * 60)
+    const tok = activeTokens(sim).find((t) => t.state === 'assigned' && t.userId && ctx.manualUserIds!.includes(t.userId))!
+    expect(tok).toBeTruthy()
+    expect(workingNow(sim)[tok.userId!]).toBeUndefined()
+    expect(workStart(sim, ctx, tok.id, tok.userId!).ok).toBe(true)
+    const obj = sim.objects[tok.objectId]!
+    expect(workingNow(sim)[tok.userId!]).toEqual({ itemId: obj.id, number: obj.number, stepId: tok.nodeId, startedAt: sim.clock })
+    // Simulated people: exactly the item the simulation has them on.
+    for (const [userId, u] of Object.entries(computeView(sim, ctx).users)) {
+      if (ctx.manualUserIds!.includes(userId) || !u.currentId) continue
+      const cur = activeTokens(sim).find((t) => t.id === u.currentId && t.state === 'working')
+      if (cur) expect(workingNow(sim)[userId]).toMatchObject({ itemId: cur.objectId, stepId: cur.nodeId })
+    }
   })
 })
 

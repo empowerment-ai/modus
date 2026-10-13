@@ -30,6 +30,7 @@ import {
   createObject,
   type Ctx,
   distributionFor,
+  expeditedByStep,
   exportOcel,
   failJob,
   findToken,
@@ -58,6 +59,7 @@ import {
   workReturn,
   workSave,
   workStart,
+  workingNow,
 } from '@modus-bpm/core'
 import { answer, type ModelAssistant } from './assistant'
 import { canRead, findItem, hitDto, itemDto, workItemDto } from './dto'
@@ -181,6 +183,15 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     routes: app.printRoutes({ commonPrefix: false }).split('\n').filter(Boolean),
   }))
 
+  /** 401 without a named user, 403 unless they're an administrator. */
+  const requireAdmin = (req: FastifyRequest, error: string): Refusal | undefined => (isAdmin(rt.design.users, who(req)) ? undefined : refuse(403, error))
+
+  /** The published design (applications, people, groups, services). The Studio's live Monitor draws it; the Workspace will too. */
+  app.get('/api/design', async (req) => {
+    who(req)
+    return rt.design
+  })
+
   app.get('/api/apps', async () =>
     rt.design.apps.map((a) => ({ id: a.id, name: a.name, description: a.description, workflows: a.workflows.map((w) => ({ id: w.id, name: w.name, kind: w.kind ?? 'process' })) })),
   )
@@ -192,6 +203,18 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
       const v = computeView(sim, ctx)
       return { clock: v.clock, active: v.active, completed: v.completed, rejected: v.rejected, stuck: v.stuck, overdue: v.overdue, bottleneckId: v.bottleneckId, steps: v.nodes, services: v.services }
     })
+  })
+
+  // ----- The Monitor: administrators only, read from memory -----
+
+  const monitorOnly = 'Only an administrator can see the Monitor.'
+
+  /** The Studio's Monitor view, ready made: its size grows with steps, people and services, not items. */
+  app.get('/api/apps/:app/monitor', async (req, reply) => {
+    const { app: appId } = appParams.parse(req.params)
+    const refused = requireAdmin(req, monitorOnly)
+    if (refused) return send(reply, refused)
+    return rt.read(appId, (sim, ctx) => ({ clock: sim.clock, view: computeView(sim, ctx), expeditedByStep: expeditedByStep(sim), working: workingNow(sim) }))
   })
 
   /** The event log as OCEL 2.0 JSON, for process-mining tools. */
@@ -475,20 +498,17 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
   // ----- The outbox: administrators only -----
   // Deliveries carry the endpoint's name only, never its URL or secret.
 
-  const requireAdmin = (req: FastifyRequest): Refusal | undefined => {
-    return isAdmin(rt.design.users, who(req)) ? undefined : refuse(403, 'Only an administrator can see or retry outbox deliveries.')
-  }
-
+  const outboxOnly = 'Only an administrator can see or retry outbox deliveries.'
   const outboxQuery = z.object({ status: z.enum(['pending', 'delivered', 'failed']).optional(), limit: z.coerce.number().int().min(1).max(500).default(100) })
   app.get('/api/admin/outbox', async (req, reply) => {
-    const refused = requireAdmin(req)
+    const refused = requireAdmin(req, outboxOnly)
     if (refused) return send(reply, refused)
     const filter = outboxQuery.parse(req.query)
     return { deliveries: await rt.deliveries.list(filter) }
   })
 
   app.post('/api/admin/outbox/:id/retry', async (req, reply) => {
-    const refused = requireAdmin(req)
+    const refused = requireAdmin(req, outboxOnly)
     if (refused) return send(reply, refused)
     const { id } = z.object({ id: z.coerce.number().int().positive() }).parse(req.params)
     if (!(await rt.deliveries.retry(id, Date.now()))) return send(reply, refuse(404, 'That message has no failed deliveries.'))
