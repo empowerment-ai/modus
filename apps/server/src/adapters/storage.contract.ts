@@ -231,6 +231,20 @@ export function storageContract(name: string, target: ContractTarget) {
       expect(await s.projections.any('app_none')).toBe(false)
     })
 
+    it('lists work items by item, then time entered, then token', async () => {
+      const s = await create()
+      const item = (itemId: string) => ({ itemId, number: itemId, title: itemId, status: 'active' as const, priority: 'normal' as const, expedited: false, createdAt: 0, data: {} })
+      const work = (itemId: string, tokenId: string, enteredAt: number) => ({ tokenId, itemId, stepId: 's1', state: 'auto' as const, enteredAt, priority: 'normal' as const })
+      // Written out of order: the order comes from the read, not from how rows landed.
+      const items = [
+        { item: item('i_b'), workItems: [work('i_b', 'tz', 3), work('i_b', 'tm', 1), work('i_b', 'ta', 3)] },
+        { item: item('i_a'), workItems: [work('i_a', 'tq', 7)] },
+      ] as never
+      await s.transact('app_w', 0, () => ({ value: 0, write: { state: newSim('app_w', 1), entries: [], items, outbox: [], tickedAt: 0 } }))
+      expect((await s.projections.workItems('app_w')).map((w) => `${w.itemId}/${w.tokenId}`)).toEqual(['i_a/tq', 'i_b/tm', 'i_b/ta', 'i_b/tz'])
+      expect((await s.projections.workItems('app_w', 'i_b')).map((w) => w.tokenId)).toEqual(['tm', 'ta', 'tz'])
+    })
+
     it('tells listeners about each commit', async () => {
       const s = await create()
       const heard: unknown[] = []

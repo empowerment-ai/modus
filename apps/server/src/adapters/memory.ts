@@ -184,7 +184,11 @@ export function memoryStorage(dataDir?: string): Storage {
       const rows = projected.get(appId)
       if (!rows) return []
       const of = itemId ? [rows.get(itemId)] : [...rows.values()]
-      return of.flatMap((p) => (p ? structuredClone(p.workItems) : []))
+      const cmp = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0)
+      // As Postgres orders them: item, time entered, token.
+      return of
+        .flatMap((p) => (p ? structuredClone(p.workItems) : []))
+        .sort((x, y) => cmp(x.itemId, y.itemId) || x.enteredAt - y.enteredAt || cmp(x.tokenId, y.tokenId))
     },
     async outbox(appId) {
       return outbox.filter((m) => m.appId === appId).map((m) => structuredClone(m.message))

@@ -12,7 +12,7 @@ import { join } from 'node:path'
 import { newSim } from '@modus-bpm/core'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import type { ChangeNotice } from '../ports'
+import { type ChangeNotice, StorageBusy } from '../ports'
 import { memoryStorage } from './memory'
 import { postgresStorage } from './postgres'
 import { storageContract } from './storage.contract'
@@ -173,6 +173,44 @@ describe.skipIf(!url)('postgres', () => {
       await a.close()
       await b.close()
       await drop(other)
+    })
+
+    it('leaves item ids out of a notice that would not fit in a NOTIFY payload', async () => {
+      const s = postgresStorage(url!, { schema: own })
+      const heard: ChangeNotice[] = []
+      await s.listen((n) => heard.push(n))
+      const items = (n: number) =>
+        Array.from({ length: n }, (_, i) => {
+          const itemId = `i_${i}_${'x'.repeat(200)}`
+          return { item: { itemId, number: `B-${i}`, title: 't', status: 'active', priority: 'normal', expedited: false, createdAt: 0, data: {} }, workItems: [] }
+        }) as never
+      const commit = (version: number, n: number) => s.transact('app_big', version, () => ({ value: 0, write: { state: newSim('app_big', 1), entries: [], items: items(n), outbox: [], tickedAt: 0 } }))
+      // 30 ids of ~210 bytes fit; 40 don't (the limit is under 8000 bytes, whatever the count).
+      await commit(0, 30)
+      await commit(1, 40)
+      await vi.waitFor(() => expect(heard).toHaveLength(2))
+      expect(heard[0]!.itemIds).toHaveLength(30)
+      expect(heard[1]).toEqual({ appId: 'app_big', version: 2 })
+      await s.close()
+    })
+
+    it('throws StorageBusy when another connection holds the application’s row past the lock timeout', async () => {
+      const s = postgresStorage(url!, { schema: own, lockTimeoutMs: 200 })
+      const commit = (version: number) => s.transact('app_busy', version, () => ({ value: 0, write: { state: newSim('app_busy', 1), entries: [], items: [], outbox: [], tickedAt: 0 } }))
+      await commit(0)
+      const other = new pg.Client({ connectionString: url })
+      await other.connect()
+      await other.query('begin')
+      await other.query(`select 1 from ${own}.app_state where app_id = 'app_busy' for update`)
+      await expect(commit(1)).rejects.toBeInstanceOf(StorageBusy)
+      await other.query('commit')
+      await other.end()
+      expect(await commit(1)).toMatchObject({ version: 2, committed: true })
+      await s.close()
+    })
+
+    it('refuses a lock timeout that isn’t a positive number', () => {
+      for (const lockTimeoutMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) expect(() => postgresStorage(url!, { lockTimeoutMs })).toThrow(/lock timeout/i)
     })
 
     it('refuses odd schema names and reports an unreachable database through ping', async () => {
