@@ -11,7 +11,7 @@
 import { randomUUID } from 'node:crypto'
 import { advance, buildIndex, changesBetween, type Ctx, type Design, type Id, newSim, projectItem, type ProjectedItem, type SimState } from '@modus-bpm/core'
 import { seedDesign } from '@modus-bpm/core/model/seed'
-import { type ChangeNotice, type Storage, StorageBusy } from './ports'
+import { type ChangeNotice, type Deliveries, type Storage, StorageBusy } from './ports'
 
 export interface RuntimeOptions {
   storage: Storage
@@ -145,6 +145,11 @@ export class Runtime {
     const app = this.design.apps.find((a) => a.id === appId)
     if (!app) throw new NotFound(`No application “${appId}”`)
     return { app, users: this.design.users, groups: this.design.groups, services: this.design.services, live: true }
+  }
+
+  /** The outbox's deliveries, for the administrators' routes (the sender works on the storage directly). */
+  get deliveries(): Deliveries {
+    return this.opts.storage.deliveries
   }
 
   /** The cached state (don't change it: commands run on a copy). An application never written starts empty. */

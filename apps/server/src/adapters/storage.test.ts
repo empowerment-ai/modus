@@ -86,7 +86,7 @@ describe.skipIf(!url)('postgres', () => {
       await s.migrate()
       await s.migrate()
       const { rows } = await admin.query(`select name from ${own}.kysely_migration order by name`)
-      expect(rows.map((r) => r.name)).toEqual(['0001_storage', '0002_projections'])
+      expect(rows.map((r) => r.name)).toEqual(['0001_storage', '0002_projections', '0003_outbox_delivery'])
       await s.close()
     })
 
@@ -97,6 +97,30 @@ describe.skipIf(!url)('postgres', () => {
       const { rows } = await admin.query(`select table_name, column_name from information_schema.columns where table_schema = $1 order by 1, 2`, [schema])
       const cols = rows.map((r) => `${r.table_name}.${r.column_name}`)
       expect(cols).toEqual(expect.arrayContaining(['app_state.version', 'app_state.ticked_at', 'item.data', 'work_item.token_id', 'outbox.sent_at']))
+      await s.close()
+      await drop(schema)
+    })
+
+    it('counts outbox messages written before 0003 as sent, so the first sender never posts the backlog', async () => {
+      const schema = await fresh()
+      const old = new Kysely<never>({ dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: url, max: 1, options: `-c search_path=${schema}` }) }) })
+      const migrated = await new Migrator({ db: old, provider: { getMigrations: async () => migrations }, migrationTableSchema: schema }).migrateTo('0002_projections')
+      expect(migrated.error).toBeUndefined()
+      await old.destroy()
+      // Two that nothing sent under M2, and one already marked sent.
+      await admin.query(`insert into ${schema}.outbox (app_id, item_id, kind, payload, sent_at) values ('app_a', 'i1', 'notify', '{}', null), ('app_a', 'i2', 'job.ready', '{}', null), ('app_a', 'i3', 'notify', '{}', '2026-01-01')`)
+
+      const s = postgresStorage(url!, { schema })
+      await s.migrate()
+      const { rows } = await admin.query(`select item_id, skipped, routed, sent_at is not null as sent from ${schema}.outbox order by id`)
+      expect(rows).toEqual([
+        { item_id: 'i1', skipped: true, routed: false, sent: true },
+        { item_id: 'i2', skipped: true, routed: false, sent: true },
+        { item_id: 'i3', skipped: false, routed: false, sent: true },
+      ])
+      expect(await s.deliveries.fanOut(() => ['ops'], Date.now(), 100)).toBe(0)
+      expect(await s.deliveries.list({})).toEqual([])
+      expect(await s.projections.outbox('app_a')).toEqual([])
       await s.close()
       await drop(schema)
     })
@@ -153,6 +177,32 @@ describe.skipIf(!url)('postgres', () => {
       expect(await s.designs.load()).toEqual({ apps: [] })
       await s.close()
       await drop(decoy)
+      await drop(schema)
+    })
+
+    it('fans each message out once when two servers fan out at the same time', async () => {
+      const schema = await fresh()
+      const a = postgresStorage(url!, { schema, max: 4 })
+      await a.migrate()
+      const b = postgresStorage(url!, { schema, max: 4 })
+      const outbox = Array.from({ length: 200 }, (_, i) => ({ itemId: `i${i}`, kind: 'notify' as const, payload: {} }))
+      await a.transact('app_a', 0, () => ({ value: 0, write: { state: newSim('app_a', 1), entries: [], items: [], outbox, tickedAt: 0 } }))
+      // Each routes to its own endpoint, so a message fanned out twice would show two deliveries.
+      const drain = async (s: Storage, endpoint: string) => {
+        let handled = 0
+        for (let n; (n = await s.deliveries.fanOut(() => [endpoint], 0, 7)); ) handled += n
+        return handled
+      }
+      const [x, y] = await Promise.all([drain(a, 'a'), drain(b, 'b')])
+      expect(x + y).toBe(200)
+      expect(await a.deliveries.fanOut(() => ['a'], 0, 7)).toBe(0)
+      const made = await a.deliveries.list({ limit: 1000 })
+      expect(new Set(made.map((d) => d.outboxId)).size).toBe(200)
+      expect(made).toHaveLength(200)
+      const { rows } = await admin.query(`select count(*)::int as n from ${schema}.outbox where skipped or not routed`)
+      expect(rows[0].n).toBe(0)
+      await a.close()
+      await b.close()
       await drop(schema)
     })
 

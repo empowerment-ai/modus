@@ -68,7 +68,7 @@ export class StorageBusy extends Error {}
 export interface Projections {
   item(appId: Id, itemId: Id): Promise<ProjectedItem['item'] | undefined>
   workItems(appId: Id, itemId?: Id): Promise<ProjectedItem['workItems']>
-  /** Unsent outbox messages, oldest first. */
+  /** Unsent outbox messages (not yet delivered, failed or skipped everywhere), oldest first. */
   outbox(appId: Id): Promise<Array<OutboxMessage & { id: number }>>
   /** True when the application has any projected item (startup backfill checks this). */
   any(appId: Id): Promise<boolean>
@@ -88,6 +88,56 @@ export interface EventLog {
   read(filter: { appId?: Id; itemId?: Id; limit?: number }): Promise<LoggedEvent[]>
 }
 
+/** One outbox message on its way to one webhook endpoint. */
+export interface Delivery {
+  outboxId: number
+  endpoint: string
+  appId: Id
+  itemId: Id
+  kind: OutboxMessage['kind']
+  payload: Record<string, unknown>
+  /** When the message was written (epoch ms). */
+  createdAt: number
+  status: 'pending' | 'delivered' | 'failed'
+  /** Attempts recorded since `since`. */
+  attempts: number
+  /** When its retry schedule started: fan-out, or the last `retry`. The sender gives up 24 h after it. */
+  since: number
+  /** Due (pending), or claimed until then: the lease `claim` returns, which `record` must present. */
+  nextAt: number
+  lastStatus?: number
+  lastError?: string
+  deliveredAt?: number
+}
+
+/** What one attempt came to. */
+export type Attempt = { status: 'pending'; nextAt: number; lastStatus?: number; lastError?: string } | { status: 'delivered' | 'failed'; lastStatus?: number; lastError?: string }
+
+/**
+ * The outbox sender's side of storage (webhooks.ts, sender.ts). Every server runs a sender over
+ * the same rows: a claim keeps a delivery to one of them until its lease runs out, so a server
+ * that dies mid-send loses it and another retries (at least once). Times are passed in, never read.
+ */
+export interface Deliveries {
+  /** For messages with no deliveries yet (oldest first, up to `limit`), create one per endpoint `route` returns; none: mark the message skipped and sent. Returns how many messages it handled. */
+  fanOut(route: (m: { appId: Id; kind: string }) => string[], now: number, limit: number): Promise<number>
+  /** Take up to `limit` pending deliveries due at `now` (earliest due first), pushing their nextAt to now + leaseMs so no one else takes them. */
+  claim(now: number, leaseMs: number, limit: number): Promise<Delivery[]>
+  /**
+   * Record an attempt (attempts + 1): delivered, retry at `nextAt`, or failed. Applies only while the delivery is
+   * pending and still under the claim that returned `claimedUntil` (its nextAt); otherwise the lease ran out and
+   * someone else may hold it, so nothing changes and it returns false. Omitted lastStatus/lastError clear the
+   * previous ones. Sets the message's sent_at once none of its deliveries is pending.
+   */
+  record(outboxId: number, endpoint: string, claimedUntil: number, result: Attempt, now: number): Promise<boolean>
+  /** Newest message first, then endpoint; `limit` defaults to 100. */
+  list(filter: { status?: Delivery['status']; limit?: number }): Promise<Delivery[]>
+  /** Put a message's failed deliveries back to pending, due now, with a fresh schedule (attempts 0, since now; the last answer kept), and clear its sent_at. False when it has none failed. */
+  retry(outboxId: number, now: number): Promise<boolean>
+  /** Delete messages (and deliveries) sent before now - keepMs, or failed before now - keepFailedMs. Returns how many messages. */
+  prune(now: number, keepMs: number, keepFailedMs: number): Promise<number>
+}
+
 export interface Storage {
   /** Short name for the startup log and the readiness probe. */
   name: string
@@ -95,6 +145,7 @@ export interface Storage {
   state: StateStore
   events: EventLog
   projections: Projections
+  deliveries: Deliveries
   /**
    * Run `work` holding the application's lock, and commit what it returns in one transaction:
    * state (version + 1), audit entries, projections, outbox, and a change notice to every

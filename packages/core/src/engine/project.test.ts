@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { seedDesign } from '../model/seed'
 import { advance, completeJob, createObject, type Ctx, failJob, newSim, pollJobs } from './engine'
-import { adminCancel } from './ops'
+import { adminCancel, adminUpdateData } from './ops'
 import { changesBetween, projectItem } from './project'
 
 function live(): Ctx {
@@ -152,5 +152,18 @@ describe('changesBetween', () => {
     after.objects[o.id]!.tokens[0]!.state = 'queued'
     expect(changesBetween(before, after).itemIds).toEqual([o.id])
     expect(changesBetween(before, structuredClone(before)).itemIds).toEqual([])
+  })
+
+  it('touches an item whose data changed under a key that is no field', () => {
+    const ctx = live()
+    const sim = newSim('app_invoice')
+    const o = createObject(sim, ctx, 'w_invoice', { f_invno: 'C-6' }, 'u_maya')!
+    const before = structuredClone(sim)
+    adminUpdateData(sim, ctx, o.id, { f_gone: 'SECRET-42' })
+    expect(o.data.f_gone).toBe('SECRET-42')
+    const last = o.history.at(-1)!
+    expect(last).toMatchObject({ kind: 'field', fieldIds: ['f_gone'], redacted: 'f_gone changed by Administrator' })
+    expect(last.text).toBe('f_gone updated by Administrator')
+    expect(changesBetween(before, sim).itemIds).toEqual([o.id])
   })
 })

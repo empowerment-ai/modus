@@ -75,6 +75,9 @@ database:
   # An existing Secret with the connection string (SQL dialects only).
   existingSecret: ''
   urlKey: DATABASE_URL
+  # Connections in each pod's pool (DB_POOL_MAX, 1-200; SQL dialects only). Each pod opens one more
+  # to listen for the others. Keep pods x (poolMax + 1), plus rollout surge, under max_connections.
+  poolMax: 10
 
 assistant:
   model: claude-opus-5-5
@@ -85,6 +88,24 @@ assistant:
   # An existing Secret with the Anthropic API key. Empty: the built-in assistant answers.
   existingSecret: ''
   apiKeyKey: ANTHROPIC_API_KEY
+
+webhooks:
+  # Endpoints that receive every outbox message, signed (docs/DEPLOYMENT.md, "Webhooks").
+  # No secrets here: secretEnv names a key in existingSecret. Empty: nothing is rendered.
+  #  - name: ops                      # [a-z0-9_-], 1-40
+  #    url: https://hooks.example.com/modus
+  #    secretEnv: WEBHOOK_OPS_SECRET  # at least 16 characters
+  #    apps: [app_invoice]            # optional; absent: all applications
+  #    kinds: [notify]                # optional; job.ready and/or notify
+  endpoints: []
+  # An existing Secret whose keys all become environment variables, so secretEnv names resolve.
+  # It may also hold WEBHOOK_URL and WEBHOOK_SECRET for a single endpoint named "default".
+  existingSecret: ''
+  # Allow http:// endpoints (in-cluster receivers, tests). https:// only otherwise.
+  allowHttp: false
+  # Days to keep delivered messages, and failed ones (1-365).
+  keepDays: 7
+  keepFailedDays: 30
 
 persistence:
   # The memory store snapshots design, state and the event log to /data. Without a

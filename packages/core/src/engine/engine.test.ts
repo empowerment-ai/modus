@@ -596,6 +596,22 @@ describe('workspace operations', () => {
     expect(o.history.filter((h) => h.kind === 'security')).toHaveLength(3)
   })
 
+  it('work saves ignore keys that aren’t fields', () => {
+    const ctx = ctxWith([wf([start, userStep('u', 'direct'), end()], [edge('s', 'u'), edge('u', 'e', { outcomeId: 'ok' })])], { manual: ['u0'] })
+    const sim = quiet('a')
+    const o = createObject(sim, ctx, 'w', { amt: 10 }, 'boss')!
+    advance(sim, ctx, 5)
+    const t = o.tokens[0]!.id
+    const entries = o.history.length
+    expect(workSave(sim, ctx, t, 'u0', { junk: 1 }).ok).toBe(true)
+    expect(o.data).not.toHaveProperty('junk')
+    expect(o.history).toHaveLength(entries)
+    expect(workSave(sim, ctx, t, 'u0', { junk: 2, notes: 'kept' }).ok).toBe(true)
+    expect(o.data).not.toHaveProperty('junk')
+    expect(o.data.notes).toBe('kept')
+    expect(o.history.slice(entries).map((h) => h.fieldIds)).toEqual([['notes']])
+  })
+
   it('claim from a queue, delegate within the group only', () => {
     const ctx = ctxWith([wf([start, userStep('u', 'queue'), end()], [edge('s', 'u'), edge('u', 'e', { outcomeId: 'ok' })])], { manual: ['u0', 'u1', 'u2', 'u3'] })
     const sim = quiet('a')
