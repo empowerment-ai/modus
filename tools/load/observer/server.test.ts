@@ -1,7 +1,8 @@
 import { createServer, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createObserver, percentile, Samples, sign, sseParser, type SSEEvent } from './server.mjs'
+import { sign } from '@modus-bpm/server/src/webhooks'
+import { createObserver, percentile, Samples, signFor, sseParser, type SSEEvent } from './server.mjs'
 
 const secret = 'test-secret'
 const cleanup: Array<() => Promise<unknown>> = []
@@ -15,7 +16,7 @@ async function listen(server: import('node:http').Server) {
 }
 
 /** An observer on a free port, with a clock the test sets. */
-async function observer(opts: { settleMs?: number } = {}) {
+async function observer(opts: { settleMs?: number; idleMs?: number } = {}) {
   const clock = { t: Date.UTC(2026, 9, 13, 12) }
   const obs = createObserver({ secret, now: () => clock.t, backoffMs: 20, maxBackoffMs: 50, ...opts })
   const base = await listen(obs.server)
@@ -27,8 +28,13 @@ async function observer(opts: { settleMs?: number } = {}) {
 async function fakeSSE() {
   const clients = new Set<ServerResponse>()
   let connections = 0
+  let refuse = 0
   const server = createServer((req, res) => {
     connections++
+    if (refuse > 0) {
+      refuse--
+      return void res.writeHead(503).end('busy')
+    }
     res.writeHead(200, { 'content-type': 'text/event-stream' })
     res.write(': connected\n\n')
     clients.add(res)
@@ -46,6 +52,8 @@ async function fakeSSE() {
     base,
     clients,
     connections: () => connections,
+    /** Answer the next `n` connections with 503. */
+    refuseNext: (n: number) => (refuse = n),
     push: (text: string) => clients.forEach((c) => c.write(text)),
     /** Cut every open stream, as a restart or a proxy timeout would. */
     drop: () => clients.forEach((c) => c.destroy()),
@@ -64,16 +72,19 @@ async function deliver(base: string, body: object, header: string | null) {
 }
 
 describe('webhooks', () => {
-  it('accepts a good signature and refuses a bad, stale or missing one', async () => {
+  it('verifies what the server signs, and refuses a wrong, stale or missing signature', async () => {
     const { obs, base, clock } = await observer()
     const body = { id: 1, kind: 'item.created', appId: 'app_invoice', itemId: 'i1', createdAt: new Date(clock.t).toISOString(), payload: {} }
-    const t = Math.floor(clock.t / 1000)
-    expect((await deliver(base, body, sign(secret, t, JSON.stringify(body)))).status).toBe(204)
-    expect((await deliver(base, body, sign('wrong', t, JSON.stringify(body)))).status).toBe(401)
-    expect((await deliver(base, body, sign(secret, t - 600, JSON.stringify(body)))).status).toBe(401)
-    expect((await deliver(base, body, null)).status).toBe(401)
-    const { webhooks } = obs.stats()
-    expect(webhooks).toMatchObject({ received: 1, duplicates: 0, badSignatures: 3 })
+    const text = JSON.stringify(body)
+    // The server's own sign, so the copied verify can't drift from it unnoticed.
+    expect((await deliver(base, body, sign(secret, text, clock.t))).status).toBe(204)
+    expect((await deliver(base, { ...body, id: 2 }, sign('wrong', JSON.stringify({ ...body, id: 2 }), clock.t))).status).toBe(401)
+    expect((await deliver(base, { ...body, id: 3 }, sign(secret, JSON.stringify({ ...body, id: 3 }), clock.t - 600_000))).status).toBe(401)
+    expect((await deliver(base, { ...body, id: 4 }, null)).status).toBe(401)
+    // Signed but not JSON.
+    const junk = await fetch(`${base}/hook`, { method: 'POST', body: 'nope', headers: { 'modus-signature': signFor(secret, Math.floor(clock.t / 1000), 'nope') } })
+    expect(junk.status).toBe(400)
+    expect(obs.stats().webhooks).toMatchObject({ received: 1, duplicates: 0, badSignatures: 3, badBodies: 1 })
   })
 
   it('records lag from createdAt and counts a redelivery as a duplicate, not a second sample', async () => {
@@ -81,7 +92,7 @@ describe('webhooks', () => {
     const created = clock.t
     const send = async (id: number) => {
       const body = JSON.stringify({ id, kind: 'item.created', appId: 'a', itemId: 'i', createdAt: new Date(created).toISOString(), payload: {} })
-      const res = await fetch(`${base}/hook`, { method: 'POST', body, headers: { 'modus-signature': sign(secret, Math.floor(clock.t / 1000), body) } })
+      const res = await fetch(`${base}/hook`, { method: 'POST', body, headers: { 'modus-signature': signFor(secret, Math.floor(clock.t / 1000), body) } })
       expect(res.status).toBe(204)
     }
     clock.t = created + 1500
@@ -89,12 +100,22 @@ describe('webhooks', () => {
     clock.t = created + 3000
     await send(2)
     await send(1)
+    // Delivered before it was created: the clocks disagree, which should show, not vanish.
+    clock.t = created - 200
+    await send(3)
     const { webhooks } = obs.stats()
-    expect(webhooks).toMatchObject({ received: 3, duplicates: 1, badSignatures: 0 })
-    expect(webhooks.lag).toEqual({ count: 2, p50: 1500, p95: 3000, p99: 3000, max: 3000 })
+    // received counts each id once; the redelivery of 1 shows only under duplicates.
+    expect(webhooks).toMatchObject({ received: 3, duplicates: 1, badSignatures: 0, negative: 1 })
+    expect(webhooks.lag).toEqual({ count: 3, p50: 1500, p95: 3000, p99: 3000, max: 3000 })
 
     await fetch(`${base}/reset`, { method: 'POST' })
-    expect(obs.stats().webhooks).toMatchObject({ received: 0, duplicates: 0, lag: { count: 0, p50: null, max: null } })
+    expect(obs.stats().webhooks).toMatchObject({ received: 0, duplicates: 0, negative: 0, lag: { count: 0, p50: null, max: null } })
+  })
+
+  it('reports its own event-loop delay', async () => {
+    const { obs } = await observer()
+    await new Promise((r) => setTimeout(r, 50))
+    expect(obs.stats().observer.eventLoopDelayP99Ms).toBeGreaterThanOrEqual(0)
   })
 })
 
@@ -153,6 +174,26 @@ describe('streams', () => {
     expect(obs.stats().streams.open).toBe(0)
   })
 
+  it('retries a refused stream and cuts one that goes silent', async () => {
+    const { obs } = await observer({ idleMs: 150 })
+    const sse = await fakeSSE()
+    sse.refuseNext(1)
+    await obs.startStreams([sse.base], 1)
+    await vi.waitFor(() => expect(obs.stats().streams.open).toBe(1))
+    expect(obs.stats().streams.reconnects).toBe(1)
+    // The fake server never pings: after idleMs the observer gives up on it and reconnects.
+    await vi.waitFor(() => expect(sse.connections()).toBeGreaterThanOrEqual(3), { timeout: 2000 })
+    expect(obs.stats().streams.reconnects).toBeGreaterThanOrEqual(2)
+  })
+
+  it('runs overlapping starts one after the other', async () => {
+    const { obs } = await observer()
+    const sse = await fakeSSE()
+    await Promise.all([obs.startStreams([sse.base], 3), obs.startStreams([sse.base], 2)])
+    await vi.waitFor(() => expect(obs.stats().streams.open).toBe(2))
+    await vi.waitFor(() => expect(sse.clients.size).toBe(2))
+  })
+
   it('measures cross-server lag from each server’s first arrival of an item', async () => {
     const { obs, clock } = await observer()
     const a = await fakeSSE()
@@ -187,17 +228,19 @@ describe('streams', () => {
     await vi.waitFor(() => expect(obs.stats().streams.open).toBe(3))
     const t0 = clock.t
     a.push(change(['x', 'lonely']))
-    await vi.waitFor(() => expect(obs.stats().streams.events).toBe(1))
-    clock.t = t0 + 100
-    b.push(change(['x']))
+    a.push(change(['y']))
     await vi.waitFor(() => expect(obs.stats().streams.events).toBe(2))
-    // Two of three servers so far: shown, but still waiting on the third.
-    expect(obs.stats().streams.crossServerLag).toMatchObject({ count: 1, max: 100 })
+    clock.t = t0 + 100
+    b.push(change(['x', 'y']))
+    c.push(change(['y']))
+    await vi.waitFor(() => expect(obs.stats().streams.events).toBe(4))
+    // y is on all three; x on two of three so far: shown, but still waiting on the third.
+    expect(obs.stats().streams).toMatchObject({ crossServerLag: { count: 2, max: 100 }, incomplete: 0, unmatched: 0 })
     clock.t = t0 + 2000
-    // Settled with what it had; the item seen on one server only is dropped.
-    expect(obs.stats().streams.crossServerLag).toMatchObject({ count: 1, max: 100 })
+    // Settled with what they had: x incomplete, the item seen on one server unmatched.
+    expect(obs.stats().streams).toMatchObject({ crossServerLag: { count: 2, max: 100 }, incomplete: 1, unmatched: 1 })
     c.push(change(['x']))
-    await vi.waitFor(() => expect(obs.stats().streams.events).toBe(3))
-    expect(obs.stats().streams.crossServerLag).toMatchObject({ count: 1, max: 100 })
+    await vi.waitFor(() => expect(obs.stats().streams.events).toBe(5))
+    expect(obs.stats().streams).toMatchObject({ crossServerLag: { count: 2, max: 100 }, incomplete: 1, unmatched: 1 })
   })
 })

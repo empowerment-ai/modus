@@ -8,9 +8,17 @@
 //   POST /streams/stop                          close them
 //   GET  /stats                                 counters and lag percentiles
 //   POST /reset                                 clear counters and samples (streams stay open)
+//
+// Webhook lag is the event's createdAt to its arrival here. It includes the sender's polling: a
+// commit wakes the sender on its own server at once, but anything that misses that wake waits for
+// the next round (every ~2 s), and failed deliveries wait for their retry.
+//
+// `received` counts deliveries with a good signature and a JSON body, each event id once;
+// `duplicates` counts redeliveries of an id already received, apart from it.
 
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { createServer } from 'node:http'
+import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { pathToFileURL } from 'node:url'
 
 // ----- Signatures: copied from apps/server/src/webhooks.ts (`hmac`, `verify`); keep in step -----
@@ -18,8 +26,8 @@ import { pathToFileURL } from 'node:url'
 /** @param {string} secret @param {number} t @param {string} body */
 const hmac = (secret, t, body) => createHmac('sha256', secret).update(`${t}.${body}`).digest('hex')
 
-/** @param {string} secret @param {number} t @param {string} body */
-export const sign = (secret, t, body) => `t=${t},v1=${hmac(secret, t, body)}`
+/** A `Modus-Signature` header for tests and hand checks. @param {string} secret @param {number} tSeconds @param {string} body */
+export const signFor = (secret, tSeconds, body) => `t=${tSeconds},v1=${hmac(secret, tSeconds, body)}`
 
 /**
  * True when `header` is `t=<unix s>,v1=<hex HMAC-SHA256(secret, "<t>.<body>")>` and at most `toleranceMs` old.
@@ -170,6 +178,7 @@ const sleep = (ms, signal) =>
  *   maxBackoffMs?: number,
  *   sampleCap?: number,
  *   settleMs?: number,
+ *   idleMs?: number,
  * }} opts
  */
 export function createObserver(opts) {
@@ -180,6 +189,12 @@ export function createObserver(opts) {
   const sampleCap = opts.sampleCap ?? 100_000
   // An item not seen on every server by then is settled with the servers that did show it.
   const settleMs = opts.settleMs ?? 30_000
+  // The server pings a quiet stream every 25 s: 60 s of silence means a dead connection, not a quiet app.
+  const idleMs = opts.idleMs ?? 60_000
+  // Our own event loop: if it lags, our arrival times do too, and the lag numbers are suspect.
+  const loopResolutionMs = 10
+  const loop = monitorEventLoopDelay({ resolution: loopResolutionMs })
+  loop.enable()
 
   /** @type {ReturnType<typeof fresh>} */
   let s = fresh()
@@ -188,15 +203,23 @@ export function createObserver(opts) {
       received: 0,
       duplicates: 0,
       badSignatures: 0,
-      hookIds: new RecentSet(1_000_000),
+      badBodies: 0,
+      /** Deliveries stamped before the event was created: clocks disagree. Counted as 0 lag. */
+      negative: 0,
+      // 200k ids each keeps the observer well inside its 256 MB.
+      hookIds: new RecentSet(200_000),
       hookLag: new Samples(sampleCap),
       reconnects: 0,
       events: 0,
       crossLag: new Samples(sampleCap),
+      /** Settled after settleMs on at least two servers but not all. */
+      incomplete: 0,
+      /** Settled after settleMs seen on one server only. */
+      unmatched: 0,
       /** First arrival per server for items still settling. @type {Map<string, { first: number, at: Map<string, number> }>} */
       pending: new Map(),
       /** Items already measured: only an item's first appearance counts. */
-      measured: new RecentSet(1_000_000),
+      measured: new RecentSet(200_000),
     }
   }
 
@@ -219,7 +242,10 @@ export function createObserver(opts) {
     for (const [id, p] of s.pending) {
       // Map order is arrival order, so the first young entry ends the sweep.
       if (p.first > cutoff) break
-      if (p.at.size >= 2) s.crossLag.add(spread(p))
+      if (p.at.size >= 2) {
+        s.crossLag.add(spread(p))
+        s.incomplete++
+      } else s.unmatched++
       s.pending.delete(id)
     }
   }
@@ -234,7 +260,8 @@ export function createObserver(opts) {
     } catch {
       return
     }
-    if (!Array.isArray(msg.items)) return
+    // One server can't disagree with itself; `items: null` (too much changed) names nothing to compare.
+    if (serverCount < 2 || !Array.isArray(msg.items)) return
     const t = now()
     for (const raw of msg.items) {
       const id = String(raw)
@@ -245,7 +272,7 @@ export function createObserver(opts) {
         s.pending.set(id, p)
       }
       if (!p.at.has(server)) p.at.set(server, t)
-      if (serverCount >= 2 && p.at.size >= serverCount) {
+      if (p.at.size >= serverCount) {
         s.crossLag.add(spread(p))
         s.pending.delete(id)
       }
@@ -259,9 +286,22 @@ export function createObserver(opts) {
     let wait = backoffMs
     while (!signal.aborted) {
       let counted = false
+      // Per connection: stopped with the rest, or cut alone when it goes silent.
+      const conn = new AbortController()
+      /** @type {NodeJS.Timeout | undefined} */
+      let idle
+      const quiet = () => {
+        clearTimeout(idle)
+        idle = setTimeout(() => conn.abort(), idleMs)
+      }
       try {
-        const res = await fetch(url, { signal, headers: { accept: 'text/event-stream' } })
-        if (!res.ok || !res.body) throw new Error(`stream answered ${res.status}`)
+        quiet()
+        const res = await fetch(url, { signal: AbortSignal.any([signal, conn.signal]), headers: { accept: 'text/event-stream' } })
+        if (!res.ok || !res.body) {
+          // An unread body holds the connection open.
+          await res.body?.cancel()
+          throw new Error(`stream answered ${res.status}`)
+        }
         open++
         counted = true
         wait = backoffMs
@@ -271,11 +311,13 @@ export function createObserver(opts) {
         for (;;) {
           const { value, done } = await reader.read()
           if (done) break
+          quiet()
           feed(decoder.decode(value, { stream: true }))
         }
       } catch {
-        // Refused, reset or aborted: reconnect below unless we were stopped.
+        // Refused, reset, silent too long or stopped: reconnect below unless stopped.
       } finally {
+        clearTimeout(idle)
         if (counted) open--
       }
       if (signal.aborted) break
@@ -285,21 +327,34 @@ export function createObserver(opts) {
     }
   }
 
-  /** Open `count` streams spread round-robin over `servers`, replacing any open now. @param {string[]} servers @param {number} count */
-  async function startStreams(servers, count) {
-    await stopStreams()
-    serverCount = new Set(servers).size
-    const ctl = new AbortController()
-    streams = ctl
-    running = Array.from({ length: count }, (_, i) => runStream(/** @type {string} */ (servers[i % servers.length]), ctl.signal))
+  // Start and stop run one at a time, so two quick starts can't leave both sets of streams open.
+  /** @type {Promise<unknown>} */
+  let queue = Promise.resolve()
+  /** @template T @param {() => Promise<T>} fn @returns {Promise<T>} */
+  const serial = (fn) => {
+    const next = queue.then(fn)
+    queue = next.catch(() => {})
+    return next
   }
 
-  async function stopStreams() {
+  async function stopNow() {
     streams?.abort()
     streams = null
     await Promise.all(running)
     running = []
   }
+
+  /** Open `count` streams spread round-robin over `servers`, replacing any open now. @param {string[]} servers @param {number} count */
+  const startStreams = (servers, count) =>
+    serial(async () => {
+      await stopNow()
+      serverCount = new Set(servers).size
+      const ctl = new AbortController()
+      streams = ctl
+      running = Array.from({ length: count }, (_, i) => runStream(/** @type {string} */ (servers[i % servers.length]), ctl.signal))
+    })
+
+  const stopStreams = () => serial(stopNow)
 
   function stats() {
     sweep()
@@ -310,6 +365,8 @@ export function createObserver(opts) {
         received: s.received,
         duplicates: s.duplicates,
         badSignatures: s.badSignatures,
+        badBodies: s.badBodies,
+        negative: s.negative,
         lag: s.hookLag.summary(),
       },
       streams: {
@@ -319,12 +376,17 @@ export function createObserver(opts) {
         events: s.events,
         // One server can't disagree with itself: not measured.
         crossServerLag: serverCount >= 2 ? s.crossLag.summary(settling) : null,
+        incomplete: s.incomplete,
+        unmatched: s.unmatched,
       },
+      // The histogram's samples include its own timer interval; less that, it's the delay we added.
+      observer: { eventLoopDelayP99Ms: loop.count ? Math.max(0, Math.round((loop.percentile(99) / 1e6 - loopResolutionMs) * 100) / 100) : null },
     }
   }
 
   function reset() {
     s = fresh()
+    loop.reset()
   }
 
   /** @param {string} body @param {unknown} signature @returns {number} the status to answer */
@@ -334,20 +396,25 @@ export function createObserver(opts) {
       s.badSignatures++
       return 401
     }
-    s.received++
     /** @type {{ id?: unknown, createdAt?: unknown }} */
     let msg
     try {
       msg = JSON.parse(body)
     } catch {
+      s.badBodies++
       return 400
     }
     if (s.hookIds.addSeen(String(msg.id))) {
       s.duplicates++
       return 204
     }
+    s.received++
     const created = typeof msg.createdAt === 'string' ? Date.parse(msg.createdAt) : NaN
-    if (Number.isFinite(created)) s.hookLag.add(Math.max(0, t - created))
+    if (Number.isFinite(created)) {
+      const lag = t - created
+      if (lag < 0) s.negative++
+      s.hookLag.add(Math.max(0, lag))
+    }
     return 204
   }
 
@@ -390,6 +457,7 @@ export function createObserver(opts) {
   })
 
   async function close() {
+    loop.disable()
     await stopStreams()
     await new Promise((resolve) => {
       server.close(resolve)
