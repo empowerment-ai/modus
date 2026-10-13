@@ -196,7 +196,7 @@ describe('Sender', () => {
     expect((await only()).lastStatus).toBeUndefined()
   })
 
-  it('fails deliveries to an endpoint no longer configured', async () => {
+  it('retries deliveries to an endpoint this server doesn’t know, and fails them at the give-up', async () => {
     const hook = await listen(answer(200))
     const before = sender([{ name: 'gone', url: hook.url, secret: SECRET }])
     await commit(msg())
@@ -204,8 +204,12 @@ describe('Sender', () => {
     await before.stop()
     const after = sender([{ name: 'ops', url: hook.url, secret: SECRET }])
     await after.wake()
-    expect(await only()).toMatchObject({ endpoint: 'gone', status: 'failed', attempts: 1, lastError: 'endpoint no longer configured' })
+    // Another server may still know it (a rollout): pending, on the normal schedule.
+    expect(await only()).toMatchObject({ endpoint: 'gone', status: 'pending', attempts: 1, nextAt: now + 10_000, lastError: 'endpoint not configured on this server' })
     expect(hook.seen).toHaveLength(0)
+    now += GIVE_UP_AFTER_MS
+    await after.wake()
+    expect(await only()).toMatchObject({ endpoint: 'gone', status: 'failed', attempts: 2 })
   })
 
   it('marks messages skipped with no endpoints', async () => {
@@ -216,12 +220,15 @@ describe('Sender', () => {
     expect(await storage.deliveries.list({})).toEqual([])
   })
 
-  it('with no endpoints left, still settles pending deliveries to removed ones as failed', async () => {
+  it('with no endpoints left, still settles pending deliveries to removed ones, failed after the give-up', async () => {
     await commit(msg())
     await storage.deliveries.fanOut(() => ['gone'], now, 100)
     const s = sender([])
     await s.wake()
-    expect(await only()).toMatchObject({ endpoint: 'gone', status: 'failed', lastError: 'endpoint no longer configured' })
+    expect(await only()).toMatchObject({ endpoint: 'gone', status: 'pending', lastError: 'endpoint not configured on this server' })
+    now += GIVE_UP_AFTER_MS
+    await s.wake()
+    expect(await only()).toMatchObject({ endpoint: 'gone', status: 'failed', lastError: 'endpoint not configured on this server' })
     expect(await storage.projections.outbox('app_a')).toEqual([])
   })
 

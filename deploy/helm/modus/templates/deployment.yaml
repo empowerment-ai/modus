@@ -38,6 +38,9 @@ spec:
         {{- end }}
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") $ | sha256sum }}
+        {{- if $.Values.webhooks.endpoints }}
+        checksum/webhooks: {{ include (print $.Template.BasePath "/webhooks-configmap.yaml") $ | sha256sum }}
+        {{- end }}
         {{- with $d.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -132,7 +135,7 @@ spec:
         {{- if $.Values.webhooks.endpoints }}
         - name: webhooks
           configMap:
-            name: {{ include "modus.fullname" $ }}
+            name: {{ include "modus.fullname" $ }}-webhooks
             items:
               - key: webhooks.json
                 path: webhooks.json

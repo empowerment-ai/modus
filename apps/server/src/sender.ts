@@ -121,7 +121,7 @@ export class Sender {
     const { deliveries } = this.storage
     const now = this.now()
     for (let i = 0; i < FAN_OUT_LOOPS; i++) if ((await deliveries.fanOut(this.route, now, FAN_OUT)) < FAN_OUT) break
-    // Claim even with no endpoints: deliveries left pending for removed ones still settle (as failed).
+    // Claim even with no endpoints: deliveries left pending for removed ones still settle (failed, after the give-up).
     // The clock again: a slow fan-out must not eat into the lease.
     const claimed = await deliveries.claim(this.now(), this.leaseMs, this.batch)
     // Known limit: one slow endpoint holds the round (and the next claim) for up to timeoutMs.
@@ -131,7 +131,9 @@ export class Sender {
   private async send(d: Delivery) {
     try {
       const e = this.byName.get(d.endpoint)
-      if (!e) return await this.settle(d, { ok: false, retry: false, error: 'endpoint no longer configured' })
+      // During a rollout another server may still (or already) know this endpoint: retry on the normal schedule, so it
+      // gets there if one does, and fails after the 24 h give-up if none ever does.
+      if (!e) return await this.settle(d, { ok: false, retry: true, error: 'endpoint not configured on this server' })
       const body = JSON.stringify({ id: d.outboxId, kind: d.kind, appId: d.appId, itemId: d.itemId, createdAt: new Date(d.createdAt).toISOString(), payload: d.payload })
       let outcome: Outcome
       let status: number | undefined

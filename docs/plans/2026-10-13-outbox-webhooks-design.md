@@ -94,7 +94,13 @@ What changed while building it:
   it out twice.
 - **Lease guard.** The sender refuses a lease that isn't more than twice the request timeout: a
   send plus reading the answer can take one timeout, and recording comes after.
-- **Leftovers settle with no endpoints.** The sender claims even when no endpoint is configured,
-  so deliveries for removed endpoints fail instead of staying pending.
+- **Unknown endpoints retry.** A delivery to an endpoint this server doesn't know is retried on the
+  normal schedule (another pod may know it during a rollout) and fails at the 24 h give-up. The
+  sender claims even with no endpoints configured, so deliveries for removed endpoints settle then
+  instead of staying pending.
+- **No M2 backlog.** Migration `0003` marks messages written before it as sent, so they are never
+  posted as new.
+- **Memory ids keep growing.** The memory store seeds message ids from the clock (×1000), so ids
+  don't repeat after a restart and receivers that drop seen ids keep working.
 - **Admin check without applications.** Roles are organization-wide, so the outbox routes check
   the user's role directly (`isAdmin`), and work in a design with no applications.
