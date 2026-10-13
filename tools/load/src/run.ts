@@ -22,6 +22,8 @@ const OBSERVER = 'http://127.0.0.1:8791'
 // A seed administrator: the outbox list is for administrators only.
 const ADMIN = 'u_avery'
 const APP = 'app_invoice'
+/** How long an end-of-run read waits: longer than k6's 60 s request timeout. */
+const DRAIN_MS = 120_000
 
 /** Live screens per profile: the design's traffic table. */
 const STREAMS: Record<string, number> = { smoke: 10, baseline: 100, full: 300 }
@@ -65,10 +67,10 @@ const serverNames = ['modus1', 'modus2', 'modus3'].slice(0, servers)
 const profileFlags = servers === 3 ? ['--profile', 's3'] : servers === 2 ? ['--profile', 's2'] : []
 const compose = (...args: string[]) => ['compose', '-p', PROJECT, '-f', join(PKG, 'compose.yml'), ...profileFlags, ...args]
 
-/** Runs a command with its output on the terminal (into `to`, or kept with `capture`); rejects on a non-zero exit unless `allowFail`. */
 /** Commands still running: an interrupted run stops them before it goes. */
 const children = new Set<ChildProcess>()
 
+/** Runs a command with its output on the terminal (into `to`, or kept with `capture`); rejects on a non-zero exit unless `allowFail`. */
 function run(cmd: string, args: string[], opts: { to?: string; capture?: boolean; allowFail?: boolean; env?: NodeJS.ProcessEnv } = {}): Promise<{ code: number; stdout: string }> {
   return new Promise((done, reject) => {
     const child = spawn(cmd, args, { cwd: PKG, env: { ...process.env, ...opts.env }, stdio: ['ignore', opts.capture || opts.to ? 'pipe' : 'inherit', opts.capture || opts.to ? 'pipe' : 'inherit'] })
@@ -95,11 +97,14 @@ function run(cmd: string, args: string[], opts: { to?: string; capture?: boolean
 
 const docker = (args: string[], opts: Parameters<typeof run>[2] = {}) => run('docker', args, opts)
 
-async function getJson(url: string, headers: Record<string, string> = {}): Promise<unknown> {
-  const res = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) })
+async function getJson(url: string, headers: Record<string, string> = {}, timeoutMs = 15_000): Promise<unknown> {
+  const res = await fetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) })
   if (!res.ok) throw new Error(`${url}: ${res.status}`)
   return res.json()
 }
+
+/** One more try after a failure: the first may have timed out behind a queue that is gone now. */
+const again = <T>(f: () => Promise<T>): Promise<T> => f().catch(() => f())
 
 /** Undefined when it can't be measured: the report says "not measured" instead of failing. */
 async function maybe<T>(what: string, f: () => Promise<T>): Promise<T | undefined> {
@@ -232,8 +237,10 @@ async function main() {
   // ----- Collect -----
   const observer = await maybe('observer stats', () => getJson(`${OBSERVER}/stats`))
   await maybe('observer stop', () => post(`${OBSERVER}/streams/stop`))
-  const overview = await maybe('overview', () => getJson(`${NGINX}/api/apps/${APP}/overview`))
-  const outbox = await maybe('outbox', () => outboxCounts())
+  // An overloaded server is still working through the requests k6 left queued, so the end-of-run
+  // reads wait their turn, and try again if nginx gives up first (its 60 s read timeout).
+  const overview = await maybe('overview', () => again(() => getJson(`${NGINX}/api/apps/${APP}/overview`, {}, DRAIN_MS)))
+  const outbox = await maybe('outbox', () => again(outboxCounts))
   for (const s of [...serverNames, 'nginx', 'observer']) await docker(compose('logs', '--no-color', s), { to: join(out, `${s}.log`), allowFail: true })
 
   const k6Path = join(out, 'k6.json')
@@ -263,7 +270,7 @@ async function main() {
 /** Deliveries not yet made, as an administrator sees them; the list stops at 500 per status. */
 async function outboxCounts(): Promise<Outbox> {
   const count = async (status: string) => {
-    const r = (await getJson(`${NGINX}/api/admin/outbox?status=${status}&limit=500`, { 'x-user-id': ADMIN })) as { deliveries: unknown[] }
+    const r = (await getJson(`${NGINX}/api/admin/outbox?status=${status}&limit=500`, { 'x-user-id': ADMIN }, DRAIN_MS)) as { deliveries: unknown[] }
     return r.deliveries.length
   }
   const [pending, failed] = [await count('pending'), await count('failed')]
