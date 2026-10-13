@@ -21,7 +21,8 @@ Numbers are for finding bottlenecks and comparing before/after, not for producti
 - **Containers** have CPU and memory limits so runs compare; the README says how much Docker memory to
   allow.
 - **Watching:** the k6 web dashboard at `localhost:5665` (exported as HTML at the end), and the Studio
-  on the load stack at `localhost:8790` (Monitor, Workspace).
+  on the load stack at `localhost:8790`, whose Monitor in Live mode shows the servers' own counts as
+  the seed administrator (since the live Monitor merged in).
 
 ## Traffic (all at once)
 
