@@ -64,6 +64,7 @@ interface Tables {
     created_at: Generated<Date>
     sent_at: Date | null
     skipped: Generated<boolean>
+    routed: Generated<boolean>
   }
   outbox_delivery: {
     outbox_id: string
@@ -188,8 +189,13 @@ export const migrations: Record<string, Migration> = {
   },
   '0003_outbox_delivery': {
     async up(db) {
-      // A message no endpoint wanted: sent, with nothing to deliver.
-      await db.schema.alterTable('outbox').addColumn('skipped', 'boolean', (c) => c.notNull().defaultTo(false)).execute()
+      // skipped: no endpoint wanted the message (sent, with nothing to deliver). routed: its deliveries exist.
+      // Written by the fan-out that handled the message, so a concurrent one re-checks the row and passes it by.
+      await db.schema
+        .alterTable('outbox')
+        .addColumn('skipped', 'boolean', (c) => c.notNull().defaultTo(false))
+        .addColumn('routed', 'boolean', (c) => c.notNull().defaultTo(false))
+        .execute()
       await db.schema
         .createTable('outbox_delivery')
         .addColumn('outbox_id', 'bigint', (c) => c.notNull().references('outbox.id').onDelete('cascade'))
@@ -206,12 +212,12 @@ export const migrations: Record<string, Migration> = {
         .addPrimaryKeyConstraint('outbox_delivery_pk', ['outbox_id', 'endpoint'])
         .execute()
       await sql`create index outbox_delivery_due on outbox_delivery (next_at) where status = 'pending'`.execute(db)
-      // Messages not yet fanned out: unsent and without deliveries.
-      await sql`create index outbox_unrouted on outbox (id) where sent_at is null and not skipped`.execute(db)
+      // Messages not yet fanned out.
+      await sql`create index outbox_unrouted on outbox (id) where sent_at is null and not skipped and not routed`.execute(db)
     },
     async down(db) {
       await db.schema.dropTable('outbox_delivery').execute()
-      await db.schema.alterTable('outbox').dropColumn('skipped').execute()
+      await db.schema.alterTable('outbox').dropColumn('routed').dropColumn('skipped').execute()
     },
   },
 }
@@ -456,27 +462,31 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
   const deliveries: Deliveries = {
     fanOut(route, now, limit) {
       return db.transaction().execute(async (tx) => {
-        // SKIP LOCKED: another server fanning out at the same time takes the next messages instead.
+        // SKIP LOCKED: another server fanning out at the same time takes the next messages instead. One that
+        // committed meanwhile wrote routed or skipped, which the lock's re-check of the row sees.
         const { rows } = await sql<{ id: string; app_id: string; kind: string }>`
-          select id, app_id, kind from outbox o
-          where sent_at is null and not skipped and not exists (select 1 from outbox_delivery d where d.outbox_id = o.id)
+          select id, app_id, kind from outbox
+          where sent_at is null and not skipped and not routed
           order by id limit ${limit} for update skip locked`.execute(tx)
         const at = new Date(now)
         const made: Array<{ outbox_id: string; endpoint: string; status: 'pending'; next_at: Date; since: Date }> = []
         const skipped: string[] = []
+        const routed: string[] = []
         for (const r of rows) {
           const endpoints = [...new Set(route({ appId: r.app_id as Id, kind: r.kind }))]
-          if (!endpoints.length) skipped.push(r.id)
+          if (endpoints.length) routed.push(r.id)
+          else skipped.push(r.id)
           for (const endpoint of endpoints) made.push({ outbox_id: r.id, endpoint, status: 'pending', next_at: at, since: at })
         }
-        // A message whose fan-out committed just as this one read it is fanned out once all the same.
         for (let i = 0; i < made.length; i += CHUNK)
           await tx
             .insertInto('outbox_delivery')
             .values(made.slice(i, i + CHUNK))
             .onConflict((oc) => oc.columns(['outbox_id', 'endpoint']).doNothing())
             .execute()
-        if (skipped.length) await tx.updateTable('outbox').set({ skipped: true, sent_at: at }).where('id', 'in', skipped).execute()
+        // = any(array): one bind parameter however many ids.
+        if (routed.length) await sql`update outbox set routed = true where id = any(${routed}::bigint[])`.execute(tx)
+        if (skipped.length) await sql`update outbox set skipped = true, sent_at = ${at} where id = any(${skipped}::bigint[])`.execute(tx)
         return rows.length
       })
     },
@@ -536,6 +546,8 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
       const id = String(outboxId)
       const at = new Date(now)
       return db.transaction().execute(async (tx) => {
+        // The message's row first, then its deliveries: the order prune's delete (and record) take them in.
+        await sql`select 1 from outbox where id = ${id} for update`.execute(tx)
         // A fresh schedule: the first retry is soon again, and giving up counts from now. The last answer stays.
         const r = await tx.updateTable('outbox_delivery').set({ status: 'pending', next_at: at, attempts: 0, since: at }).where('outbox_id', '=', id).where('status', '=', 'failed').executeTakeFirst()
         if (!Number(r.numUpdatedRows)) return false

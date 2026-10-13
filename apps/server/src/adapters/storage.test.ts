@@ -156,6 +156,32 @@ describe.skipIf(!url)('postgres', () => {
       await drop(schema)
     })
 
+    it('fans each message out once when two servers fan out at the same time', async () => {
+      const schema = await fresh()
+      const a = postgresStorage(url!, { schema, max: 4 })
+      await a.migrate()
+      const b = postgresStorage(url!, { schema, max: 4 })
+      const outbox = Array.from({ length: 200 }, (_, i) => ({ itemId: `i${i}`, kind: 'notify' as const, payload: {} }))
+      await a.transact('app_a', 0, () => ({ value: 0, write: { state: newSim('app_a', 1), entries: [], items: [], outbox, tickedAt: 0 } }))
+      // Each routes to its own endpoint, so a message fanned out twice would show two deliveries.
+      const drain = async (s: Storage, endpoint: string) => {
+        let handled = 0
+        for (let n; (n = await s.deliveries.fanOut(() => [endpoint], 0, 7)); ) handled += n
+        return handled
+      }
+      const [x, y] = await Promise.all([drain(a, 'a'), drain(b, 'b')])
+      expect(x + y).toBe(200)
+      expect(await a.deliveries.fanOut(() => ['a'], 0, 7)).toBe(0)
+      const made = await a.deliveries.list({ limit: 1000 })
+      expect(new Set(made.map((d) => d.outboxId)).size).toBe(200)
+      expect(made).toHaveLength(200)
+      const { rows } = await admin.query(`select count(*)::int as n from ${schema}.outbox where skipped or not routed`)
+      expect(rows[0].n).toBe(0)
+      await a.close()
+      await b.close()
+      await drop(schema)
+    })
+
     it('lets one connection hold an application’s clock, and frees it when that connection closes', async () => {
       const a = postgresStorage(url!, { schema: own })
       const b = postgresStorage(url!, { schema: own })
