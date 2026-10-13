@@ -210,7 +210,11 @@ async function main() {
   await post(`${OBSERVER}/reset`)
   await post(`${OBSERVER}/streams/start`, { count: streams, servers: serverNames.map((s) => `http://${s}:8787`) })
 
-  console.log('\nWatch live:\n  k6 dashboard  http://localhost:5665\n  Studio        http://localhost:8790  (its own simulation until the live Monitor lands)\n')
+  console.log(
+    '\nWatch live:\n' +
+      '  k6 dashboard  http://localhost:5665\n' +
+      `  Studio        http://localhost:8790  Monitor → Live: the servers' own counts, as ${ADMIN} (the seed administrator)\n`,
+  )
 
   const k6 = await docker(
     [

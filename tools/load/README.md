@@ -66,9 +66,14 @@ failed run leaves `FAILED`) and tears the stack down; a cut-short run writes no 
 ## Watching
 
 - **k6 dashboard** at http://localhost:5665 while k6 runs: request rates, latency, VUs.
-- **Studio** at http://localhost:8790. For now its Monitor and Workspace show the Studio's own
-  in-browser simulation, not the server's state, so they don't reflect the load. That changes
-  when the live Monitor work lands.
+- **Studio** at http://localhost:8790, served by the servers through nginx. Open the Monitor: it
+  starts on **Live** and shows the servers' state, not a simulation. Step counts move with every
+  change on the live stream; the other panels (work in flight, activity, workload, the item
+  explorer) refresh about once a second. It acts as the seed administrator, Avery Brooks
+  (`u_avery`), as the run's own reads do. The Workspace still shows the Studio's in-browser
+  simulation. Add `--keep` to look at the final state after the run; the badge then reads
+  "Live · idle".
+  Each open Monitor is one more live stream on top of the profile's (10 on smoke).
 - `docker stats` for CPU and memory per container.
 
 ## Reading the report
