@@ -5,7 +5,7 @@ import { fieldVerdicts } from '../model/security'
 import { normalizeData, rowsOf } from '../model/tables'
 import type { ObjectType } from '../model/types'
 import { ask, translateQuestion } from './assistant'
-import { activeTokens, advance, createObject, type Ctx, newSim, workStepOf, buildIndex, supervisesStep } from './engine'
+import { activeTokens, advance, createObject, type Ctx, newSim, workStepOf, buildIndex, supervisesStep, ustat } from './engine'
 import { adminUpdateData, canExpedite, setExpedite, superviseAssign, superviseRedistribute, superviseRelease, workDelegate, workNext, workSave, workStart } from './ops'
 import { canReadItem, parseQuery, searchItems, visibleHistory } from './search'
 import { computeView, expeditedByStep, supervisionFor, workingNow } from './view'
@@ -139,13 +139,42 @@ describe('monitor read models', () => {
     expect(workingNow(sim)[tok.userId!]).toBeUndefined()
     expect(workStart(sim, ctx, tok.id, tok.userId!).ok).toBe(true)
     const obj = sim.objects[tok.objectId]!
-    expect(workingNow(sim)[tok.userId!]).toEqual({ itemId: obj.id, number: obj.number, stepId: tok.nodeId, startedAt: sim.clock })
-    // Simulated people: exactly the item the simulation has them on.
-    for (const [userId, u] of Object.entries(computeView(sim, ctx).users)) {
-      if (ctx.manualUserIds!.includes(userId) || !u.currentId) continue
-      const cur = activeTokens(sim).find((t) => t.id === u.currentId && t.state === 'working')
-      if (cur) expect(workingNow(sim)[userId]).toMatchObject({ itemId: cur.objectId, stepId: cur.nodeId })
+    expect(workingNow(sim)[tok.userId!]).toEqual({ itemId: obj.id, number: obj.number, stepId: tok.nodeId, startedAt: sim.clock, also: 0 })
+  })
+
+  it('simulated people: exactly the item the simulation has them on', () => {
+    const ctx = seedCtx()
+    const sim = newSim('app_invoice', 5)
+    let checked = 0
+    for (let i = 0; i < 48 && !checked; i++) {
+      advance(sim, ctx, 30)
+      const now = workingNow(sim)
+      for (const [userId, u] of Object.entries(computeView(sim, ctx).users)) {
+        const cur = u.currentId ? activeTokens(sim).find((t) => t.id === u.currentId && t.state === 'working' && t.userId === userId) : undefined
+        if (!cur) continue
+        expect(now[userId]).toMatchObject({ itemId: cur.objectId, stepId: cur.nodeId, also: 0 })
+        checked++
+      }
     }
+    expect(checked).toBeGreaterThan(0)
+  })
+
+  it('the simulation’s current item wins over a later manual start; else the later of two manual starts', () => {
+    const ctx = seedCtx(0, ['u_maya', 'u_jordan', 'u_aisha', 'u_tom', 'u_grace'])
+    const sim = newSim('app_invoice', 5)
+    advance(sim, ctx, 3 * 60)
+    const [a, b] = activeTokens(sim).filter((t) => t.state === 'assigned' && t.userId && ctx.manualUserIds!.includes(t.userId))
+    expect(a && b).toBeTruthy()
+    // Two items in one person's hands, started an hour apart.
+    const user = a!.userId!
+    b!.userId = user
+    expect(workStart(sim, ctx, a!.id, user).ok).toBe(true)
+    sim.clock += 60
+    expect(workStart(sim, ctx, b!.id, user).ok).toBe(true)
+    expect(workingNow(sim)[user]).toMatchObject({ itemId: b!.objectId, startedAt: sim.clock, also: 1 })
+    // The simulation's current item outranks any manual start, even a later one.
+    ustat(sim, user).currentId = a!.id
+    expect(workingNow(sim)[user]).toMatchObject({ itemId: a!.objectId, also: 1 })
   })
 })
 

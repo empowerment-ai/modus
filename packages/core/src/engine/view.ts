@@ -283,6 +283,8 @@ export interface WorkingOn {
   number: string
   stepId: Id
   startedAt?: number
+  /** Other items this person has started and not yet released. */
+  also: number
 }
 
 /**
@@ -293,13 +295,16 @@ export interface WorkingOn {
 export function workingNow(sim: SimState): Record<Id, WorkingOn> {
   const out: Record<Id, WorkingOn> = {}
   const rank = new Map<Id, number>()
+  const count = new Map<Id, number>()
   for (const t of activeTokens(sim)) {
     if (t.state !== 'working' || !t.userId) continue
+    count.set(t.userId, (count.get(t.userId) ?? 0) + 1)
     const r = sim.users[t.userId]?.currentId === t.id ? Infinity : (t.startedAt ?? 0)
     if ((rank.get(t.userId) ?? -1) >= r) continue
     rank.set(t.userId, r)
-    out[t.userId] = { itemId: t.objectId, number: sim.objects[t.objectId]!.number, stepId: t.nodeId, startedAt: t.startedAt }
+    out[t.userId] = { itemId: t.objectId, number: sim.objects[t.objectId]!.number, stepId: t.nodeId, startedAt: t.startedAt, also: 0 }
   }
+  for (const [userId, w] of Object.entries(out)) w.also = count.get(userId)! - 1
   return out
 }
 
