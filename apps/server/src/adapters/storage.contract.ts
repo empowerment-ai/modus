@@ -1,10 +1,10 @@
 // The storage contract: what every adapter must do, written once and run against
 // each of them (storage.test.ts). A new adapter is done when this suite passes.
 
-import { type AuditEntry, createObject, type Design, newSim } from '@modus-bpm/core'
+import { type AuditEntry, changesBetween, createObject, type Ctx, type Design, newSim, projectItem, type SimState } from '@modus-bpm/core'
 import { seedDesign } from '@modus-bpm/core/model/seed'
-import { afterEach, describe, expect, it } from 'vitest'
-import type { LoggedEvent, Storage } from '../ports'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { LoggedEvent, Storage, Write } from '../ports'
 import { Runtime } from '../runtime'
 
 export interface ContractTarget {
@@ -18,6 +18,16 @@ export interface ContractTarget {
 
 function event(appId: string, itemId: string, seq: number, extra: Partial<AuditEntry> = {}): LoggedEvent {
   return { appId, itemId, itemNumber: `${itemId.toUpperCase()}-1`, seq, at: seq * 1.5, kind: 'note', text: `${itemId} #${seq}`, ...extra } as LoggedEvent
+}
+
+function ctxOf(design = seedDesign(), appId = 'app_invoice'): Ctx {
+  return { app: design.apps.find((a) => a.id === appId)!, users: design.users, groups: design.groups, services: design.services, live: true }
+}
+
+/** A command as the runtime will run it: on a copy, committing whatever changed. */
+function writeFor(before: SimState, after: SimState, ctx: Ctx, tickedAt = 0): Write {
+  const c = changesBetween(before, after)
+  return { state: after, entries: c.entries, items: c.itemIds.map((id) => projectItem(after, ctx, id)!), outbox: c.outbox, tickedAt }
 }
 
 export function storageContract(name: string, target: ContractTarget) {
@@ -136,6 +146,98 @@ export function storageContract(name: string, target: ContractTarget) {
       expect(logged.map((e) => e.seq)).toEqual(logged.map((_, i) => i + 1))
       expect(logged.every((e) => e.itemNumber === number)).toBe(true)
       await second.stop()
+    })
+    it('commits state, audit entries, projections and outbox together, bumping the version', async () => {
+      const s = await create()
+      const ctx = ctxOf()
+      const before = newSim('app_invoice', 1)
+      const r = await s.transact('app_invoice', 0, (stored) => {
+        expect(stored).toEqual({ version: 0 })
+        const after = structuredClone(before)
+        const o = createObject(after, ctx, 'w_invoice', { f_invno: 'T-1' }, 'u_maya')!
+        return { value: o, write: writeFor(before, after, ctx, 1000) }
+      })
+      expect(r).toMatchObject({ version: 1, committed: true })
+      const o = r.value
+      // Projections may live only in memory (the memory adapter rebuilds them at startup), so read them here.
+      expect(await s.projections.item('app_invoice', o.id)).toMatchObject({ number: o.number, status: 'active', title: expect.any(String) })
+      expect((await s.projections.workItems('app_invoice', o.id)).map((w) => w.state)).toEqual(['auto'])
+      expect((await s.projections.outbox('app_invoice')).map((m) => m.kind)).toEqual(['job.ready'])
+      const again = await reopen()
+      expect(await again.state.get('app_invoice')).toMatchObject({ version: 1, tickedAt: 1000 })
+      const logged = await again.events.read({ itemId: o.id })
+      expect(logged.map((e) => e.seq)).toEqual(o.history.map((_, i) => i + 1))
+    })
+
+    it('writes nothing when the work throws, or returns no write', async () => {
+      const s = await create()
+      await expect(
+        s.transact('app_x', 0, () => {
+          throw new Error('boom')
+        }),
+      ).rejects.toThrow('boom')
+      expect(await s.transact('app_x', 0, () => ({ value: 7 }))).toEqual({ value: 7, version: 0, committed: false })
+      expect(await s.state.get('app_x')).toBeUndefined()
+      expect(await s.events.read({})).toEqual([])
+      expect(await s.projections.outbox('app_x')).toEqual([])
+    })
+
+    it('hands back the stored state only when the caller’s version is stale', async () => {
+      const s = await create()
+      const sim = newSim('app_a', 1)
+      await s.transact('app_a', 0, () => ({ value: 0, write: { state: sim, entries: [], items: [], outbox: [], tickedAt: 5 } }))
+      await s.transact('app_a', 1, (stored) => {
+        expect(stored).toEqual({ version: 1, tickedAt: 5 })
+        return { value: 0 }
+      })
+      await s.transact('app_a', 0, (stored) => {
+        expect(stored.state).toEqual(JSON.parse(JSON.stringify(sim)))
+        return { value: 0 }
+      })
+    })
+
+    it('numbers new entries after what the log already holds for the item', async () => {
+      const s = await create()
+      const entry = (text: string) => ({ at: 1, kind: 'note', text }) as never
+      const commit = (version: number, texts: string[]) =>
+        s.transact('app_a', version, () => ({ value: 0, write: { state: newSim('app_a', 1), entries: [{ itemId: 'i1', itemNumber: 'A-1', entries: texts.map(entry) }], items: [], outbox: [], tickedAt: 0 } }))
+      await commit(0, ['a', 'b'])
+      await commit(1, ['c'])
+      expect((await s.events.read({ itemId: 'i1' })).map((e) => `${e.seq}:${e.text}`)).toEqual(['1:a', '2:b', '3:c'])
+    })
+
+    it('replaces an item’s work-item rows, dropping tokens that left', async () => {
+      const s = await create()
+      const ctx = ctxOf()
+      const sim = newSim('app_invoice', 1)
+      const o = createObject(sim, ctx, 'w_invoice', { f_invno: 'T-2' }, 'u_maya')!
+      const write = (version: number) => s.transact('app_invoice', version, () => ({ value: 0, write: { state: sim, entries: [], items: [projectItem(sim, ctx, o.id)!], outbox: [], tickedAt: 0 } }))
+      await write(0)
+      expect(await s.projections.workItems('app_invoice', o.id)).toHaveLength(1)
+      o.tokens = []
+      o.status = 'cancelled'
+      await write(1)
+      expect(await s.projections.workItems('app_invoice', o.id)).toEqual([])
+      expect((await s.projections.item('app_invoice', o.id))?.status).toBe('cancelled')
+      expect(await s.projections.any('app_invoice')).toBe(true)
+      expect(await s.projections.any('app_none')).toBe(false)
+    })
+
+    it('tells listeners about each commit', async () => {
+      const s = await create()
+      const heard: unknown[] = []
+      const stop = await s.listen((n) => heard.push(n))
+      await s.transact('app_a', 0, () => ({ value: 0, write: { state: newSim('app_a', 1), entries: [], items: [], outbox: [], tickedAt: 0 } }))
+      await vi.waitFor(() => expect(heard).toEqual([{ appId: 'app_a', version: 1, itemIds: [] }]))
+      await stop()
+    })
+
+    it('gives one owner the clock until it lets go', async () => {
+      const s = await create()
+      expect(await s.tryClock('app_a', 'one')).toBe(true)
+      expect(await s.tryClock('app_a', 'one')).toBe(true)
+      await s.releaseClocks('one')
+      expect(await s.tryClock('app_a', 'two')).toBe(true)
     })
   })
 }
