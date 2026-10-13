@@ -141,5 +141,27 @@ describe('configuration', () => {
       expect(text).not.toContain('s3cret')
       expect(() => loadConfig({ WEBHOOKS_FILE: '/missing.json' }, noFile)).toThrow(/WEBHOOKS_FILE: cannot read \/missing.json/)
     })
+
+    it('refuses a URL with a username or password, without repeating them', () => {
+      const file = JSON.stringify([{ name: 'ops', url: 'https://hook-user:hook-pa55@ops.example.com/in', secret: SECRET }])
+      const attempts: Array<() => unknown> = [
+        () => loadConfig({ WEBHOOK_URL: 'https://hook-user:hook-pa55@hooks.example.com/modus', WEBHOOK_SECRET: SECRET }, noFile),
+        () => loadConfig({ WEBHOOKS_FILE: '/hooks.json' }, () => file),
+      ]
+      for (const attempt of attempts) {
+        let err: unknown
+        try {
+          attempt()
+        } catch (e) {
+          err = e
+        }
+        expect(err).toBeInstanceOf(ConfigError)
+        const text = (err as Error).message
+        expect(text).toMatch(/url must not contain a username or password/)
+        expect(text).not.toContain('hook-user')
+        expect(text).not.toContain('hook-pa55')
+        expect(text).not.toContain(SECRET)
+      }
+    })
   })
 })

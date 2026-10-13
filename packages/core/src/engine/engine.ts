@@ -22,6 +22,7 @@ import type {
   Id,
   NodeOf,
   ObjectType,
+  OrgRole,
   Outcome,
   Priority,
   ServiceDef,
@@ -1650,8 +1651,17 @@ function audienceMembers(idx: Index, a: { userIds?: Id[]; groupIds?: Id[] } | un
   return [...new Set([...(a.userIds ?? []), ...(a.groupIds ?? []).flatMap((g) => idx.group.get(g)?.memberIds ?? [])])]
 }
 
-export function hasRole(idx: Index, userId: Id, role: 'admin' | 'designer' | 'auditor'): boolean {
-  return !!idx.user.get(userId)?.roles?.includes(role)
+// Roles are organization-wide: they come with the user, not the application, so any list of the
+// organization's users answers. Every role check, with or without an application, goes through here.
+const userHasRole = (user: User | undefined, role: OrgRole) => !!user?.roles?.includes(role)
+
+export function hasRole(idx: Index, userId: Id, role: OrgRole): boolean {
+  return userHasRole(idx.user.get(userId), role)
+}
+
+/** Whether `userId` is an administrator, for checks with no application (a design may have none). */
+export function isAdmin(users: readonly User[], userId: Id): boolean {
+  return userHasRole(users.find((u) => u.id === userId), 'admin')
 }
 
 // Authorization across versions: access is the stricter of the version an item
