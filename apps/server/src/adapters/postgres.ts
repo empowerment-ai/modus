@@ -182,8 +182,8 @@ class Rollback {
   ) {}
 }
 
-/** Change notices beyond this many items leave `itemIds` out: NOTIFY payloads must stay under 8000 bytes. */
-const NOTICE_ITEMS = 200
+/** NOTIFY payloads must stay under 8000 bytes (an oversized one fails the commit): a bigger notice leaves `itemIds` out. */
+const NOTICE_BYTES = 7900
 
 /** Rows per INSERT: well under Postgres's 65,535 bind parameters. */
 const CHUNK = 1000
@@ -200,12 +200,17 @@ export interface PostgresOptions {
   max?: number
   /** Keep the tables in this schema (it must exist) instead of the user's default: several installs, or test runs, in one database. */
   schema?: string
+  /** How long a command waits for its application's row lock before StorageBusy (ms; default 5000). */
+  lockTimeoutMs?: number
 }
 
 /** Storage on PostgreSQL. Call `migrate()` before first use and `close()` on shutdown. */
 export function postgresStorage(connectionString: string, options: PostgresOptions = {}): PostgresStorage {
-  const { schema, max = 10 } = options
+  const { schema, max = 10, lockTimeoutMs = 5000 } = options
   if (schema !== undefined && !/^[a-z_][a-z0-9_]*$/.test(schema)) throw new Error(`Not a plain schema name: ${schema}`)
+  if (!Number.isFinite(lockTimeoutMs) || lockTimeoutMs <= 0) throw new Error(`Not a usable lock timeout: ${lockTimeoutMs}`)
+  // SET takes no bind parameters: an integer formatted here, from a number checked above.
+  const setLockTimeout = sql.raw(`set local lock_timeout = '${Math.ceil(lockTimeoutMs)}ms'`)
   const searchPath = schema ? `-c search_path=${schema}` : undefined
   // NOTIFY and advisory locks are database-wide: each schema (install) gets its own channel and lock keys.
   const channel = schema ? `modus_change_${schema}` : 'modus_change'
@@ -325,7 +330,7 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
       for (let i = 0; i < all.length; i += CHUNK) await tx.insertInto('event').values(all.slice(i, i + CHUNK)).execute()
     } catch (err) {
       // Only a writer that bypassed the row lock can take a position this one numbered.
-      if ((err as { code?: string }).code === '23505') throw new Error(`Event log conflict in ${appId}: another writer logged entries at the same positions.`)
+      if ((err as { code?: string }).code === '23505') throw new Error(`Event log conflict in ${appId}: another writer logged entries at the same positions.`, { cause: err })
       throw err
     }
   }
@@ -390,7 +395,7 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
   async function transact<T>(appId: Id, known: number, work: (stored: Stored) => Work<T> | Promise<Work<T>>) {
     try {
       return await db.transaction().execute(async (tx) => {
-        await sql`set local lock_timeout = '5s'`.execute(tx)
+        await setLockTimeout.execute(tx)
         // Something to lock before the application's first commit; a rollback takes it away again.
         await tx
           .insertInto('app_state')
@@ -421,8 +426,8 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
             .insertInto('outbox')
             .values(w.outbox.slice(i, i + CHUNK).map((m) => ({ app_id: appId, item_id: m.itemId, kind: m.kind, payload: json(m.payload) })))
             .execute()
-        const itemIds = w.items.map((p) => p.item.itemId)
-        const notice: ChangeNotice = { appId, version: next, ...(itemIds.length <= NOTICE_ITEMS ? { itemIds } : {}) }
+        let notice: ChangeNotice = { appId, version: next, itemIds: w.items.map((p) => p.item.itemId) }
+        if (Buffer.byteLength(JSON.stringify(notice)) > NOTICE_BYTES) notice = { appId, version: next }
         // Delivered to listeners on commit, not before.
         await sql`select pg_notify(${channel}, ${JSON.stringify(notice)})`.execute(tx)
         return { value: out.value, version: next, committed: true }
@@ -454,7 +459,8 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
     async workItems(appId, itemId) {
       let q = db.selectFrom('work_item').selectAll().where('app_id', '=', appId)
       if (itemId) q = q.where('item_id', '=', itemId)
-      const rows = await q.orderBy('item_id').orderBy('entered_at').orderBy('token_id').execute()
+      // Byte order on the ids, as the memory adapter sorts them (not the database's collation).
+      const rows = await q.orderBy(sql`item_id collate "C"`).orderBy('entered_at').orderBy(sql`token_id collate "C"`).execute()
       return rows.map((r) => ({
         tokenId: r.token_id as Id,
         itemId: r.item_id as Id,
