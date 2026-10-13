@@ -171,6 +171,20 @@ describe('openStream', () => {
     expect(cancelled).toBe(true)
   })
 
+  it('stops for good on 404: the server doesn’t run the app', async () => {
+    vi.useFakeTimers()
+    const f = vi.fn(async () => json({ error: 'Unknown app' }, 404))
+    const states: StreamState[] = []
+    const gone = vi.fn()
+    const denied = vi.fn()
+    openStream('a', () => {}, (s) => states.push(s), { user: 'u', fetch: f, onNotFound: gone, onDenied: denied })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(f).toHaveBeenCalledTimes(1)
+    expect(gone).toHaveBeenCalledTimes(1)
+    expect(denied).not.toHaveBeenCalled()
+    expect(states).toEqual([])
+  })
+
   it('cancels the body of a failed response before retrying', async () => {
     vi.useFakeTimers()
     let cancelled = false

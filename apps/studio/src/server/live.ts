@@ -49,8 +49,10 @@ export interface LiveState {
   series: SeriesPoint[]
   feed: FeedEntry[]
   explorer: ExplorerState
-  /** Date.now() of the last data received, for "updated Ns ago". */
+  /** Date.now() of the last data received. */
   lastUpdate?: number
+  /** Date.now() of the last change event that moved an item, for "last change Ns ago". */
+  lastChange?: number
   status: LiveStatus
   error?: string
 
@@ -152,7 +154,9 @@ export function createLiveStore(deps: LiveDeps = {}) {
 
     const denied = () => {
       stop()
-      set({ status: 'error', error: `${get().actingAdmin ?? 'The acting person'} is not an administrator, and only administrators can see the Monitor.` })
+      const { actingAdmin, design } = get()
+      const who = design?.users.find((u) => u.id === actingAdmin)?.name ?? actingAdmin ?? 'The acting person'
+      set({ status: 'error', error: `${who} is not an administrator, and only administrators can see the Monitor.` })
     }
 
     const fail = (g: number, e: unknown) => {
@@ -240,6 +244,8 @@ export function createLiveStore(deps: LiveDeps = {}) {
     }
 
     const onChange = (e: ChangeEvent) => {
+      // Clock ticks arrive with no items; only events that moved something count as a change.
+      if (e.items === null || e.items.length) set({ lastChange: Date.now() })
       set((s) => {
         if (!s.monitor) return { lastUpdate: Date.now() }
         const nodes = { ...s.monitor.view.nodes }
@@ -264,7 +270,17 @@ export function createLiveStore(deps: LiveDeps = {}) {
           set({ status: 'live', error: undefined })
           if (stale) schedule(true)
         },
-        { user: opts().user, fetch: f, onDenied: () => g === gen && denied() },
+        {
+          user: opts().user,
+          fetch: f,
+          onDenied: () => g === gen && denied(),
+          // The server doesn't run this app (any more): nothing to follow.
+          onNotFound: () => {
+            if (g !== gen) return
+            stop()
+            set({ status: 'idle' })
+          },
+        },
       )
     }
 
@@ -306,7 +322,7 @@ export function createLiveStore(deps: LiveDeps = {}) {
         const g = gen
         set({
           appId,
-          ...(sameApp ? {} : { monitor: undefined, series: [], feed: [], explorer: emptyExplorer(), lastUpdate: undefined }),
+          ...(sameApp ? {} : { monitor: undefined, series: [], feed: [], explorer: emptyExplorer(), lastUpdate: undefined, lastChange: undefined }),
         })
         if (get().mode !== 'live') return
         set({ status: 'connecting', error: undefined })
@@ -322,6 +338,11 @@ export function createLiveStore(deps: LiveDeps = {}) {
           }
           remember(admin)
           set({ design, actingAdmin: admin })
+          // A server that doesn't run this app has nothing to show for it: no Monitor reads, no stream.
+          if (!design.apps.some((a) => a.id === appId)) {
+            set({ status: 'idle' })
+            return
+          }
           ready = true
           set((s) => ({ explorer: { ...s.explorer, loading: true } }))
           lastFetch = Date.now()

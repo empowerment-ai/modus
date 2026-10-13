@@ -13,7 +13,7 @@ import { ActivityFeed } from './ActivityFeed'
 import { describeBottleneck, openStep } from './bottleneck'
 import { LiveExplorer, SimExplorer } from './ObjectExplorer'
 import { ServicesPanel } from './ServicesPanel'
-import { adminsOf, designDifference, liveSource, type MonitorData, simSource, updatedAgo } from './source'
+import { adminsOf, designDifference, liveBadge, liveSource, type MonitorData, simSource } from './source'
 import { StepsTable } from './StepsTable'
 import { WipChart } from './WipChart'
 import { WorkloadTable } from './WorkloadTable'
@@ -76,7 +76,8 @@ function SimMonitor({ appId }: { appId: Id }) {
   const running = useSim((s) => s.running)
   const available = useLive((s) => s.available)
   const openObject = useUi((s) => s.openObject)
-  const data = simSource(appId, design, view, sim)
+  // `sim` is mutated in place, so `version` says when it changed (workingNow walks every active token).
+  const data = useMemo(() => simSource(appId, design, view, sim), [appId, design, view, sim, version])
   const app = data.app
   if (!app) return null
 
@@ -134,11 +135,15 @@ function SimMonitor({ appId }: { appId: Id }) {
   )
 }
 
+const NONE: never[] = []
+
 function LiveMonitor({ appId }: { appId: Id }) {
+  // Until the store has switched to this app, its data is the previous app's: show nothing of it.
+  const current = useLive((s) => s.appId === appId)
   const design = useLive((s) => s.design)
-  const monitor = useLive((s) => s.monitor)
-  const series = useLive((s) => s.series)
-  const feed = useLive((s) => s.feed)
+  const monitor = useLive((s) => (current ? s.monitor : undefined))
+  const series = useLive((s) => (current ? s.series : NONE))
+  const feed = useLive((s) => (current ? s.feed : NONE))
   const status = useLive((s) => s.status)
   const error = useLive((s) => s.error)
   const localDesign = useDesign((s) => s.design)
@@ -156,6 +161,8 @@ function LiveMonitor({ appId }: { appId: Id }) {
         data={data}
         app={app}
         clock={monitor.clock}
+        // The server's map may not be the one the designer would open.
+        bottleneckActions={!difference}
         explorer={<LiveExplorer key={app.id} app={app} users={data.users} />}
         empty={
           <Card>
@@ -204,7 +211,7 @@ function LiveMonitor({ appId }: { appId: Id }) {
             Export event log (OCEL 2.0)
           </Button>
           <ActingAdmin />
-          <LiveBadge />
+          <LiveBadge appId={appId} />
           <ModeSwitch mode="live" />
         </>
       }
@@ -233,6 +240,7 @@ function ModeSwitch({ mode }: { mode: LiveMode }) {
   return (
     <Segmented<LiveMode>
       size="sm"
+      ariaLabel="Monitor source"
       value={mode}
       onChange={(m) => liveStore.getState().setMode(m)}
       options={[
@@ -243,37 +251,42 @@ function ModeSwitch({ mode }: { mode: LiveMode }) {
   )
 }
 
-/** "Live · updated 3s ago", ticking; amber while reconnecting. */
-function LiveBadge() {
+const BADGE_TONE = {
+  green: ['bg-emerald-50 text-emerald-700', 'animate-pulse bg-emerald-500'],
+  amber: ['bg-amber-50 text-amber-800', 'bg-amber-500'],
+  red: ['bg-rose-50 text-rose-700', 'bg-rose-500'],
+  slate: ['bg-slate-100 text-slate-600', 'bg-slate-400'],
+} as const
+
+/** "Live · last change 3s ago" (ticking) or "Live · idle"; amber while reconnecting. */
+function LiveBadge({ appId }: { appId: Id }) {
   const status = useLive((s) => s.status)
-  const lastUpdate = useLive((s) => s.lastUpdate)
+  const lastChange = useLive((s) => s.lastChange)
   const error = useLive((s) => s.error)
+  const appOnServer = useLive((s) => !s.design || s.design.apps.some((a) => a.id === appId))
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(t)
   }, [])
 
-  const [tone, dot, text] =
-    status === 'live'
-      ? ['bg-emerald-50 text-emerald-700', 'animate-pulse bg-emerald-500', `Live · ${updatedAgo(lastUpdate, now)}`]
-      : status === 'reconnecting'
-        ? ['bg-amber-50 text-amber-800', 'bg-amber-500', 'Reconnecting…']
-        : status === 'connecting'
-          ? ['bg-slate-100 text-slate-600', 'animate-pulse bg-slate-400', 'Connecting…']
-          : status === 'error'
-            ? ['bg-rose-50 text-rose-700', 'bg-rose-500', 'Not connected']
-            : ['bg-slate-100 text-slate-600', 'bg-slate-400', 'Not connected']
+  const badge = liveBadge({ status, lastChange, appOnServer }, now)
+  const [tone, dot] = BADGE_TONE[badge.tone]
   return (
-    <span
-      className={cx('inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium whitespace-nowrap tabular-nums', tone)}
-      title={
-        status === 'reconnecting' && lastUpdate ? `${error ?? 'The server stopped answering'}. Showing what it said ${updatedAgo(lastUpdate, now).replace('updated ', '')}.` : (error ?? undefined)
-      }
-    >
-      <span className={cx('h-1.5 w-1.5 rounded-full', dot)} />
-      {text}
-    </span>
+    <>
+      <span
+        aria-hidden
+        className={cx('inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium whitespace-nowrap tabular-nums', tone)}
+        title={status === 'reconnecting' ? `${error ?? 'The server stopped answering'}. Showing its last data until it’s back.` : (error ?? undefined)}
+      >
+        <span className={cx('h-1.5 w-1.5 rounded-full', dot)} />
+        {badge.text}
+      </span>
+      {/* The visible text ticks every second; announce only when the status itself changes. */}
+      <span role="status" className="sr-only">
+        Server connection: {badge.word}
+      </span>
+    </>
   )
 }
 
@@ -330,6 +343,7 @@ function Panels({
   clock,
   explorer,
   empty,
+  bottleneckActions = true,
   onOpenItem,
 }: {
   data: MonitorData
@@ -337,6 +351,8 @@ function Panels({
   clock: number
   explorer: ReactNode
   empty: ReactNode
+  /** "Open step" and "Test a fix in What-if" on the bottleneck: off when they'd open a different design. */
+  bottleneckActions?: boolean
   onOpenItem?: (id: Id) => void
 }) {
   const { view, users, groups, services, live } = data
@@ -390,12 +406,16 @@ function Panels({
                 {app.workflows.length > 1 && <span className="text-rose-800"> in {bottleneck.wf.name}</span>}
                 <span className="text-rose-800"> · {bottleneck.why}</span>
               </p>
-              <Button size="sm" variant="ghost" onClick={() => openStep(app, bottleneck.wf.id, bottleneck.node.id)}>
-                Open step
-              </Button>
-              <Button size="sm" variant="primary" icon={<FlaskConical size={13} />} onClick={() => useUi.getState().setView('scenarios')}>
-                Test a fix in What-if <ArrowRight size={13} />
-              </Button>
+              {bottleneckActions && (
+                <>
+                  <Button size="sm" variant="ghost" onClick={() => openStep(app, bottleneck.wf.id, bottleneck.node.id)}>
+                    Open step
+                  </Button>
+                  <Button size="sm" variant="primary" icon={<FlaskConical size={13} />} onClick={() => useUi.getState().setView('scenarios')}>
+                    Test a fix in What-if <ArrowRight size={13} />
+                  </Button>
+                </>
+              )}
             </div>
           )}
 
