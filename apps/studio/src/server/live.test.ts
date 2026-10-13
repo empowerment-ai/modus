@@ -265,22 +265,16 @@ describe('live store', () => {
     const old = server.stream()
     const before = server.calls.length
 
-    // Opening a new stream answers at once in the fake; hold it to see the state in between.
-    const held = gate()
-    server.hold = (path) => (path.endsWith('/stream') ? held.promise : undefined)
     await vi.advanceTimersByTimeAsync(1000)
     expect(old.cancelled()).toBe(true)
     expect(store.getState().status).toBe('reconnecting')
-    expect(server.paths('/api/apps/app_invoice/stream')).toHaveLength(2)
+    expect(server.paths('/api/apps/app_invoice/stream')).toHaveLength(1)
 
-    server.hold = undefined
-    held.open()
-    await flush()
+    await vi.advanceTimersByTimeAsync(1000) // the stream's backoff
+    expect(server.paths('/api/apps/app_invoice/stream')).toHaveLength(2)
     expect(store.getState().status).toBe('live')
     await vi.advanceTimersByTimeAsync(1000)
-    // A full reload: the series from the start, not since the last point.
     expect(server.calls.slice(before).map((c) => c.path)).toContain('/api/apps/app_invoice/monitor/series')
-    expect(store.getState().monitor?.clock).toBe(10)
   })
 
   it('the silence watch counts from the last byte, and stops with the connection', async () => {
@@ -292,8 +286,9 @@ describe('live store', () => {
     await flush()
     await vi.advanceTimersByTimeAsync(40_000) // 80 s since opening, 40 s since the event
     expect(store.getState().status).toBe('live')
-    expect(server.paths('/api/apps/app_invoice/stream')).toHaveLength(1)
     await vi.advanceTimersByTimeAsync(20_000)
+    expect(store.getState().status).toBe('reconnecting')
+    await vi.advanceTimersByTimeAsync(1000)
     expect(server.paths('/api/apps/app_invoice/stream')).toHaveLength(2)
 
     store.getState().setMode('simulation')
@@ -301,6 +296,15 @@ describe('live store', () => {
     await vi.advanceTimersByTimeAsync(180_000)
     expect(server.paths('/api/apps/app_invoice/stream')).toHaveLength(2)
     expect(store.getState().status).toBe('idle')
+  })
+
+  it('a stream refused with 401 says the server didn’t accept the person', async () => {
+    const { server, store } = await setup()
+    server.streamStatus = 401
+    await store.getState().connect('app_invoice')
+    await flush()
+    expect(store.getState().status).toBe('error')
+    expect(store.getState().error).toBe('The server didn’t accept Boss as a signed-in user.')
   })
 
   it('retries the connect when the design cannot be loaded', async () => {

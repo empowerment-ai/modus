@@ -169,6 +169,12 @@ export function sseParser(onEvent: (e: SseEvent) => void): (chunk: string) => vo
 
 export type StreamState = 'live' | 'reconnecting'
 
+/**
+ * The server pings a quiet stream every 25 s; hearing nothing for 60 s means the connection is gone even if
+ * the socket says otherwise (a proxy or a sleeping laptop can leave one half-open), so "Live" means heard from recently.
+ */
+export const SILENT_AFTER_MS = 60_000
+
 export interface StreamOptions extends Omit<ApiOptions, 'signal'> {
   /** First retry delay; doubles per failed attempt up to `maxBackoffMs`. */
   backoffMs?: number
@@ -179,25 +185,39 @@ export interface StreamOptions extends Omit<ApiOptions, 'signal'> {
   onNotFound?: () => void
   /** Any bytes arrived, keep-alive comments included: the connection is alive even when nothing changes. */
   onActivity?: () => void
+  /** An attempt silent this long (no headers yet, or no bytes since the last) is dropped and retried. Default SILENT_AFTER_MS. */
+  silentMs?: number
 }
 
 /**
  * Follows `/api/apps/:app/stream` and reconnects with backoff when it drops. Uses fetch and a reader rather
  * than EventSource, which can't send the `x-user-id` header. `onState` reports 'live' on each (re)connect
  * and 'reconnecting' once per outage; a 401 or 403 ends it through `onDenied`, a 404 through `onNotFound`.
- * `onActivity` hears every chunk, so a caller can tell a quiet stream (the server pings every 25 s) from a dead one.
+ * `onActivity` hears every chunk. An attempt that hears nothing for `silentMs` (a hung request, or a stream
+ * that stopped even pinging) is aborted and retried like any drop, keeping the current backoff.
  * Returns a function that closes the stream for good.
  */
 export function openStream(appId: Id, onEvent: (e: ChangeEvent) => void, onState: (s: StreamState) => void, o: StreamOptions): () => void {
   const f = o.fetch ?? fetch
   const first = o.backoffMs ?? 1000
   const max = o.maxBackoffMs ?? 15_000
+  const silentMs = o.silentMs ?? SILENT_AFTER_MS
   let closed = false
   let delay = first
   let state: StreamState | undefined
   let ctl: AbortController | undefined
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
+  let silence: ReturnType<typeof setTimeout> | undefined
+
+  /** (Re)start the silence watch for this attempt: when it fires, drop the attempt so the catch below retries. */
+  const watch = (attempt: AbortController) => {
+    clearTimeout(silence)
+    silence = setTimeout(() => {
+      attempt.abort()
+      reader?.cancel().catch(() => {})
+    }, silentMs)
+  }
 
   const report = (s: StreamState) => {
     if (closed || s === state) return
@@ -206,12 +226,14 @@ export function openStream(appId: Id, onEvent: (e: ChangeEvent) => void, onState
   }
 
   const run = async () => {
-    ctl = new AbortController()
+    const attempt = (ctl = new AbortController())
+    watch(attempt)
     try {
       const res = await f(`${appPath(appId)}/stream`, { signal: ctl.signal, headers: { accept: 'text/event-stream', 'x-user-id': o.user } })
       if (!res.ok || !res.body) {
         res.body?.cancel().catch(() => {})
         if (res.status === 401 || res.status === 403 || res.status === 404) {
+          clearTimeout(silence)
           if (!closed) {
             closed = true
             if (res.status === 404) o.onNotFound?.()
@@ -243,13 +265,15 @@ export function openStream(appId: Id, onEvent: (e: ChangeEvent) => void, onState
       })
       for (;;) {
         const { done, value } = await reader.read()
-        if (done || closed) break
+        if (done || closed || attempt.signal.aborted) break
+        watch(attempt)
         o.onActivity?.()
         push(decoder.decode(value, { stream: true }))
       }
     } catch {
       // dropped, refused or unreachable: retry below
     }
+    clearTimeout(silence)
     reader = undefined
     if (closed) return
     report('reconnecting')
@@ -261,6 +285,7 @@ export function openStream(appId: Id, onEvent: (e: ChangeEvent) => void, onState
   return () => {
     closed = true
     clearTimeout(timer)
+    clearTimeout(silence)
     ctl?.abort()
     reader?.cancel().catch(() => {})
   }
