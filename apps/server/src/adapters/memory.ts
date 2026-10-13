@@ -1,12 +1,14 @@
 // In-memory storage, optionally snapshotted to JSON files in a data directory so
 // a restart picks up where it left off. Good for development, demos and tests;
-// not for production (no transactions, one process only).
+// not for production: one process only, and a crash between the files of one
+// commit can leave the state ahead of the log. Projections and the outbox live in
+// memory only; the runtime rebuilds projections at startup.
 
 import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import type { Design, Id, SimState } from '@modus-bpm/core'
-import type { DesignStore, EventLog, LoggedEvent, StateStore, Storage } from '../ports'
+import type { Design, Id, OutboxMessage, ProjectedItem, SimState } from '@modus-bpm/core'
+import type { ChangeNotice, DesignStore, EventLog, LoggedEvent, Projections, StateStore, Storage, Stored, Work } from '../ports'
 
 async function readJson<T>(path: string): Promise<T | undefined> {
   try {
@@ -28,9 +30,24 @@ async function writeAtomic(path: string, text: string) {
   await rename(tmp, path)
 }
 
+/** An application as stored: the state with its version and clock time (`meta-<app>.json` on disk). */
+interface Held {
+  version: number
+  tickedAt?: number
+  state: SimState
+}
+
 export function memoryStorage(dataDir?: string): Storage {
   let design: Design | undefined
-  const states = new Map<Id, SimState>()
+  const held = new Map<Id, Held>()
+  const projected = new Map<Id, Map<Id, ProjectedItem>>()
+  const outbox: Array<{ appId: Id; message: OutboxMessage & { id: number } }> = []
+  let outboxId = 0
+  /** Per application, the end of the queue of transactions: one at a time, like a row lock. */
+  const locks = new Map<Id, Promise<unknown>>()
+  const listeners = new Set<(n: ChangeNotice) => void>()
+  /** Clock owner per application. */
+  const clocks = new Map<Id, string>()
   const events: LoggedEvent[] = []
   /** The highest position logged per item, so a batch sent again is not logged twice. */
   const lastSeq = new Map<string, number>()
@@ -63,21 +80,98 @@ export function memoryStorage(dataDir?: string): Storage {
     },
   }
 
+  /** The application as stored, read from the data directory on first use. */
+  async function current(appId: Id): Promise<Held | undefined> {
+    const hit = held.get(appId)
+    if (hit || !dataDir) return hit
+    await ready
+    const loaded = await readJson<SimState>(join(dataDir, `state-${appId}.json`))
+    if (!loaded) return undefined
+    // No meta file: a data directory from before versions, whose state counts as one commit.
+    const meta = await readJson<{ version: number; tickedAt?: number }>(join(dataDir, `meta-${appId}.json`))
+    // A commit that landed while the files were read wins.
+    if (!held.has(appId)) held.set(appId, { version: meta?.version ?? 1, tickedAt: meta?.tickedAt, state: loaded })
+    return held.get(appId)
+  }
+
   const state: StateStore = {
     async load(appId) {
-      const hit = states.get(appId)
-      if (hit || !dataDir) return hit
-      await ready
-      const loaded = await readJson<SimState>(join(dataDir, `state-${appId}.json`))
-      if (loaded) states.set(appId, loaded)
-      return loaded
+      return (await current(appId))?.state
     },
     async save(appId, s) {
-      states.set(appId, s)
+      const was = held.get(appId)
+      held.set(appId, { version: (was?.version ?? 0) + 1, tickedAt: was?.tickedAt, state: s })
       if (dataDir) {
         await ready
         await writeAtomic(join(dataDir, `state-${appId}.json`), JSON.stringify(s))
       }
+    },
+    async get(appId) {
+      const h = await current(appId)
+      return h && stored(h, true)
+    },
+  }
+
+  /** A copy for the caller: storage's own state must not change under it. */
+  function stored(h: Held | undefined, withState: boolean): Stored {
+    const out: Stored = { version: h?.version ?? 0 }
+    if (h?.tickedAt !== undefined) out.tickedAt = h.tickedAt
+    if (h && withState) out.state = structuredClone(h.state)
+    return out
+  }
+
+  async function commit<T>(appId: Id, known: number, work: (stored: Stored) => Work<T> | Promise<Work<T>>) {
+    await history
+    const h = await current(appId)
+    const version = h?.version ?? 0
+    const { value, write } = await work(stored(h, version !== known))
+    if (!write) return { value, version, committed: false, notice: undefined }
+
+    // Copy and number everything before touching memory, so a failed file write changes nothing here.
+    const text = JSON.stringify(write.state)
+    const next: Held = { version: version + 1, tickedAt: write.tickedAt, state: JSON.parse(text) as SimState }
+    const logged: LoggedEvent[] = []
+    for (const { itemId, itemNumber, entries } of write.entries) {
+      let seq = lastSeq.get(`${appId}:${itemId}`) ?? 0
+      for (const e of entries) logged.push({ ...structuredClone(e), appId, itemId, itemNumber, seq: ++seq })
+    }
+    const items = write.items.map((p) => structuredClone(p))
+    const messages = write.outbox.map((m) => ({ appId, message: { ...structuredClone(m), id: 0 } }))
+    if (dataDir) {
+      await ready
+      await writeAtomic(join(dataDir, `state-${appId}.json`), text)
+      await writeAtomic(join(dataDir, `meta-${appId}.json`), JSON.stringify({ version: next.version, tickedAt: next.tickedAt }))
+      if (logged.length) await appendFile(join(dataDir, 'events.jsonl'), logged.map((e) => JSON.stringify(e)).join('\n') + '\n')
+    }
+
+    held.set(appId, next)
+    for (const e of logged) lastSeq.set(`${appId}:${e.itemId}`, e.seq)
+    events.push(...logged)
+    if (events.length > MAX_EVENTS) events.splice(0, events.length - MAX_EVENTS)
+    let rows = projected.get(appId)
+    if (!rows) projected.set(appId, (rows = new Map()))
+    for (const p of items) rows.set(p.item.itemId, p)
+    for (const m of messages) m.message.id = ++outboxId
+    outbox.push(...messages)
+    return { value, version: next.version, committed: true, notice: { appId, version: next.version, itemIds: items.map((p) => p.item.itemId) } }
+  }
+
+  const projections: Projections = {
+    async item(appId, itemId) {
+      const p = projected.get(appId)?.get(itemId)
+      return p && structuredClone(p.item)
+    },
+    async workItems(appId, itemId) {
+      const rows = projected.get(appId)
+      if (!rows) return []
+      const of = itemId ? [rows.get(itemId)] : [...rows.values()]
+      return of.flatMap((p) => (p ? structuredClone(p.workItems) : []))
+    },
+    async outbox(appId) {
+      return outbox.filter((m) => m.appId === appId).map((m) => structuredClone(m.message))
+    },
+    async any(appId) {
+      return !!projected.get(appId)?.size
     },
   }
 
@@ -123,5 +217,50 @@ export function memoryStorage(dataDir?: string): Storage {
     },
   }
 
-  return { name: 'memory', designs, state, events: log }
+  return {
+    name: 'memory',
+    designs,
+    state,
+    events: log,
+    projections,
+    async transact(appId, known, work) {
+      const run = (locks.get(appId) ?? Promise.resolve()).then(() => commit(appId, known, work))
+      const done = run.then(
+        () => undefined,
+        () => undefined,
+      )
+      locks.set(appId, done)
+      void done.then(() => {
+        if (locks.get(appId) === done) locks.delete(appId)
+      })
+      const { notice, ...result } = await run
+      // After the lock is released, as NOTIFY is delivered after COMMIT.
+      if (notice)
+        for (const l of listeners)
+          queueMicrotask(() => {
+            try {
+              l(notice)
+            } catch {
+              // A listener's failure is its own; the commit stands.
+            }
+          })
+      return result
+    },
+    async listen(onChange) {
+      // One process: no connection to lose, so `onReconnect` is never called.
+      listeners.add(onChange)
+      return async () => {
+        listeners.delete(onChange)
+      }
+    },
+    async tryClock(appId, owner) {
+      const had = clocks.get(appId)
+      if (had !== undefined && had !== owner) return false
+      clocks.set(appId, owner)
+      return true
+    },
+    async releaseClocks(owner) {
+      for (const [appId, o] of clocks) if (o === owner) clocks.delete(appId)
+    },
+  }
 }

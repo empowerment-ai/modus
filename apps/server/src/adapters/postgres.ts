@@ -11,7 +11,7 @@ import { type Generated, Kysely, PostgresDialect, sql } from 'kysely'
 import { type Migration, Migrator } from 'kysely/migration'
 import { isDeepStrictEqual } from 'node:util'
 import pg from 'pg'
-import type { DesignStore, EventLog, LoggedEvent, StateStore, Storage } from '../ports'
+import type { DesignStore, EventLog, LoggedEvent, Projections, StateStore, Storage } from '../ports'
 
 interface Tables {
   design: { id: number; doc: Design; updated_at: Generated<Date> }
@@ -71,6 +71,9 @@ const migrations: Record<string, Migration> = {
   },
 }
 
+// Transactions, projections, LISTEN/NOTIFY and the clock lock land in the next steps of M2.
+const notYet = () => new Error('not yet: PostgreSQL transactions and projections are still to come')
+
 /** Rows per INSERT: well under Postgres's 65,535 bind parameters. */
 const CHUNK = 1000
 
@@ -125,6 +128,9 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
         .onConflict((oc) => oc.column('app_id').doUpdateSet({ state: (eb) => eb.ref('excluded.state'), updated_at: sql`now()` }))
         .execute()
     },
+    async get() {
+      throw notYet()
+    },
   }
 
   const events: EventLog = {
@@ -177,11 +183,24 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
     },
   }
 
+  const projections: Projections = {
+    item: () => Promise.reject(notYet()),
+    workItems: () => Promise.reject(notYet()),
+    outbox: () => Promise.reject(notYet()),
+    any: () => Promise.reject(notYet()),
+  }
+
+  let closed: Promise<void> | undefined
   return {
     name: 'postgres',
     designs,
     state,
     events,
+    projections,
+    transact: () => Promise.reject(notYet()),
+    listen: () => Promise.reject(notYet()),
+    tryClock: () => Promise.reject(notYet()),
+    releaseClocks: () => Promise.reject(notYet()),
     async migrate() {
       // Name the schema: Kysely otherwise finds a `kysely_migration` table in any schema (another install's, say).
       const { rows } = await sql<{ name: string }>`select current_schema() as name`.execute(db)
@@ -193,8 +212,9 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
     async ping() {
       await sql`select 1`.execute(db)
     },
-    async close() {
-      await db.destroy()
+    // Idempotent: a test (or shutdown path) may close a storage that something else closes too.
+    close() {
+      return (closed ??= db.destroy())
     },
   }
 }
