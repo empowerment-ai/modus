@@ -15,7 +15,7 @@ import type { DesignStore, EventLog, LoggedEvent, Projections, StateStore, Stora
 
 interface Tables {
   design: { id: number; doc: Design; updated_at: Generated<Date> }
-  app_state: { app_id: string; state: SimState; updated_at: Generated<Date> }
+  app_state: { app_id: string; state: SimState | null; version: Generated<string>; ticked_at: Date | null; updated_at: Generated<Date> }
   event: {
     id: Generated<string>
     app_id: string
@@ -26,6 +26,42 @@ interface Tables {
     kind: string
     entry: AuditEntry
     recorded_at: Generated<Date>
+  }
+  item: {
+    app_id: string
+    item_id: string
+    number: string
+    title: string
+    status: string
+    priority: string
+    expedited: boolean
+    due_at: number | null
+    created_at: number
+    ended_at: number | null
+    version: string
+    data: Record<string, unknown>
+  }
+  work_item: {
+    app_id: string
+    token_id: string
+    item_id: string
+    step_id: string
+    state: string
+    assignee: string | null
+    group_id: string | null
+    service_id: string | null
+    entered_at: number
+    due_at: number | null
+    priority: string
+  }
+  outbox: {
+    id: Generated<string>
+    app_id: string
+    item_id: string
+    kind: string
+    payload: Record<string, unknown>
+    created_at: Generated<Date>
+    sent_at: Date | null
   }
 }
 
@@ -67,6 +103,74 @@ const migrations: Record<string, Migration> = {
     },
     async down(db) {
       for (const t of ['event', 'app_state', 'design']) await db.schema.dropTable(t).execute()
+    },
+  },
+  '0002_projections': {
+    async up(db) {
+      await db.schema
+        .alterTable('app_state')
+        .addColumn('version', 'bigint', (c) => c.notNull().defaultTo(0))
+        .addColumn('ticked_at', 'timestamptz')
+        .execute()
+      // A row is created (version 0, no state) to have something to lock before an application's first commit.
+      await db.schema.alterTable('app_state').alterColumn('state', (c) => c.dropNotNull()).execute()
+      // Existing rows already hold state: count them as committed once.
+      await sql`update app_state set version = 1 where state is not null`.execute(db)
+      await db.schema
+        .createTable('item')
+        .addColumn('app_id', 'text', (c) => c.notNull())
+        .addColumn('item_id', 'text', (c) => c.notNull())
+        .addColumn('number', 'text', (c) => c.notNull())
+        .addColumn('title', 'text', (c) => c.notNull())
+        .addColumn('status', 'text', (c) => c.notNull())
+        .addColumn('priority', 'text', (c) => c.notNull())
+        .addColumn('expedited', 'boolean', (c) => c.notNull())
+        // Simulated minutes, like event.at.
+        .addColumn('due_at', 'double precision')
+        .addColumn('created_at', 'double precision', (c) => c.notNull())
+        .addColumn('ended_at', 'double precision')
+        .addColumn('version', 'bigint', (c) => c.notNull())
+        .addColumn('data', 'jsonb', (c) => c.notNull())
+        .addPrimaryKeyConstraint('item_pk', ['app_id', 'item_id'])
+        .execute()
+      await db.schema.createIndex('item_number').on('item').columns(['app_id', 'number']).execute()
+      await db.schema.createIndex('item_status').on('item').columns(['app_id', 'status']).execute()
+      await db.schema
+        .createTable('work_item')
+        .addColumn('app_id', 'text', (c) => c.notNull())
+        .addColumn('token_id', 'text', (c) => c.notNull())
+        .addColumn('item_id', 'text', (c) => c.notNull())
+        .addColumn('step_id', 'text', (c) => c.notNull())
+        .addColumn('state', 'text', (c) => c.notNull())
+        .addColumn('assignee', 'text')
+        .addColumn('group_id', 'text')
+        .addColumn('service_id', 'text')
+        .addColumn('entered_at', 'double precision', (c) => c.notNull())
+        .addColumn('due_at', 'double precision')
+        .addColumn('priority', 'text', (c) => c.notNull())
+        .addPrimaryKeyConstraint('work_item_pk', ['app_id', 'token_id'])
+        .execute()
+      await db.schema.createIndex('work_item_item').on('work_item').columns(['app_id', 'item_id']).execute()
+      await db.schema.createIndex('work_item_assignee').on('work_item').columns(['app_id', 'assignee']).execute()
+      await db.schema.createIndex('work_item_step').on('work_item').columns(['app_id', 'step_id', 'state']).execute()
+      await db.schema
+        .createTable('outbox')
+        .addColumn('id', 'bigserial', (c) => c.primaryKey())
+        .addColumn('app_id', 'text', (c) => c.notNull())
+        .addColumn('item_id', 'text', (c) => c.notNull())
+        .addColumn('kind', 'text', (c) => c.notNull())
+        .addColumn('payload', 'jsonb', (c) => c.notNull())
+        .addColumn('created_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
+        .addColumn('sent_at', 'timestamptz')
+        .execute()
+      // The M4 dispatcher's queue: unsent rows in order.
+      await sql`create index outbox_unsent on outbox (id) where sent_at is null`.execute(db)
+    },
+    async down(db) {
+      for (const t of ['outbox', 'work_item', 'item']) await db.schema.dropTable(t).execute()
+      await sql`delete from app_state where state is null`.execute(db)
+      await db.schema.alterTable('app_state').alterColumn('state', (c) => c.setNotNull()).execute()
+      await db.schema.alterTable('app_state').dropColumn('ticked_at').dropColumn('version').execute()
     },
   },
 }
@@ -119,13 +223,14 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
   const state: StateStore = {
     async load(appId) {
       const row = await db.selectFrom('app_state').select('state').where('app_id', '=', appId).executeTakeFirst()
-      return row?.state
+      return row?.state ?? undefined
     },
     async save(appId, s) {
+      // Counts as a commit, as in the memory adapter, so a transaction started before it sees the change.
       await db
         .insertInto('app_state')
-        .values({ app_id: appId, state: json(s) })
-        .onConflict((oc) => oc.column('app_id').doUpdateSet({ state: (eb) => eb.ref('excluded.state'), updated_at: sql`now()` }))
+        .values({ app_id: appId, state: json(s), version: '1' })
+        .onConflict((oc) => oc.column('app_id').doUpdateSet({ state: (eb) => eb.ref('excluded.state'), version: sql`app_state.version + 1`, updated_at: sql`now()` }))
         .execute()
     },
     async get() {

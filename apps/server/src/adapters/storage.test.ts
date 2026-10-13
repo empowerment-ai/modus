@@ -72,8 +72,19 @@ describe.skipIf(!url)('postgres', () => {
       await s.migrate()
       await s.migrate()
       const { rows } = await admin.query(`select name from ${own}.kysely_migration order by name`)
-      expect(rows.map((r) => r.name)).toEqual(['0001_storage'])
+      expect(rows.map((r) => r.name)).toEqual(['0001_storage', '0002_projections'])
       await s.close()
+    })
+
+    it('adds version and clock columns, and the projection and outbox tables', async () => {
+      const schema = await fresh()
+      const s = postgresStorage(url!, { schema })
+      await s.migrate()
+      const { rows } = await admin.query(`select table_name, column_name from information_schema.columns where table_schema = $1 order by 1, 2`, [schema])
+      const cols = rows.map((r) => `${r.table_name}.${r.column_name}`)
+      expect(cols).toEqual(expect.arrayContaining(['app_state.version', 'app_state.ticked_at', 'item.data', 'work_item.token_id', 'outbox.sent_at']))
+      await s.close()
+      await drop(schema)
     })
 
     it('ignores another schema’s migration history', async () => {
