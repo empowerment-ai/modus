@@ -62,7 +62,7 @@ import {
   workingNow,
 } from '@modus-bpm/core'
 import { answer, type ModelAssistant } from './assistant'
-import { canRead, findItem, hitDto, itemDto, workItemDto } from './dto'
+import { canRead, designDto, findItem, hitDto, itemDto, workItemDto } from './dto'
 import { NotFound, type Runtime, StorageUnavailable } from './runtime'
 import type { Sender } from './sender'
 
@@ -186,10 +186,14 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
   /** 401 without a named user, 403 unless they're an administrator. */
   const requireAdmin = (req: FastifyRequest, error: string): Refusal | undefined => (isAdmin(rt.design.users, who(req)) ? undefined : refuse(403, error))
 
-  /** The published design (applications, people, groups, services). The Studio's live Monitor draws it; the Workspace will too. */
+  /**
+   * The published design (applications, people, groups, services without their connection details).
+   * The Studio's live Monitor draws it; the Workspace will too.
+   * TODO: once OIDC lands, review who may read it and whether people's roles should go out to everyone.
+   */
   app.get('/api/design', async (req) => {
-    who(req)
-    return rt.design
+    void who(req) // any named user; 401 otherwise
+    return designDto(rt.design)
   })
 
   app.get('/api/apps', async () =>

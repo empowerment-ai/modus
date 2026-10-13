@@ -3,7 +3,7 @@
 // field security is applied to reads: fields hidden from that person (and the
 // audit lines that would reveal their values) never leave the server.
 
-import { accessFor, canReadItem, type Ctx, type Id, itemReadVerdicts, type ObjectType, type SearchHit, type SimObject, type SimState, visibleHistory, type WorkItem } from '@modus-bpm/core'
+import { accessFor, canReadItem, type Ctx, type Design, type Id, itemReadVerdicts, type ObjectType, type SearchHit, type ServiceDef, type SimObject, type SimState, visibleHistory, type WorkItem } from '@modus-bpm/core'
 import { objectTitle } from '@modus-bpm/core/model/format'
 
 /** Field ids this person may not see on this item (sensitive fields, workflow locks). */
@@ -119,3 +119,11 @@ export function hitDto(h: SearchHit, sim: SimState, ctx: Ctx, userId: Id) {
 }
 
 export type HitDto = ReturnType<typeof hitDto>
+
+/** A service as people see it: no address, credentials or owner (no Monitor panel needs them). */
+export type ServiceDto = Omit<ServiceDef, 'endpoint' | 'secretRef' | 'auth' | 'owner'>
+
+/** The published design, with each service's connection details left on the server. */
+export function designDto(design: Design): Omit<Design, 'services'> & { services: ServiceDto[] } {
+  return { ...design, services: design.services.map(({ endpoint: _e, secretRef: _s, auth: _a, owner: _o, ...rest }) => rest) }
+}

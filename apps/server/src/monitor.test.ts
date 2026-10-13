@@ -27,7 +27,7 @@ interface Monitor {
   clock: number
   view: { active: number; created: number; expedited: number; nodes: Record<string, { total: number }>; services: Record<string, unknown>; users: Record<string, { open: number }> }
   expeditedByStep: Record<string, number>
-  working: Record<string, { itemId: string; number: string; stepId: string; startedAt?: number }>
+  working: Record<string, { itemId: string; number: string; stepId: string; startedAt?: number; also: number }>
 }
 
 /** A new invoice from Maya, matched by the ERP worker and waiting with an AP clerk. */
@@ -50,9 +50,22 @@ async function invoiceAtClerk(invno: string) {
 describe('GET /api/design', () => {
   it('returns the published design to any named user', async () => {
     expect((await api.inject({ method: 'GET', url: '/api/design' })).statusCode).toBe(401)
-    const res = await api.inject({ method: 'GET', url: '/api/design', headers: as('u_maya') })
+    // Connection details stay on the server, even where the design has them all.
+    const svc = rt.design.services[0]!
+    const saved = { ...svc }
+    Object.assign(svc, { secretRef: 'erp-api-key', auth: 'api-key', owner: 'ERP team' })
+    const res = await api.inject({ method: 'GET', url: '/api/design', headers: as('u_maya') }).finally(() => {
+      for (const k of ['secretRef', 'auth', 'owner'] as const) delete svc[k]
+      Object.assign(svc, saved)
+    })
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual(JSON.parse(JSON.stringify(rt.design)))
+    const design = res.json() as { apps: unknown[]; users: unknown[]; services: Array<Record<string, unknown>> }
+    expect(design.apps.length).toBe(rt.design.apps.length)
+    expect(design.users.length).toBe(rt.design.users.length)
+    expect(svc.endpoint).toBeTruthy()
+    expect(design.services.map((s) => s.id)).toEqual(rt.design.services.map((s) => s.id))
+    for (const s of design.services) for (const k of ['endpoint', 'secretRef', 'auth', 'owner']) expect(s).not.toHaveProperty(k)
+    expect(design.services[0]).toMatchObject({ name: expect.any(String), operations: expect.any(Array) })
   })
 })
 
@@ -86,6 +99,6 @@ describe('GET /api/apps/:app/monitor', () => {
     const m = (await api.inject({ method: 'GET', url, headers: as(ADMIN) })).json() as Monitor
     expect(m.view.expedited).toBeGreaterThanOrEqual(1)
     expect(m.expeditedByStep.n_clerk).toBeGreaterThanOrEqual(1)
-    expect(m.working[clerk]).toMatchObject({ itemId: item.id, number: item.number, stepId: 'n_clerk', startedAt: expect.any(Number) })
+    expect(m.working[clerk]).toMatchObject({ itemId: item.id, number: item.number, stepId: 'n_clerk', startedAt: expect.any(Number), also: expect.any(Number) })
   })
 })
