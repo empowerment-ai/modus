@@ -51,7 +51,7 @@ export function sign(secret: string, body: string, now: number): string
 /** For receivers and tests: true when the header is valid and at most `toleranceMs` old. */
 export function verify(secret: string, body: string, header: string, now: number, toleranceMs = 5 * 60_000): boolean
 
-/** Delay before attempt n+1 after n failed attempts: 10 s, 30 s, 2 min, 10 min, 1 h, then 1 h. */
+/** Delay after a failure, given the attempts made before it (the delivery's `attempts`): 0 → 10 s, 1 → 30 s, 2 → 2 min, 3 → 10 min, 4+ → 1 h. */
 export function retryDelay(attempts: number): number
 export const GIVE_UP_AFTER_MS = 24 * 60 * 60_000
 
@@ -209,7 +209,7 @@ export class Sender {
 
 One round: `fanOut(route, now, 100)` until it returns < 100 or 5 loops; `claim(now, leaseMs, batch)`; send all claimed in parallel (`Promise.all`, each with `AbortSignal.timeout(timeoutMs)`, `redirect: 'manual'`, body `JSON.stringify({ id, kind, appId, itemId, createdAt: new Date(createdAt).toISOString(), payload })`, headers `content-type: application/json`, `user-agent: Modus-Webhooks/1`, `Modus-Signature`, `Modus-Delivery: <outboxId>`); `classify`; `record`:
 - ok → delivered;
-- retry and `now + delay < createdAt + GIVE_UP_AFTER_MS` → pending, `nextAt = now + max(retryDelay(attempts), retryAfterMs ?? 0)`;
+- retry and `now + delay < createdAt + GIVE_UP_AFTER_MS` → pending, `nextAt = now + max(retryDelay(delivery.attempts), retryAfterMs ?? 0)` (attempts as claimed, before `record` adds this one);
 - otherwise failed, and `log('warn', …)` with endpoint name, outbox id, status, error.
 
 With no endpoints: `route` returns `[]`, so fan-out marks everything skipped; no claims.
