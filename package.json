@@ -11,6 +11,8 @@
     "build": "pnpm -r build",
     "build:standalone": "pnpm --filter @modus-bpm/studio build:standalone",
     "test": "pnpm -r test",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "load": "tools/load/node_modules/.bin/tsx tools/load/src/run.ts",
+    "load:compare": "tools/load/node_modules/.bin/tsx tools/load/src/compare.ts"
   }
 }

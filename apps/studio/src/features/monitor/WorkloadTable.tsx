@@ -1,14 +1,12 @@
 import { Avatar, Badge, cx, Meter } from '../../components/ui'
-import { findToken, type SimState, type SimView } from '@modus-bpm/core'
+import type { SimView, WorkingOn } from '@modus-bpm/core'
 import type { App, Group, Id, User } from '@modus-bpm/core/model/types'
-import { useUi } from '../../store/ui'
 
 interface Row {
   user: User
   groups: string[]
   open: number
-  currentId?: Id
-  currentNumber?: string
+  working?: WorkingOn
   completed: number
   utilization: number | null
 }
@@ -32,21 +30,38 @@ export function appPeople(app: App, users: User[], groups: Group[]): Array<{ use
   return users.filter((u) => byUser.has(u.id)).map((u) => ({ user: u, groups: byUser.get(u.id)! }))
 }
 
-export function WorkloadTable({ app, users, groups, view, sim }: { app: App; users: User[]; groups: Group[]; view: SimView | undefined; sim: SimState | undefined }) {
-  const openObject = useUi((s) => s.openObject)
-  const clock = sim?.clock ?? 0
-
+/**
+ * `working`: what each person is working on (core's `workingNow`). `utilization` is off on a server, where
+ * nobody's time is simulated; `onOpenItem` is left out where the item can't be opened (Live).
+ */
+export function WorkloadTable({
+  app,
+  users,
+  groups,
+  view,
+  working,
+  clock,
+  utilization = true,
+  onOpenItem,
+}: {
+  app: App
+  users: User[]
+  groups: Group[]
+  view: SimView | undefined
+  working: Record<Id, WorkingOn>
+  clock: number
+  utilization?: boolean
+  onOpenItem?: (id: Id) => void
+}) {
   const rows: Row[] = appPeople(app, users, groups).map(({ user, groups: gs }) => {
     const v = view?.users[user.id]
-    const cur = v?.currentId && sim ? findToken(sim, v.currentId)?.tok : undefined
-    const working = cur && cur.state === 'working' && cur.userId === user.id ? cur : undefined
-    const busy = (v?.busyMinutes ?? 0) + (working?.startedAt !== undefined ? clock - working.startedAt : 0)
+    const w = working[user.id]
+    const busy = (v?.busyMinutes ?? 0) + (w?.startedAt !== undefined ? clock - w.startedAt : 0)
     return {
       user,
       groups: gs,
       open: v?.open ?? 0,
-      currentId: working?.objectId,
-      currentNumber: working ? sim?.objects[working.objectId]?.number : undefined,
+      working: w,
       completed: v?.completed ?? 0,
       utilization: clock > 0 ? Math.min(1, busy / clock) : null,
     }
@@ -62,10 +77,12 @@ export function WorkloadTable({ app, users, groups, view, sim }: { app: App; use
             <th className="py-2 pr-2 pl-4 font-semibold">Person</th>
             <th className="w-[150px] px-2 py-2 font-semibold">Open items</th>
             <th className="px-2 py-2 font-semibold">Working on</th>
-            <th className="px-2 py-2 text-right font-semibold">Done</th>
-            <th className="py-2 pr-4 pl-2 text-right font-semibold" title="Share of simulated time spent working">
-              Utilization
-            </th>
+            <th className={cx('px-2 py-2 text-right font-semibold', !utilization && 'pr-4')}>Done</th>
+            {utilization && (
+              <th className="py-2 pr-4 pl-2 text-right font-semibold" title="Share of simulated time spent working">
+                Utilization
+              </th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -93,16 +110,27 @@ export function WorkloadTable({ app, users, groups, view, sim }: { app: App; use
                 </div>
               </td>
               <td className="px-2 py-1.5">
-                {r.currentId ? (
-                  <button type="button" onClick={() => openObject(r.currentId!)} className="font-mono text-[11px] font-medium text-brand-700 hover:underline">
-                    {r.currentNumber}
-                  </button>
+                {r.working ? (
+                  <span className="inline-flex items-center gap-1">
+                    {onOpenItem ? (
+                      <button type="button" onClick={() => onOpenItem(r.working!.itemId)} className="font-mono text-[11px] font-medium text-brand-700 hover:underline">
+                        {r.working.number}
+                      </button>
+                    ) : (
+                      <span className="font-mono text-[11px] font-medium text-slate-700">{r.working.number}</span>
+                    )}
+                    {r.working.also > 0 && (
+                      <span className="text-[10px] text-slate-500" title={`${r.working.also} more started and not yet released`}>
+                        +{r.working.also}
+                      </span>
+                    )}
+                  </span>
                 ) : (
                   <span className="text-slate-400">Idle</span>
                 )}
               </td>
-              <td className="px-2 py-1.5 text-right text-slate-700">{r.completed}</td>
-              <td className="py-1.5 pr-4 pl-2 text-right text-slate-700">{r.utilization === null ? '—' : `${Math.round(r.utilization * 100)}%`}</td>
+              <td className={cx('px-2 py-1.5 text-right text-slate-700', !utilization && 'pr-4')}>{r.completed}</td>
+              {utilization && <td className="py-1.5 pr-4 pl-2 text-right text-slate-700">{r.utilization === null ? '—' : `${Math.round(r.utilization * 100)}%`}</td>}
             </tr>
           ))}
         </tbody>

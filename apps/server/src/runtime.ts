@@ -157,6 +157,11 @@ export class Runtime {
     return this.cached(appId).sim
   }
 
+  /** Application minutes per real minute. */
+  get timeScale(): number {
+    return this.opts.timeScale
+  }
+
   /**
    * The application's clock as of now: the cached clock plus the wall time since it was stored. The
    * cached clock lags on a quiet application (idle ticks aren't committed); this doesn't.

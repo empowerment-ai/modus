@@ -140,7 +140,7 @@ serving; the hardening rows are the target for M2.
 | HTTP server | **Fastify 5**: the fastest mainstream Node framework, schema-first, a mature plugin set. |
 | Validation and contracts | **zod 4** schemas on every route, exported as **OpenAPI 3.1**. Clients (TypeScript, Python, .NET, Java) are generated from it. |
 | Style | REST resources plus command endpoints (`POST …/work/:id/release`). Optimistic concurrency with `expectedVersion` → `409 Conflict`. `Idempotency-Key` on creates and commands. |
-| Live | SSE per application (`/api/apps/:app/stream`); events are change notices, never data the caller may not read. |
+| Live | SSE per application (`/api/apps/:app/stream`); events are change notices (changed item ids, or `items: null` for "refetch everything" after a slow client fell far behind), never data the caller may not read. |
 | Hardening | `@fastify/helmet`, CORS allow-list, `@fastify/rate-limit` (per user and per tenant; a stricter budget on the assistant), request size limits, structured errors (RFC 9457 problem details). |
 | Static app | The same server serves the built studio (`STATIC_DIR`), so one container is the whole product. |
 | Health | `/api/health` (liveness: the process is up) and `/api/ready` (readiness: storage reachable, migrations applied). |

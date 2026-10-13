@@ -30,6 +30,13 @@ import {
   createObject,
   type Ctx,
   distributionFor,
+  expeditedByStep,
+  explorerCache,
+  type ExplorerCache,
+  exploreItems,
+  type ExplorerKey,
+  explorerRow,
+  explorerSteps,
   exportOcel,
   failJob,
   findToken,
@@ -58,9 +65,11 @@ import {
   workReturn,
   workSave,
   workStart,
+  workingNow,
 } from '@modus-bpm/core'
 import { answer, type ModelAssistant } from './assistant'
-import { canRead, findItem, hitDto, itemDto, workItemDto } from './dto'
+import { canRead, designDto, findItem, hitDto, itemDto, workItemDto } from './dto'
+import { liveChanges } from './live'
 import { NotFound, type Runtime, StorageUnavailable } from './runtime'
 import type { Sender } from './sender'
 
@@ -72,6 +81,10 @@ export interface ServerOptions {
   assistant?: ModelAssistant
   /** The outbox sender, woken when an administrator retries a message. */
   sender?: Pick<Sender, 'wake'>
+  /** How often a quiet live stream gets a keep-alive comment (default 25 s, under common 60 s proxy idle timeouts). */
+  streamPingMs?: number
+  /** The item explorer's search text per application (given here so tests can watch it). */
+  explorerCaches?: Map<Id, ExplorerCache>
 }
 
 // ---------- Request helpers ----------
@@ -181,6 +194,19 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     routes: app.printRoutes({ commonPrefix: false }).split('\n').filter(Boolean),
   }))
 
+  /** 401 without a named user, 403 unless they're an administrator. */
+  const requireAdmin = (req: FastifyRequest, error: string): Refusal | undefined => (isAdmin(rt.design.users, who(req)) ? undefined : refuse(403, error))
+
+  /**
+   * The published design (applications, people, groups, services without their connection details).
+   * The Studio's live Monitor draws it; the Workspace will too.
+   * TODO: once OIDC lands, review who may read it and whether people's roles should go out to everyone.
+   */
+  app.get('/api/design', async (req) => {
+    void who(req) // any named user; 401 otherwise
+    return designDto(rt.design)
+  })
+
   app.get('/api/apps', async () =>
     rt.design.apps.map((a) => ({ id: a.id, name: a.name, description: a.description, workflows: a.workflows.map((w) => ({ id: w.id, name: w.name, kind: w.kind ?? 'process' })) })),
   )
@@ -191,6 +217,83 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     return rt.read(appId, (sim, ctx) => {
       const v = computeView(sim, ctx)
       return { clock: v.clock, active: v.active, completed: v.completed, rejected: v.rejected, stuck: v.stuck, overdue: v.overdue, bottleneckId: v.bottleneckId, steps: v.nodes, services: v.services }
+    })
+  })
+
+  // ----- The Monitor: administrators only, read from memory -----
+
+  const monitorOnly = 'Only an administrator can see the Monitor.'
+
+  /** The Studio's Monitor view, ready made: its size grows with steps, people and services, not items. */
+  app.get('/api/apps/:app/monitor', async (req, reply) => {
+    const { app: appId } = appParams.parse(req.params)
+    const refused = requireAdmin(req, monitorOnly)
+    if (refused) return send(reply, refused)
+    return rt.read(appId, (sim, ctx) => ({ clock: sim.clock, view: computeView(sim, ctx), expeditedByStep: expeditedByStep(sim), working: workingNow(sim) }))
+  })
+
+  /** Work in flight over time (a point every 15 sim minutes, the last 3000): only points after `since` when given. */
+  const seriesQuery = z.object({ since: z.string().trim().min(1).pipe(z.coerce.number()).optional() })
+  app.get('/api/apps/:app/monitor/series', async (req, reply) => {
+    const { app: appId } = appParams.parse(req.params)
+    const refused = requireAdmin(req, monitorOnly)
+    if (refused) return send(reply, refused)
+    const { since } = seriesQuery.parse(req.query)
+    return rt.read(appId, (sim) => ({ points: since === undefined ? sim.series.slice() : sim.series.filter((p) => p.t > since) }))
+  })
+
+  /** The activity feed, newest first (the engine keeps the last 300). */
+  const feedQuery = z.object({ limit: z.coerce.number().int().min(1).max(300).default(100) })
+  app.get('/api/apps/:app/monitor/feed', async (req, reply) => {
+    const { app: appId } = appParams.parse(req.params)
+    const refused = requireAdmin(req, monitorOnly)
+    if (refused) return send(reply, refused)
+    const { limit } = feedQuery.parse(req.query)
+    return rt.read(appId, (sim) => ({ entries: sim.feed.slice(0, limit) }))
+  })
+
+  // The cursor is where the last row sorts. Sort keys never change, so later pages neither repeat
+  // nor skip items that existed at the first; newer items sort before it and wait for a fresh read.
+  const cursorKey = z.tuple([z.number(), z.string(), z.string()])
+  const encodeCursor = (k: ExplorerKey) => Buffer.from(JSON.stringify([k.createdAt, k.number, k.id])).toString('base64url')
+  const cursor = z
+    .string()
+    .max(1000)
+    .transform((s, c): ExplorerKey => {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(Buffer.from(s, 'base64url').toString())
+      } catch {}
+      const key = cursorKey.safeParse(parsed)
+      if (key.success) return { createdAt: key.data[0], number: key.data[1], id: key.data[2] }
+      c.addIssue({ code: 'custom', message: 'Invalid cursor' })
+      return z.NEVER
+    })
+  const itemsQuery = z.object({
+    status: z.enum(['all', 'active', 'completed', 'rejected']).default('all'),
+    type: z.string().max(200).optional(),
+    step: z.string().max(200).optional(),
+    assignee: z.string().max(200).optional(),
+    q: z.string().max(500).default(''),
+    limit: z.coerce.number().int().min(1).max(200).default(50),
+    cursor: cursor.optional(),
+  })
+
+  // Kept across requests (and commits): without it every search formats every item again.
+  const explorerCaches = opts.explorerCaches ?? new Map<Id, ExplorerCache>()
+  const explorerCacheFor = (appId: Id) => explorerCaches.get(appId) ?? explorerCaches.set(appId, explorerCache()).get(appId)!
+
+  /** The item explorer over every item, newest first, with the Studio's filters and text search (core's explorer). */
+  app.get('/api/apps/:app/monitor/items', async (req, reply) => {
+    const { app: appId } = appParams.parse(req.params)
+    const refused = requireAdmin(req, monitorOnly)
+    if (refused) return send(reply, refused)
+    const f = itemsQuery.parse(req.query)
+    return rt.read(appId, (sim, ctx) => {
+      const r = exploreItems(sim, ctx, { status: f.status, typeId: f.type, stepId: f.step, assignee: f.assignee, q: f.q }, { limit: f.limit, after: f.cursor, cache: explorerCacheFor(appId) })
+      const steps = explorerSteps(ctx.app)
+      const last = r.items[r.items.length - 1]
+      return { items: r.items.map((o) => explorerRow(o, ctx, sim.clock, steps)), total: r.total, ...(r.more && last ? { next: encodeCursor(last) } : {}) }
     })
   })
 
@@ -208,14 +311,17 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     const { app: appId } = appParams.parse(req.params)
     const user = who(req)
     const body = createBody.parse(req.body)
-    return rt.run(appId, (sim, ctx) => {
-      if (!canCreate(ctx, body.workflowId, user)) return reply.code(403).send({ ok: false, error: 'You can’t create items in that workflow.' })
+    // Decided inside the command, answered only once it has committed: a failed commit must reach the error handler (503).
+    const r = await rt.run(appId, (sim, ctx) => {
+      if (!canCreate(ctx, body.workflowId, user)) return refuse(403, 'You can’t create items in that workflow.')
       const refused = createRefusals(ctx, body.workflowId, user, body.data)
-      if (refused.length) return reply.code(403).send({ ok: false, error: `You can’t set ${refused.map((r) => r.field.label).join(', ')} (${refused[0]!.reason}).` })
+      if (refused.length) return refuse(403, `You can’t set ${refused.map((r) => r.field.label).join(', ')} (${refused[0]!.reason}).`)
       const obj = createObject(sim, ctx, body.workflowId, body.data, user)
-      if (!obj) return reply.code(404).send({ ok: false, error: 'Unknown workflow.' })
-      return reply.code(201).send({ ok: true, value: itemDto(obj, ctx, user, sim) })
+      if (!obj) return refuse(404, 'Unknown workflow.')
+      return { created: itemDto(obj, ctx, user, sim) }
     })
+    if ('refused' in r) return send(reply, r)
+    return reply.code(201).send({ ok: true, value: r.created })
   })
 
   /** One item by id or number, as the caller may see it (404 when they can't see it at all). */
@@ -475,20 +581,17 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
   // ----- The outbox: administrators only -----
   // Deliveries carry the endpoint's name only, never its URL or secret.
 
-  const requireAdmin = (req: FastifyRequest): Refusal | undefined => {
-    return isAdmin(rt.design.users, who(req)) ? undefined : refuse(403, 'Only an administrator can see or retry outbox deliveries.')
-  }
-
+  const outboxOnly = 'Only an administrator can see or retry outbox deliveries.'
   const outboxQuery = z.object({ status: z.enum(['pending', 'delivered', 'failed']).optional(), limit: z.coerce.number().int().min(1).max(500).default(100) })
   app.get('/api/admin/outbox', async (req, reply) => {
-    const refused = requireAdmin(req)
+    const refused = requireAdmin(req, outboxOnly)
     if (refused) return send(reply, refused)
     const filter = outboxQuery.parse(req.query)
     return { deliveries: await rt.deliveries.list(filter) }
   })
 
   app.post('/api/admin/outbox/:id/retry', async (req, reply) => {
-    const refused = requireAdmin(req)
+    const refused = requireAdmin(req, outboxOnly)
     if (refused) return send(reply, refused)
     const { id } = z.object({ id: z.coerce.number().int().positive() }).parse(req.params)
     if (!(await rt.deliveries.retry(id, Date.now()))) return send(reply, refuse(404, 'That message has no failed deliveries.'))
@@ -502,6 +605,8 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
   const pollBody = z.object({ serviceId: z.string(), workerId: z.string(), max: z.number().int().min(1).max(100).default(1), leaseSeconds: z.number().int().min(5).max(3600).default(300) })
   app.post('/api/jobs/poll', async (req) => {
     const b = pollBody.parse(req.body)
+    // Leases are on the application's clock; a worker means real seconds, whatever the time scale.
+    const lease = (b.leaseSeconds / 60) * rt.timeScale
     const jobs = []
     for (const a of rt.design.apps) {
       if (jobs.length >= b.max) break
@@ -509,7 +614,7 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
       // Leases are compared with the clock as of now (the cached one lags on a quiet application). A stale
       // cache can still lead to a commit that claims nothing (another replica took the job): harmless.
       if (!(await rt.read(a.id, (sim) => activeTokens(sim).some((t) => openJob(sim, t, b.serviceId, rt.clockNow(a.id)))))) continue
-      const got = await rt.run(a.id, (sim, ctx) => pollJobs(sim, ctx, b.serviceId, b.workerId, b.max - jobs.length, b.leaseSeconds / 60))
+      const got = await rt.run(a.id, (sim, ctx) => pollJobs(sim, ctx, b.serviceId, b.workerId, b.max - jobs.length, lease))
       jobs.push(...got.map((j) => ({ ...j, id: `${a.id}:${j.id}`, appId: a.id })))
     }
     return { jobs }
@@ -538,31 +643,58 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
 
   // ----- Live stream (Server-Sent Events): counts per step and which items changed -----
 
-  const streams = new Set<FastifyReply>()
+  const streams = new Map<FastifyReply, { ping: NodeJS.Timeout; unsubscribe: () => void }>()
+  const pingMs = opts.streamPingMs ?? 25_000
   // Open streams would otherwise hold a graceful shutdown until the orchestrator kills the process.
   app.addHook('preClose', async () => {
-    for (const s of streams) s.raw.end()
+    for (const [s, { ping, unsubscribe }] of streams) {
+      clearInterval(ping)
+      unsubscribe()
+      s.raw.end()
+    }
+    streams.clear()
   })
 
   app.get('/api/apps/:app/stream', async (req, reply) => {
     const { app: appId } = appParams.parse(req.params)
+    // Any named user, like the design: events carry ids and counts, never data the caller may not read.
+    // Checked before the headers go out, so a stranger gets a 401 rather than an open stream.
+    void who(req)
     rt.ctx(appId)
-    reply.raw.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
-    streams.add(reply)
+    reply.raw.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    })
+    // writeHead only queues the headers; the first write sends them, so the client sees the stream open now.
+    reply.raw.write(': connected\n\n')
+    // Proxies cut idle connections (often after 60 s); a comment line keeps a quiet stream alive.
+    // A slow client's buffer is already full: a ping adds nothing, so skip it rather than queue more.
+    const ping = setInterval(() => {
+      if (reply.raw.writableEnded || reply.raw.destroyed || reply.raw.writableNeedDrain) return
+      reply.raw.write(': ping\n\n')
+    }, pingMs)
+    ping.unref()
+    const live = liveChanges(reply.raw, () =>
+      rt.read(appId, (sim, ctx) => {
+        const v = computeView(sim, ctx)
+        return { clock: sim.clock, counts: Object.fromEntries(Object.entries(v.nodes).map(([id, m]) => [id, m.total])), active: v.active }
+      }),
+      { onError: (err) => reply.log.error({ err }, 'live stream: reading the view failed') },
+    )
     let last = 0
     const unsubscribe = rt.subscribe((c) => {
       if (c.appId !== appId) return
       const now = Date.now()
       if (!c.itemIds.length && now - last < 1000) return
       last = now
-      void rt.read(appId, (sim, ctx) => {
-        const v = computeView(sim, ctx)
-        const counts = Object.fromEntries(Object.entries(v.nodes).map(([id, m]) => [id, m.total]))
-        reply.raw.write(`event: change\ndata: ${JSON.stringify({ clock: c.clock, items: c.itemIds, counts, active: v.active })}\n\n`)
-      })
+      live.change(c.clock, c.itemIds)
     })
+    streams.set(reply, { ping, unsubscribe })
     req.raw.on('close', () => {
       unsubscribe()
+      clearInterval(ping)
       streams.delete(reply)
     })
     return reply

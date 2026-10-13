@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { memoryStorage } from './adapters/memory'
 import { buildServer } from './http'
@@ -94,5 +94,142 @@ describe('the API runs the same engine live', () => {
   it('needs an identity for personal routes', async () => {
     const r = await api.inject({ method: 'GET', url: '/api/apps/app_invoice/my/basket' })
     expect(r.statusCode).toBe(401)
+  })
+})
+
+describe('commands answer only after they commit', () => {
+  it('reports 503, not 201, when creating an item fails to commit', async () => {
+    const storage = memoryStorage()
+    const rt2 = await Runtime.create({ storage })
+    const api2 = buildServer(rt2)
+    const payload = { workflowId: 'w_invoice', data: { f_invno: 'INV-LOST' } }
+    const transact = storage.transact.bind(storage)
+    // The command runs (the item is made in memory), then the commit fails.
+    storage.transact = (appId, known, work) =>
+      transact(appId, known, async (stored) => {
+        await work(stored)
+        throw new Error('commit failed')
+      })
+    const lost = await api2.inject({ method: 'POST', url: '/api/apps/app_invoice/items', headers: as('u_maya'), payload })
+    expect(lost.statusCode).toBe(503)
+    expect(lost.json()).toMatchObject({ ok: false })
+
+    storage.transact = transact
+    const made = await api2.inject({ method: 'POST', url: '/api/apps/app_invoice/items', headers: as('u_maya'), payload: { ...payload, data: { f_invno: 'INV-KEPT' } } })
+    expect(made.statusCode).toBe(201)
+    // Refusals still come back after the command, with their own codes.
+    const refused = await api2.inject({ method: 'POST', url: '/api/apps/app_invoice/items', headers: as('u_carmen'), payload })
+    expect(refused.statusCode).toBe(403)
+    const unknown = await api2.inject({ method: 'POST', url: '/api/apps/app_invoice/items', headers: as('u_maya'), payload: { workflowId: 'w_nope', data: {} } })
+    expect([403, 404]).toContain(unknown.statusCode)
+    await api2.close()
+    await rt2.stop()
+  })
+})
+
+describe('the live stream', () => {
+  it('opens at once on an idle app and pings while quiet', async () => {
+    const live = buildServer(rt, { streamPingMs: 50 })
+    const base = await live.listen({ port: 0, host: '127.0.0.1' })
+    const abort = new AbortController()
+    try {
+      const started = Date.now()
+      const res = await fetch(`${base}/api/apps/app_invoice/stream`, { signal: abort.signal, headers: as('u_maya') })
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toBe('text/event-stream')
+      expect(res.headers.get('x-accel-buffering')).toBe('no')
+      const reader = res.body!.getReader()
+      const decoder = new TextDecoder()
+      let text = ''
+      while (!text.includes(': ping\n\n')) {
+        const { value, done } = await reader.read()
+        if (done) break
+        text += decoder.decode(value, { stream: true })
+      }
+      expect(text.startsWith(': connected\n\n')).toBe(true)
+      expect(text).toContain(': ping\n\n')
+      expect(Date.now() - started).toBeLessThan(2000)
+    } finally {
+      abort.abort()
+      await live.close()
+    }
+  })
+
+  it('needs a named user, but any will do', async () => {
+    const none = await api.inject({ method: 'GET', url: '/api/apps/app_invoice/stream' })
+    expect(none.statusCode).toBe(401)
+    expect(none.json().ok).toBe(false)
+    const live = buildServer(rt, { streamPingMs: 50 })
+    const base = await live.listen({ port: 0, host: '127.0.0.1' })
+    const abort = new AbortController()
+    try {
+      // A clerk, not an administrator: the stream carries ids and counts only.
+      const res = await fetch(`${base}/api/apps/app_invoice/stream`, { signal: abort.signal, headers: as('u_jordan') })
+      expect(res.status).toBe(200)
+    } finally {
+      abort.abort()
+      await live.close()
+    }
+  })
+
+  // Counts the runtime subscriptions the stream route holds open.
+  function trackSubscriptions() {
+    const original = rt.subscribe.bind(rt)
+    let open = 0
+    const spy = vi.spyOn(rt, 'subscribe').mockImplementation((listener) => {
+      const off = original(listener)
+      open++
+      let done = false
+      return () => {
+        if (!done) open--
+        done = true
+        return off()
+      }
+    })
+    return { open: () => open, restore: () => spy.mockRestore() }
+  }
+
+  async function openStream(base: string, signal: AbortSignal) {
+    const res = await fetch(`${base}/api/apps/app_invoice/stream`, { signal, headers: as('u_maya') })
+    const reader = res.body!.getReader()
+    await reader.read()
+    return reader
+  }
+
+  it('lets go of the runtime when the client leaves', async () => {
+    const subs = trackSubscriptions()
+    const live = buildServer(rt, { streamPingMs: 20 })
+    const base = await live.listen({ port: 0, host: '127.0.0.1' })
+    try {
+      const abort = new AbortController()
+      await openStream(base, abort.signal)
+      expect(subs.open()).toBe(1)
+      abort.abort()
+      await vi.waitFor(() => expect(subs.open()).toBe(0))
+    } finally {
+      await live.close()
+      subs.restore()
+    }
+  })
+
+  it('unsubscribes and closes promptly at shutdown with a stream still open', async () => {
+    const subs = trackSubscriptions()
+    const live = buildServer(rt, { streamPingMs: 20 })
+    const base = await live.listen({ port: 0, host: '127.0.0.1' })
+    const abort = new AbortController()
+    try {
+      const reader = await openStream(base, abort.signal)
+      expect(subs.open()).toBe(1)
+      const started = Date.now()
+      await live.close()
+      expect(Date.now() - started).toBeLessThan(1000)
+      expect(subs.open()).toBe(0)
+      // The server ended the stream rather than leaving it hanging.
+      let done = false
+      while (!done) ({ done } = await reader.read())
+    } finally {
+      abort.abort()
+      subs.restore()
+    }
   })
 })

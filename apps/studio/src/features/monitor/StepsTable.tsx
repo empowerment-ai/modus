@@ -16,8 +16,20 @@ export const HEAT_LABEL = ['Idle', 'Flowing', 'Building up', 'Backed up'] as con
 type StepNode = Extract<WfNode, { type: 'user' | 'auto' | 'subflow' | 'join' | 'wait' }>
 const HOLDS = new Set(['user', 'auto', 'subflow', 'join', 'wait'])
 
-/** `expedited`: expedited items at each step right now, by step id. */
-export function StepsTable({ app, view, services, expedited }: { app: App; view: SimView | undefined; services: ServiceDef[]; expedited?: Record<Id, number> }) {
+/** `expedited`: expedited items at each step right now, by step id. `redistribute`: offer the shuffle action (simulation only). */
+export function StepsTable({
+  app,
+  view,
+  services,
+  expedited,
+  redistribute = true,
+}: {
+  app: App
+  view: SimView | undefined
+  services: ServiceDef[]
+  expedited?: Record<Id, number>
+  redistribute?: boolean
+}) {
   const rows = app.workflows.map((wf) => ({ wf, steps: wf.nodes.filter((n): n is StepNode => HOLDS.has(n.type)) })).filter((r) => r.steps.length)
   const maxInStep = Math.max(1, ...rows.flatMap((r) => r.steps.map((s) => view?.nodes[s.id]?.total ?? 0)))
   const multi = rows.length > 1
@@ -77,6 +89,7 @@ export function StepsTable({ app, view, services, expedited }: { app: App; view:
                   bottleneck={view?.bottleneckId === node.id}
                   expedited={expedited?.[node.id] ?? 0}
                   services={services}
+                  redistribute={redistribute}
                   onOpen={() => openStep(app, wf.id, node.id)}
                 />
               ))}
@@ -116,6 +129,7 @@ function StepRow({
   bottleneck,
   expedited,
   services,
+  redistribute,
   onOpen,
 }: {
   app: App
@@ -125,6 +139,7 @@ function StepRow({
   bottleneck: boolean
   expedited: number
   services: ServiceDef[]
+  redistribute: boolean
   onOpen: () => void
 }) {
   const heat = m?.heat ?? 0
@@ -133,7 +148,7 @@ function StepRow({
   const isUser = node.type === 'user'
   const isAuto = node.type === 'auto'
   const movable = (m?.assigned ?? 0) + (m?.unassigned ?? 0)
-  const canRebalance = isUser && movable > 0 && (m?.availableMembers ?? 0) > 0
+  const canRebalance = redistribute && isUser && movable > 0 && (m?.availableMembers ?? 0) > 0
 
   const waiting = isUser ? (m?.unassigned ?? 0) : isAuto ? (m?.queued ?? 0) : node.type === 'join' ? (m?.joining ?? 0) : node.type === 'wait' ? (m?.waiting ?? 0) : undefined
   const active = isUser ? (m?.working ?? 0) : isAuto ? (m?.automated ?? 0) : node.type === 'subflow' ? (m?.inside ?? 0) : undefined
