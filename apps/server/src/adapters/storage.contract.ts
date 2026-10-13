@@ -1,11 +1,14 @@
 // The storage contract: what every adapter must do, written once and run against
 // each of them (storage.test.ts). A new adapter is done when this suite passes.
 
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { type AuditEntry, changesBetween, createObject, type Ctx, type Design, newSim, type OutboxMessage, projectItem, type SimState } from '@modus-bpm/core'
 import { seedDesign } from '@modus-bpm/core/model/seed'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Delivery, LoggedEvent, Storage, Write } from '../ports'
 import { Runtime } from '../runtime'
+import { Sender } from '../sender'
 
 export interface ContractTarget {
   /** A new, empty store. */
@@ -518,6 +521,51 @@ export function storageContract(name: string, target: ContractTarget) {
           await b.stop()
         } finally {
           vi.useRealTimers()
+        }
+      })
+
+      it('deliver each outbox message once between two senders', async () => {
+        const seen: number[] = []
+        const hook = createServer((req, res) => {
+          let body = ''
+          req.on('data', (c) => (body += c))
+          req.on('end', () => {
+            seen.push(JSON.parse(body).id)
+            res.writeHead(204).end()
+          })
+        })
+        await new Promise<void>((ok) => hook.listen(0, '127.0.0.1', ok))
+        try {
+          const sa = await create()
+          const sb = await peer()
+          const r = await sa.transact('app_a', 0, () => ({
+            value: 0,
+            write: { state: newSim('app_a', 1), entries: [], items: [], outbox: Array.from({ length: 30 }, (_, i) => ({ itemId: `i${i}`, kind: 'notify' as const, payload: { i } })), tickedAt: 0 },
+          }))
+          expect(r.version).toBe(1)
+          const ids = (await sa.projections.outbox('app_a')).map((m) => m.id)
+          expect(ids).toHaveLength(30)
+          const endpoints = [{ name: 'hook', url: `http://127.0.0.1:${(hook.address() as AddressInfo).port}`, secret: 'a-secret-of-at-least-16' }]
+          // Messages get a real wall-clock createdAt at commit; the clock must not run behind it.
+          const now = () => Date.now() + 1000
+          const log = () => {}
+          const a = new Sender({ storage: sa, endpoints, now, log, batch: 4 })
+          const b = new Sender({ storage: sb, endpoints, now, log, batch: 4 })
+          for (let round = 0; round < 50 && (await sb.projections.outbox('app_a')).length; round++) {
+            // Interleaved and overlapping: both fan out and claim at the same time.
+            await Promise.all([a.wake(), b.wake(), a.wake()])
+          }
+          await a.stop()
+          await b.stop()
+          expect(await sa.projections.outbox('app_a')).toEqual([])
+          // Each message reached the endpoint exactly once.
+          expect(seen.slice().sort((x, y) => x - y)).toEqual(ids)
+          const delivered = await sb.deliveries.list({ status: 'delivered' })
+          expect(delivered.map((d) => d.outboxId).sort((x, y) => x - y)).toEqual(ids)
+          expect(delivered.every((d) => d.attempts === 1)).toBe(true)
+        } finally {
+          hook.closeAllConnections()
+          await new Promise((ok) => hook.close(ok))
         }
       })
     })

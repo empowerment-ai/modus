@@ -55,7 +55,8 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | Service registry: REST, MCP, worker pools, AI agents, email; capacity, status, typed outputs | Prototype |
 | Retries, failure path, hand to a person, stop for an administrator; take work off automation | Prototype |
 | Worker job protocol (poll with lease, complete with outputs, fail) | Skeleton |
-| REST/OpenAPI connector, MCP client connector, outbox dispatcher | Planned (M4) |
+| Outbox sender: signed webhooks with retries, shared by every replica, admin list and retry | Done |
+| REST/OpenAPI connector, MCP client connector, email from Modus | Planned (M4) |
 | Worker SDKs (TypeScript, Python, .NET, Java) | Planned (M4) |
 | Processes exposed as MCP tools (other agents can start and query them) | Planned |
 | Stream ingest (NATS JetStream / MQTT / Kafka) with triage and bulk create | Planned (M5) |
@@ -83,7 +84,7 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | One transaction per command: state, audit entries, item and work-item projections, outbox and clock commit together | Done (M2) |
 | Durable clock: one replica per application moves it (advisory lock); a restart catches it up | Done (M2) |
 | Several replicas on one PostgreSQL database; changes reach the others through LISTEN/NOTIFY | Done (M2) |
-| Outbox messages (`job.ready`, `notify`) are written; nothing sends them yet | Done (M2); sending in M4 |
+| Outbox messages (`job.ready`, `notify`) written in each command's transaction, then sent to webhooks | Done |
 | Locking per application: one command at a time across replicas | Done (M2) |
 | Locking per item | Planned (after M1) |
 | OIDC / SAML sign-in, SCIM group sync | Planned (M2–M6) |

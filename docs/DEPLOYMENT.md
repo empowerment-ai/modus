@@ -20,11 +20,12 @@ today and what is planned.
 | Area | Today | Planned |
 | --- | --- | --- |
 | Packaging | One image (amd64 and arm64), Docker Compose, a Helm chart, CI that builds every PR and publishes `main` | Signed images, release bundles |
-| Storage | **PostgreSQL** (`DB_DIALECT=postgres`, the Compose default): design, each application's live state, the event log, item and work-item projections and an outbox, all written in one transaction per command, with versioned migrations run at startup. Or **in memory**, snapshotted to JSON files in `DATA_DIR`. | Sending the outbox (M4); per-item locking (after M1); SQL Server (M6), Oracle (v1.1) behind the same storage ports |
+| Storage | **PostgreSQL** (`DB_DIALECT=postgres`, the Compose default): design, each application's live state, the event log, item and work-item projections and an outbox, all written in one transaction per command, with versioned migrations run at startup. Or **in memory**, snapshotted to JSON files in `DATA_DIR`. | Per-item locking (after M1); SQL Server (M6), Oracle (v1.1) behind the same storage ports |
 | Scale | On PostgreSQL, several replicas share one database, one command at a time per application. In memory, one process. | Roles split across deployments |
 | Identity | The `x-user-id` header: whoever calls the API says who they are | OIDC sign-in (Keycloak, Entra ID, Login.gov), SCIM group sync |
 | Tenancy | One organization per installation | Tenant id in every key; Postgres row-level security for hosted; a database per tenant for regulated customers |
 | Observability | JSON logs on stdout, live counts per step (`/overview`), OCEL 2.0 export | OpenTelemetry traces, Prometheus metrics |
+| Outbox | Every message is posted to configured webhook endpoints, signed, with retries, shared by all replicas ([Webhooks](#webhooks)) | Email from Modus, REST and MCP connectors (M4) |
 | Assistant | Claude through read-only tools when `ANTHROPIC_API_KEY` is set; the built-in interpreter otherwise | |
 
 > **Treat today's server as a pilot.** Because identity is a header, anyone who can reach the
@@ -253,6 +254,7 @@ The chart only references Secrets that already exist; it never creates one from 
 | --- | --- | --- |
 | `assistant.existingSecret` | `assistant.apiKeyKey` (default `ANTHROPIC_API_KEY`) | The language-model assistant |
 | `database.existingSecret` | `database.urlKey` (default `DATABASE_URL`) | PostgreSQL storage (`database.dialect: postgres`) |
+| `webhooks.existingSecret` | every key, as an environment variable | Webhook secrets named by `secretEnv` (or `WEBHOOK_URL` and `WEBHOOK_SECRET`) |
 
 ### Observability
 
@@ -291,6 +293,132 @@ Modus is built to run where nothing leaves the network.
   (Kyverno or the Sigstore policy controller), CycloneDX SBOMs attached to releases, signed
   Helm charts, and a NIST 800-53 control mapping.
 
+## Webhooks
+
+Every outbox message (`job.ready` when a service job is ready, `notify` for notifications and
+escalations) is posted to the webhook endpoints you configure, signed, at least once. Use them to
+send email, post to chat or wake a worker; sending email from Modus itself comes in M4.
+
+Every server runs a sender. Servers sharing a PostgreSQL database share the work: each delivery is
+claimed by one of them at a time, and a server that dies mid-send loses its claim after 60 seconds,
+when another takes it. With no endpoint configured, messages are marked sent at once.
+
+### Settings
+
+| Variable | What it does |
+| --- | --- |
+| `WEBHOOK_URL` + `WEBHOOK_SECRET` | One endpoint, named `default`, for every message. |
+| `WEBHOOKS_FILE` | A JSON file listing endpoints (below). Can be combined with the two above. |
+| `WEBHOOKS_ALLOW_HTTP` | `true` allows `http://` URLs, for receivers inside the cluster and tests. Otherwise `https://` only. |
+| `WEBHOOKS_KEEP_DAYS` | Days to keep messages that went out (default 7). |
+| `WEBHOOKS_KEEP_FAILED_DAYS` | Days to keep messages with a failed delivery (default 30). |
+
+```json
+[
+  { "name": "ops", "url": "https://hooks.example.com/modus", "secretEnv": "OPS_HOOK_SECRET", "kinds": ["notify"] },
+  { "name": "erp", "url": "https://erp.example.com/in", "secretEnv": "ERP_HOOK_SECRET", "apps": ["app_invoice"] }
+]
+```
+
+`name` is 1 to 40 of `a-z 0-9 _ -`. `secretEnv` names the environment variable that holds the
+secret (`secret` inline also works, but keep secrets out of files you commit). Secrets are at
+least 16 characters. `apps` and `kinds` are optional filters; leave them out for everything. URLs
+may not carry a username or password. A bad file, a missing secret or a bad URL stops the server
+at startup with a message that names the problem; the startup line lists each endpoint's name,
+host and filters, never its secret or path.
+
+### The request
+
+```http
+POST /modus HTTP/1.1
+Content-Type: application/json
+User-Agent: Modus-Webhooks/1
+Modus-Signature: t=1791896001,v1=5f1c…
+Modus-Delivery: 42
+
+{"id":42,"kind":"notify","appId":"app_invoice","itemId":"o_17","createdAt":"2026-10-13T12:53:20.000Z",
+ "payload":{"at":95,"kind":"notify","nodeId":"n_reject","text":"Email to Vendor Contact Email: “Invoice INV-17 was rejected”"}}
+```
+
+`id` (also in `Modus-Delivery`) is the outbox message id. A message can arrive more than once, so
+drop ids you have already handled. A `job.ready` payload is
+`{ tokenId, serviceId, nodeId, attempt }`. `Modus-Signature` holds the time the request was signed
+(`t`, Unix seconds) and `v1`, the hex HMAC-SHA256 of `"<t>.<raw body>"` with the endpoint's
+secret.
+
+### Verifying the signature (Node)
+
+```js
+import { createHmac, timingSafeEqual } from 'node:crypto'
+
+// rawBody: the request body exactly as received (a string), before any JSON parsing.
+function verify(secret, rawBody, header) {
+  const parts = Object.fromEntries(String(header).split(',').map((p) => p.trim().split('=')))
+  const t = Number(parts.t)
+  if (!Number.isInteger(t) || Math.abs(Date.now() / 1000 - t) > 300) return false // older than 5 min
+  const expected = createHmac('sha256', secret).update(`${t}.${rawBody}`).digest()
+  const got = Buffer.from(parts.v1 ?? '', 'hex')
+  return got.length === expected.length && timingSafeEqual(got, expected)
+}
+```
+
+Answer with any 2xx once you have the message. Answer quickly: a request times out after 10
+seconds.
+
+### Retries and giving up
+
+- A 2xx is delivered.
+- Network errors, timeouts, 408, 429 and 5xx are retried after 10 s, 30 s, 2 min, 10 min and 1 h,
+  then every hour. A longer `Retry-After` is honored.
+- Any other answer fails at once, including 3xx: redirects are not followed.
+- A delivery that is still failing 24 hours after its first attempt (or after an administrator's
+  retry) fails.
+
+Each endpoint has its own delivery, so a failing endpoint never delays or repeats another. The
+status and the first 500 characters of the answer are kept; failures are logged with the endpoint's
+name and status.
+
+### Administration
+
+Administrators only (`403` for everyone else):
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/admin/outbox?status=failed\|pending\|delivered&limit=100` | Deliveries, newest message first, with attempts, the last status and error. Endpoints appear by name only. `limit` is 1 to 500. |
+| `POST /api/admin/outbox/:id/retry` | Send a message again: its failed deliveries go back to pending, due now, with a fresh 24-hour schedule. `404` when it has none failed. |
+
+### Helm
+
+```yaml
+webhooks:
+  endpoints:
+    - name: ops
+      url: https://hooks.example.com/modus
+      secretEnv: OPS_HOOK_SECRET
+      kinds: [notify]
+  existingSecret: modus-webhooks   # a Secret with a key OPS_HOOK_SECRET
+  allowHttp: false
+  keepDays: 7
+  keepFailedDays: 30
+```
+
+```bash
+kubectl create secret generic modus-webhooks --from-literal=OPS_HOOK_SECRET="$(openssl rand -hex 32)"
+```
+
+The chart writes the list (without secrets; it refuses an inline `secret`) to `webhooks.json` in
+its ConfigMap, mounts it at `/etc/modus/webhooks.json` and sets `WEBHOOKS_FILE`. Every key of
+`existingSecret` becomes an environment variable, so `secretEnv` names resolve; it may instead
+hold `WEBHOOK_URL` and `WEBHOOK_SECRET` for a single endpoint. Changing the list rolls the pods.
+With an empty list and no Secret, nothing is rendered.
+
+### Known limits
+
+- A slow endpoint holds a sending round for up to 10 seconds (the timeout); other deliveries
+  claimed in that round wait for it.
+- The outbox list isn't scoped per application: it shows every application's deliveries, because
+  roles are organization-wide.
+
 ## Configuration reference
 
 Every setting is an environment variable, read and checked once at startup by
@@ -312,6 +440,12 @@ a message that names the variable.
 | `DB_DIALECT` | `memory` (Compose: `postgres`) | Storage: `memory` or `postgres`. `mssql` and `oracle` are validated (with `DATABASE_URL`) and then refused with a clear message until their adapters ship. |
 | `DATABASE_URL` | unset | Connection string, required for a SQL dialect: `postgres://` or `postgresql://` (`mssql://` or `sqlserver://`, `oracle://` later). Secret: the startup log shows only host, port and database. Ignored, with a warning, for `memory`. |
 | `DB_POOL_MAX` | `10` | Most database connections each process keeps in its pool, 1 to 200 (`postgres`). Each process also holds one more to listen for other replicas' changes. Ignored, with a warning, for `memory`. |
+| `WEBHOOK_URL` | unset | One webhook endpoint (`default`) for every outbox message; needs `WEBHOOK_SECRET`. See [Webhooks](#webhooks). |
+| `WEBHOOK_SECRET` | unset | Signs requests to `WEBHOOK_URL`, at least 16 characters. Secret: never logged. |
+| `WEBHOOKS_FILE` | unset (Helm: `/etc/modus/webhooks.json` when endpoints are listed) | A JSON file of webhook endpoints with filters. |
+| `WEBHOOKS_ALLOW_HTTP` | `false` | `true` allows `http://` webhook URLs. |
+| `WEBHOOKS_KEEP_DAYS` | `7` | Days to keep outbox messages that went out, 1 to 365. |
+| `WEBHOOKS_KEEP_FAILED_DAYS` | `30` | Days to keep outbox messages with a failed delivery, 1 to 365. |
 | `TENANT_MODE` | `single` | `multi` is planned; accepted with a warning, runs as one tenant. |
 | `MODUS_ROLES` | all six | Comma-separated roles this process plays (`api,engine,automation,scheduler,ingest,realtime`). Unknown roles stop the server; a subset is accepted with a warning and every role still runs. |
 | `NODE_ENV` | image: `production` | Standard Node.js setting. |

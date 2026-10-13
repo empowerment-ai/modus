@@ -98,3 +98,15 @@ database: one command at a time per application, under its row lock.
 {{- fail (printf "database.existingSecret (a Secret holding %s) is required for database.dialect=%s." .Values.database.urlKey .Values.database.dialect) -}}
 {{- end -}}
 {{- end -}}
+
+{{/* Webhook endpoints as the server reads them (WEBHOOKS_FILE): only the keys it knows, never a secret. */}}
+{{- define "modus.webhooksJson" -}}
+{{- $out := list -}}
+{{- range . -}}
+{{- if .secret -}}
+{{- fail "webhooks.endpoints: put secrets in webhooks.existingSecret and name the key with secretEnv, not secret." -}}
+{{- end -}}
+{{- $out = append $out (pick . "name" "url" "secretEnv" "apps" "kinds") -}}
+{{- end -}}
+{{- toPrettyJson $out -}}
+{{- end -}}
