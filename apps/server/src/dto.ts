@@ -3,7 +3,7 @@
 // field security is applied to reads: fields hidden from that person (and the
 // audit lines that would reveal their values) never leave the server.
 
-import { accessFor, canReadItem, type Ctx, type Id, itemReadVerdicts, type ObjectType, type SearchHit, type SimObject, type SimState, visibleHistory, type WorkItem } from '@modus-bpm/core'
+import { accessFor, canReadItem, type Ctx, type Design, type Id, itemReadVerdicts, type ObjectType, type SearchHit, type ServiceDef, type SimObject, type SimState, visibleHistory, type WorkItem } from '@modus-bpm/core'
 import { objectTitle } from '@modus-bpm/core/model/format'
 
 /** Field ids this person may not see on this item (sensitive fields, workflow locks). */
@@ -119,3 +119,28 @@ export function hitDto(h: SearchHit, sim: SimState, ctx: Ctx, userId: Id) {
 }
 
 export type HitDto = ReturnType<typeof hitDto>
+
+/** A service as people see it: what the diagram and the Monitor's services panel draw. No address, credentials or owner. */
+export type ServiceDto = Pick<ServiceDef, 'id' | 'name' | 'kind' | 'description' | 'concurrency' | 'status' | 'operations'>
+
+/** Copy only the listed keys that are present, so a field added to the design later stays on the server until named here. */
+function pick<T extends object, K extends keyof T>(from: T, keys: readonly K[]): Pick<T, K> {
+  const out = {} as Pick<T, K>
+  for (const k of keys) if (from[k] !== undefined) out[k] = from[k]
+  return out
+}
+
+const SERVICE_KEYS = ['id', 'name', 'kind', 'description', 'concurrency', 'status'] as const
+const OPERATION_KEYS = ['id', 'name', 'description', 'avgMinutes', 'successRate'] as const
+const OUTPUT_KEYS = ['key', 'label', 'type', 'trueRate', 'min', 'max', 'options'] as const
+
+/** The published design, with each service reduced to an allowlist: connection details stay on the server. */
+export function designDto(design: Design): Omit<Design, 'services'> & { services: ServiceDto[] } {
+  return {
+    ...design,
+    services: design.services.map((s) => ({
+      ...pick(s, SERVICE_KEYS),
+      operations: s.operations.map((o) => ({ ...pick(o, OPERATION_KEYS), outputs: o.outputs.map((x) => pick(x, OUTPUT_KEYS)) })),
+    })),
+  }
+}

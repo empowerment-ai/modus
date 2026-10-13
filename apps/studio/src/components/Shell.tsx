@@ -16,6 +16,7 @@ import {
   Play,
   Plug,
   Plus,
+  Radio,
   RotateCcw,
   Settings2,
   ShieldCheck,
@@ -28,6 +29,8 @@ import { blankApp } from '@modus-bpm/core/model/seed'
 import type { Design } from '@modus-bpm/core/model/types'
 import { formatClock, formatDuration } from '@modus-bpm/core/model/util'
 import { useApp, useDesign } from '../store/design'
+import { isLive } from '../features/monitor/source'
+import { useLive } from '../server/useLive'
 import { SPEEDS, useSim, useSimView } from '../store/sim'
 import { type Mode, useUi, type View } from '../store/ui'
 import { Button, cx, Field, Input, Modal, Segmented, Textarea, Toggle } from './ui'
@@ -107,7 +110,7 @@ function TopBar() {
         <span className="hidden min-[1600px]:inline">GitHub</span>
         <span className="sr-only min-[1600px]:hidden">{PRODUCT.name} on GitHub</span>
       </a>
-      <SimControls />
+      <SimOrLive />
     </header>
   )
 }
@@ -252,6 +255,27 @@ function NewAppModal({ open, onClose }: { open: boolean; onClose: () => void }) 
     </Modal>
   )
 }
+
+/** The simulation's controls, except over a Monitor showing a server: they wouldn't change what it shows. */
+function SimOrLive() {
+  const live = useLive(isLive)
+  const onMonitor = useUi((s) => s.mode === 'studio' && s.view === 'monitor')
+  if (!live || !onMonitor) return <SimControls />
+  return (
+    <button
+      type="button"
+      onClick={() => useUi.getState().toast(LIVE_CONTROLS_OFF)}
+      className="inline-flex h-7 items-center gap-1.5 rounded-md bg-slate-100 px-2.5 text-xs font-medium text-slate-500 hover:bg-slate-200 hover:text-slate-700"
+      title={LIVE_CONTROLS_OFF}
+    >
+      <Radio size={13} aria-hidden />
+      {/* Narrow screens keep the icon; the words stay for screen readers. Clicking says why, for keyboards and touch. */}
+      <span className="max-[1199px]:sr-only">Simulation controls off in Live</span>
+    </button>
+  )
+}
+
+const LIVE_CONTROLS_OFF = 'The Monitor is showing the server’s live state, so the simulation’s speed, arrivals, jumps and reset don’t apply here. Switch the Monitor to Simulation to use them.'
 
 function SimControls() {
   const running = useSim((s) => s.running)

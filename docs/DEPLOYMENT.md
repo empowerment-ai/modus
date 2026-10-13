@@ -44,6 +44,7 @@ pnpm --filter @modus-bpm/server dev           # the API: http://127.0.0.1:8787/a
 # The studio served by the server, as in the image:
 pnpm --filter @modus-bpm/studio build
 STATIC_DIR=$PWD/apps/studio/dist pnpm --filter @modus-bpm/server dev
+# Its Monitor shows the server's live state; the Live / Simulation switch keeps the what-if simulation.
 
 # The production bundle (one file, no node_modules needed to run it):
 pnpm --filter @modus-bpm/server build
