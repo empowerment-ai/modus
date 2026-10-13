@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { seedDesign } from '../model/seed'
 import { advance, completeJob, createObject, type Ctx, failJob, newSim, pollJobs } from './engine'
-import { projectItem } from './project'
+import { changesBetween, projectItem } from './project'
 
 function live(): Ctx {
   const d = seedDesign()
@@ -71,5 +71,56 @@ describe('projectItem', () => {
 
   it('is undefined for an unknown item', () => {
     expect(projectItem(newSim('app_invoice'), live(), 'nope')).toBeUndefined()
+  })
+})
+
+describe('changesBetween', () => {
+  it('reports a new item’s entries, the item as touched, and its job as ready', () => {
+    const ctx = live()
+    const before = newSim('app_invoice')
+    const after = structuredClone(before)
+    const o = createObject(after, ctx, 'w_invoice', { f_invno: 'C-1' }, 'u_maya')!
+    const c = changesBetween(before, after)
+    expect(c.itemIds).toEqual([o.id])
+    expect(c.entries).toEqual([{ itemId: o.id, itemNumber: o.number, entries: o.history }])
+    expect(c.outbox).toEqual([{ itemId: o.id, kind: 'job.ready', payload: { tokenId: o.tokens[0]!.id, serviceId: 'svc_erp', nodeId: 'n_capture', attempt: 1 } }])
+  })
+
+  it('reports only what changed, and a retry as a new job', () => {
+    const ctx = live()
+    const sim = newSim('app_invoice')
+    const o = createObject(sim, ctx, 'w_invoice', { f_invno: 'C-2' }, 'u_maya')!
+    createObject(sim, ctx, 'w_invoice', { f_invno: 'C-3' }, 'u_maya')
+    const [job] = pollJobs(sim, ctx, 'svc_erp', 'w1')
+    const before = structuredClone(sim)
+    failJob(sim, ctx, job!.id, 'timed out')
+    const c = changesBetween(before, sim)
+    expect(c.itemIds).toEqual([o.id])
+    expect(c.entries[0]!.entries).toEqual(o.history.slice(before.objects[o.id]!.history.length))
+    expect(c.outbox).toEqual([expect.objectContaining({ kind: 'job.ready', payload: expect.objectContaining({ attempt: 2 }) })])
+  })
+
+  it('turns notify and escalated entries into notify messages', () => {
+    const before = newSim('app_invoice')
+    const ctx = live()
+    createObject(before, ctx, 'w_invoice', { f_invno: 'C-4' }, 'u_maya')
+    const after = structuredClone(before)
+    const o = Object.values(after.objects)[0]!
+    o.history.push({ at: 5, kind: 'notify', nodeId: 'n_x', text: 'Email to someone' }, { at: 6, kind: 'escalated', nodeId: 'n_x', tokenId: 't1', text: 'Escalated' })
+    const c = changesBetween(before, after)
+    expect(c.outbox).toEqual([
+      { itemId: o.id, kind: 'notify', payload: { at: 5, kind: 'notify', nodeId: 'n_x', text: 'Email to someone' } },
+      { itemId: o.id, kind: 'notify', payload: { at: 6, kind: 'escalated', nodeId: 'n_x', tokenId: 't1', text: 'Escalated' } },
+    ])
+  })
+
+  it('counts a token that moved without an audit entry as a touch', () => {
+    const ctx = live()
+    const before = newSim('app_invoice')
+    const o = createObject(before, ctx, 'w_invoice', { f_invno: 'C-5' }, 'u_maya')!
+    const after = structuredClone(before)
+    after.objects[o.id]!.tokens[0]!.state = 'queued'
+    expect(changesBetween(before, after).itemIds).toEqual([o.id])
+    expect(changesBetween(before, structuredClone(before)).itemIds).toEqual([])
   })
 })
