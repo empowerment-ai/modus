@@ -56,9 +56,9 @@ app.kubernetes.io/part-of: modus
 {{- end -}}
 
 {{/*
-Refuse values the server can't honour today. One process holds the live state
-(in memory, or stored in Postgres but not yet shared), so more than one pod
-would split it.
+Refuse values the server can't honor. The memory dialect keeps all state in one
+process, so it runs one deployment with one replica. SQL dialects share the
+database: one command at a time per application, under its row lock.
 */}}
 {{- define "modus.validate" -}}
 {{- $enabled := include "modus.enabledDeployments" . | trim | splitList " " | compact -}}
@@ -70,8 +70,8 @@ would split it.
 {{- if not $serving -}}
 {{- fail "At least one enabled deployment needs the api role." -}}
 {{- end -}}
-{{- /* Every dialect in this build keeps the live state in one process (Postgres stores it, it does not share it yet). */ -}}
-{{- $why := ternary "database.dialect=memory keeps all state in one process" "this build holds the live state in one process even on a SQL store (per-item locking is planned)" (eq .Values.database.dialect "memory") -}}
+{{- if eq .Values.database.dialect "memory" -}}
+{{- $why := "database.dialect=memory keeps all state in one process" -}}
 {{- if gt (len $enabled) 1 -}}
 {{- fail (printf "%s: enable exactly one deployment." $why) -}}
 {{- end -}}
@@ -82,6 +82,7 @@ would split it.
 {{- end -}}
 {{- if .Values.autoscaling.enabled -}}
 {{- fail (printf "keep autoscaling.enabled=false: %s." $why) -}}
+{{- end -}}
 {{- end -}}
 {{- if and (ne .Values.database.dialect "memory") (not .Values.database.existingSecret) -}}
 {{- fail (printf "database.existingSecret (a Secret holding %s) is required for database.dialect=%s." .Values.database.urlKey .Values.database.dialect) -}}
