@@ -63,11 +63,13 @@ What building it changed or added to the design above:
 - **Working now comes from tokens.** `workingNow` (core) finds what each person is working on from
   tokens in the working state, not from the simulated person's current task, which a live server
   doesn't track. "+N more" counts the rest.
-- **Redacted design.** `GET /api/design` drops each service's endpoint, auth, secret reference and
-  owner. Connection details stay on the server.
+- **Allowlisted design.** `GET /api/design` sends only the service, operation and output fields the
+  Studio draws. Endpoint, auth, secret reference, owner, and any field added later stay on the server.
 - **One explorer for both.** The item explorer's filtering and paging live in core and serve the
-  Studio's simulation and the server alike. The server keeps a search cache per app that survives
-  commits.
+  Studio's simulation and the server alike. A page keeps only the top `limit + 1` matches instead of
+  sorting them all. The server keeps a search cache per app that survives commits.
+- **Hidden tabs.** A hidden tab refetches nothing (the stream still updates counts) and reloads
+  everything once when shown.
 - **Ready before admin reads.** The live store fetches the design first (as anyone named), picks an
   administrator from it, and only then calls the administrator-only endpoints.
 - **Denied and not found.** A 401/403 on the stream ends it with a message naming the person. A 404

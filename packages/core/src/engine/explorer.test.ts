@@ -61,6 +61,31 @@ describe('item explorer', () => {
     for (let i = 1; i < seen.length; i++) expect(sim.objects[seen[i - 1]!]!.createdAt).toBeGreaterThanOrEqual(sim.objects[seen[i]!]!.createdAt)
   })
 
+  it('picks each page in exactly the order of a full sort, on a random set with ties', () => {
+    const { ctx, sim, all } = day()
+    // A fixed seed so a failure repeats; few distinct times so many items tie on createdAt.
+    let seed = 42
+    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31)
+    for (const o of all) o.createdAt = Math.floor(rand() * 20)
+    const sorted = [...all].sort(explorerOrder).map((o) => o.id)
+    for (const limit of [1, 3, 7, 50, all.length, all.length + 5]) {
+      const seen: string[] = []
+      let after: SimObject | undefined
+      for (;;) {
+        const page = exploreItems(sim, ctx, {}, { limit, after })
+        expect(page.total).toBe(all.length)
+        expect(page.items.length).toBeLessThanOrEqual(limit)
+        seen.push(...page.items.map((o) => o.id))
+        if (!page.more) break
+        after = page.items[page.items.length - 1]
+      }
+      expect(seen, `limit ${limit}`).toEqual(sorted)
+    }
+    // A cursor taken from the middle starts right after it.
+    const mid = sim.objects[sorted[10]!]!
+    expect(exploreItems(sim, ctx, {}, { limit: 5, after: mid }).items.map((o) => o.id)).toEqual(sorted.slice(11, 16))
+  })
+
   it('orders the numbers it issues as localeCompare did', () => {
     const { all } = day()
     const byLocale = [...all].sort((a, b) => b.createdAt - a.createdAt || b.number.localeCompare(a.number)).map((o) => o.id)

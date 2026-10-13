@@ -13,7 +13,7 @@ export interface ApiOptions {
 }
 
 /** The published design as the server sends it: services without their connection details. */
-export type ServerDesign = Omit<Design, 'services'> & { services: Array<Omit<ServiceDef, 'endpoint' | 'secretRef' | 'auth' | 'owner'>> }
+export type ServerDesign = Omit<Design, 'services'> & { services: Array<Pick<ServiceDef, 'id' | 'name' | 'kind' | 'description' | 'concurrency' | 'status' | 'operations'>> }
 
 export interface MonitorSnapshot {
   clock: number

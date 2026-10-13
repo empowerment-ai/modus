@@ -53,13 +53,21 @@ describe('GET /api/design', () => {
   it('returns the published design to any named user', async () => {
     expect((await api.inject({ method: 'GET', url: '/api/design' })).statusCode).toBe(401)
     // Connection details stay on the server, even where the design has them all.
+    // Fields nobody named, at every level, stay on the server too: the DTO is an allowlist.
     const svc = rt.design.services[0]!
+    const op = svc.operations[0]!
+    const out = op.outputs[0]!
     const saved = { ...svc }
-    Object.assign(svc, { secretRef: 'erp-api-key', auth: 'api-key', owner: 'ERP team' })
+    Object.assign(svc, { secretRef: 'erp-api-key', auth: 'api-key', owner: 'ERP team', futureToken: 'leak-me' })
+    Object.assign(op, { headers: { authorization: 'leak-me' } })
+    Object.assign(out, { sample: 'leak-me' })
     const res = await api.inject({ method: 'GET', url: '/api/design', headers: as('u_maya') }).finally(() => {
-      for (const k of ['secretRef', 'auth', 'owner'] as const) delete svc[k]
+      for (const k of ['secretRef', 'auth', 'owner', 'futureToken']) delete (svc as unknown as Record<string, unknown>)[k]
       Object.assign(svc, saved)
+      delete (op as unknown as Record<string, unknown>).headers
+      delete (out as unknown as Record<string, unknown>).sample
     })
+    expect(res.body).not.toContain('leak-me')
     expect(res.statusCode).toBe(200)
     const design = res.json() as { apps: unknown[]; users: unknown[]; services: Array<Record<string, unknown>> }
     expect(design.apps.length).toBe(rt.design.apps.length)
@@ -116,7 +124,7 @@ describe('GET /api/apps/:app/monitor/series, /feed, /items', () => {
       expect((await api.inject({ method: 'GET', url: `/api/apps/nope/monitor${path}`, headers: as(ADMIN) })).statusCode).toBe(404)
       expect((await get(path)).statusCode).toBe(200)
     }
-    for (const bad of ['/series?since=soon', '/series?since=', '/feed?limit=0', '/feed?limit=301', '/items?limit=201', '/items?status=lost', '/items?cursor=nonsense', `/items?cursor=${Buffer.from('[1,2]').toString('base64url')}`]) expect((await get(bad)).statusCode, bad).toBe(400)
+    for (const bad of ['/series?since=soon', '/series?since=', '/feed?limit=0', '/feed?limit=301', '/items?limit=201', '/items?status=lost', '/items?cursor=nonsense', `/items?cursor=${Buffer.from('[1,2]').toString('base64url')}`, `/items?type=${'x'.repeat(201)}`, `/items?step=${'x'.repeat(201)}`, `/items?assignee=${'x'.repeat(201)}`]) expect((await get(bad)).statusCode, bad).toBe(400)
   })
 
   it('series: work in flight over time, incrementally', async () => {

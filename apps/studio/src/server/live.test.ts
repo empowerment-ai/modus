@@ -174,6 +174,37 @@ describe('live store', () => {
     expect(server.calls.slice(before).filter((c) => c.path.endsWith('/monitor'))).toHaveLength(2)
   })
 
+  it('a hidden tab refetches nothing, then reloads everything once when shown', async () => {
+    let hidden = false
+    let notify = () => {}
+    const server = fakeServer()
+    const store = createLiveStore({ fetch: server.fetch, storage: memory(), visibility: { hidden: () => hidden, subscribe: (cb) => void (notify = cb) } })
+    await store.getState().detect()
+    await store.getState().connect('app_invoice')
+    await flush()
+    const before = server.calls.length
+    hidden = true
+    notify()
+    for (let i = 0; i < 5; i++) {
+      server.stream().change({ clock: 20 + i, items: ['o1'], counts: { s1: 3 + i }, active: 4 })
+      await vi.advanceTimersByTimeAsync(1000)
+    }
+    // Counts still follow the stream; nothing was fetched.
+    expect(store.getState().monitor!.view.nodes.s1!.total).toBe(7)
+    expect(server.calls.length).toBe(before)
+
+    hidden = false
+    notify()
+    await vi.advanceTimersByTimeAsync(1000)
+    const after = server.calls.slice(before).map((c) => c.path)
+    expect(after.filter((p) => p.endsWith('/monitor'))).toHaveLength(1)
+    // Full: the whole series, not since the last point.
+    expect(after.filter((p) => p.includes('/monitor/series'))).toEqual(['/api/apps/app_invoice/monitor/series'])
+    expect(after.some((p) => p.includes('/monitor/items'))).toBe(true)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(server.calls.slice(before).filter((c) => c.path.endsWith('/monitor'))).toHaveLength(1)
+  })
+
   it('items: null refetches everything', async () => {
     const { server, store } = await setup()
     await store.getState().connect('app_invoice')
