@@ -113,6 +113,8 @@ export interface Storage {
   tryClock(appId: Id, owner: string): Promise<boolean>
   /** Give up every clock this owner holds. */
   releaseClocks(owner: string): Promise<void>
+  /** False while change notices can't arrive (the listening connection is down). Absent: always listening. */
+  listening?(): boolean
   /** Throws when the backing store cannot be reached (readiness). Absent: always reachable. */
   ping?(): Promise<void>
   /** Release connections on shutdown. */
