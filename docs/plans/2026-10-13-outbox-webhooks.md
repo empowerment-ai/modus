@@ -169,8 +169,10 @@ Migration (never edit 0001/0002):
 Implementation notes:
 - Times are passed from JS (`new Date(now)`), never `now()` in SQL, so tests control the clock.
 - `fanOut`: in one transaction, `select id, app_id, kind from outbox o where sent_at is null and not skipped and not exists (select 1 from outbox_delivery d where d.outbox_id = o.id) order by id limit $n for update skip locked`; insert deliveries (`on conflict do nothing`); for messages with no route, `update outbox set skipped = true, sent_at = $now`.
-- `claim`: `update outbox_delivery d set next_at = $lease from (select outbox_id, endpoint from outbox_delivery where status = 'pending' and next_at <= $now order by next_at, outbox_id limit $n for update skip locked) c where (d.outbox_id, d.endpoint) = (c.outbox_id, c.endpoint) returning …` joined with `outbox` for app/item/kind/payload/created_at.
-- `record`: update the delivery (attempts + 1); then `update outbox set sent_at = $now where id = $id and not exists (select 1 from outbox_delivery where outbox_id = $id and status = 'pending')` — same transaction.
+- `claim`: `update outbox_delivery d set next_at = $lease from (select outbox_id, endpoint from outbox_delivery where status = 'pending' and next_at <= $now order by next_at, outbox_id, endpoint collate "C" limit $n for update skip locked) c where (d.outbox_id, d.endpoint) = (c.outbox_id, c.endpoint) returning …` joined with `outbox` for app/item/kind/payload/created_at.
+- `record` (fenced): `update outbox_delivery set … attempts = attempts + 1 where outbox_id = $1 and endpoint = $2 and status = 'pending' and next_at = $claimedUntil`; return false when no row changed (a server whose lease ran out lost the delivery to another) and skip the rest; otherwise `update outbox set sent_at = $now where id = $id and not exists (select 1 from outbox_delivery where outbox_id = $id and status = 'pending')` — same transaction.
+- `retry`: failed deliveries → pending, `next_at = $now`, `attempts = 0`, `since = $now` (store it in `outbox_delivery.created_at`, or add a `since` column), keep last status/error; clear the message's `sent_at`.
+- `list` and `claim` order endpoints with `collate "C"` so both adapters agree.
 - `prune`: delete from `outbox` where sent and (no failed delivery and sent_at < now - keep, or has a failed delivery and sent_at < now - keepFailed); cascade removes deliveries. Skipped messages count as sent.
 - Bump the migrations test to expect `0003_outbox_delivery`.
 
@@ -207,16 +209,16 @@ export class Sender {
 }
 ```
 
-One round: `fanOut(route, now, 100)` until it returns < 100 or 5 loops; `claim(now, leaseMs, batch)`; send all claimed in parallel (`Promise.all`, each with `AbortSignal.timeout(timeoutMs)`, `redirect: 'manual'`, body `JSON.stringify({ id, kind, appId, itemId, createdAt: new Date(createdAt).toISOString(), payload })`, headers `content-type: application/json`, `user-agent: Modus-Webhooks/1`, `Modus-Signature`, `Modus-Delivery: <outboxId>`); `classify`; `record`:
+One round: `fanOut(route, now, 100)` until it returns < 100 or 5 loops; `claim(now, leaseMs, batch)`; send all claimed in parallel (`Promise.all`, each with `AbortSignal.timeout(timeoutMs)`, `redirect: 'manual'`, body `JSON.stringify({ id, kind, appId, itemId, createdAt: new Date(createdAt).toISOString(), payload })`, headers `content-type: application/json`, `user-agent: Modus-Webhooks/1`, `Modus-Signature`, `Modus-Delivery: <outboxId>`); `classify`; `record(…, delivery.nextAt /* the claim's lease */, …)` and ignore a `false` result (another server took the delivery over):
 - ok → delivered;
-- retry and `now + delay < createdAt + GIVE_UP_AFTER_MS` → pending, `nextAt = now + max(retryDelay(delivery.attempts), retryAfterMs ?? 0)` (attempts as claimed, before `record` adds this one);
+- retry and `now + delay < delivery.since + GIVE_UP_AFTER_MS` → pending, `nextAt = now + max(retryDelay(delivery.attempts), retryAfterMs ?? 0)` (attempts as claimed, before `record` adds this one);
 - otherwise failed, and `log('warn', …)` with endpoint name, outbox id, status, error.
 
 With no endpoints: `route` returns `[]`, so fan-out marks everything skipped; no claims.
 
 Errors in a round (storage down) are logged and the next round retries; a round never throws to the caller of `wake` except in tests via `log`.
 
-**Tests** (memory storage; a real local HTTP server via `node:http` on port 0 so the HTTP path is real; fake `now`):
+**Tests** (memory storage; a real local HTTP server via `node:http` on port 0 so the HTTP path is real; fake `now` starting at or after the real `Date.now()`, because messages get a real wall-clock `createdAt` and `since` at commit):
 1. A message created through `transact` reaches the server once, with a body matching the format and a signature `verify` accepts.
 2. Two endpoints, one filtered by `kinds: ['notify']`: a `job.ready` reaches only the other.
 3. Server answers 500: delivery pending with nextAt = now + 10 s; advance `now` 10 s, wake, server answers 200 → delivered; the server saw 2 requests.
