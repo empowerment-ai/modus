@@ -32,7 +32,7 @@ describe('configuration', () => {
   it('accepts postgres with a matching DATABASE_URL', () => {
     const url = 'postgres://modus:s3cret-pw@db:5432/modus'
     const { config, warnings } = loadConfig({ DB_DIALECT: 'postgres', DATABASE_URL: url })
-    expect(config.db).toEqual({ dialect: 'postgres', url })
+    expect(config.db).toEqual({ dialect: 'postgres', url, poolMax: 10 })
     expect(warnings).toEqual([])
     expect(loadConfig({ DB_DIALECT: 'postgres', DATABASE_URL: 'postgresql://db/modus', DATA_DIR: '/data' }).warnings.join('\n')).toMatch(/DATA_DIR is ignored/)
     expect(() => loadConfig({ DB_DIALECT: 'postgres' })).toThrow(/DATABASE_URL is required/)
@@ -51,6 +51,18 @@ describe('configuration', () => {
     expect(warnings.join('\n')).toMatch(/TENANT_MODE=multi is planned/)
     expect(warnings.join('\n')).toMatch(/MODUS_ROLES=api,realtime/)
     expect(warnings.join('\n')).toMatch(/DATABASE_URL is ignored/)
+  })
+
+  it('sizes the database pool from DB_POOL_MAX', () => {
+    const url = 'postgres://db/modus'
+    expect(loadConfig({ DB_DIALECT: 'postgres', DATABASE_URL: url }).config.db).toEqual({ dialect: 'postgres', url, poolMax: 10 })
+    const { config } = loadConfig({ DB_DIALECT: 'postgres', DATABASE_URL: url, DB_POOL_MAX: '25' })
+    expect(config.db).toEqual({ dialect: 'postgres', url, poolMax: 25 })
+    expect(describeConfig(config)).toContain('pool 25')
+    for (const bad of ['0', '201', '2.5', 'ten']) expect(() => loadConfig({ DB_DIALECT: 'postgres', DATABASE_URL: url, DB_POOL_MAX: bad })).toThrow(/DB_POOL_MAX/)
+    const memory = loadConfig({ DB_POOL_MAX: '25' })
+    expect(memory.config.db).toEqual({ dialect: 'memory' })
+    expect(memory.warnings.join('\n')).toMatch(/DB_POOL_MAX is ignored/)
   })
 
   it('never puts the database password or user in the startup line', () => {
