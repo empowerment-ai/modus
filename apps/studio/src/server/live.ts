@@ -133,11 +133,13 @@ export function createLiveStore(deps: LiveDeps = {}) {
   /** A load failed or the stream dropped: the next refetch reloads everything. */
   let stale = false
   let streamLive = false
+  /** The design is in and the acting administrator chosen: only now may admin endpoints be called. */
+  let ready = false
   let explorerSeq = 0
 
   const store = createStore<LiveState>()((set, get) => {
-    const opts = (): ApiOptions => ({ user: get().actingAdmin ?? remembered() ?? 'studio', fetch: f })
-    const connected = (g: number) => g === gen && !!get().appId && get().available
+    const opts = (): ApiOptions => ({ user: get().actingAdmin!, fetch: f })
+    const connected = (g: number) => ready && g === gen && !!get().appId && get().available
 
     const stop = () => {
       gen++
@@ -145,16 +147,17 @@ export function createLiveStore(deps: LiveDeps = {}) {
       closeStream = undefined
       clearTimeout(timer)
       timer = undefined
-      pending = pendingFull = inFlight = streamLive = false
+      pending = pendingFull = inFlight = streamLive = ready = false
+    }
+
+    const denied = () => {
+      stop()
+      set({ status: 'error', error: `${get().actingAdmin ?? 'The acting person'} is not an administrator, and only administrators can see the Monitor.` })
     }
 
     const fail = (g: number, e: unknown) => {
       if (g !== gen) return
-      if (e instanceof ApiError && e.status === 403) {
-        stop()
-        set({ status: 'error', error: `${get().actingAdmin ?? 'The acting person'} is not an administrator, and only administrators can see the Monitor.` })
-        return
-      }
+      if (e instanceof ApiError && (e.status === 401 || e.status === 403)) return denied()
       stale = true
       set({ status: 'reconnecting', error: e instanceof Error ? e.message : String(e) })
     }
@@ -169,7 +172,13 @@ export function createLiveStore(deps: LiveDeps = {}) {
     const loadExplorer = async (g: number, limit = pageSize) => {
       const seq = ++explorerSeq
       const { appId, explorer } = get()
-      const page = await getItems(appId!, explorer.filters, { limit }, opts())
+      let page
+      try {
+        page = await getItems(appId!, explorer.filters, { limit }, opts())
+      } catch (e) {
+        if (g === gen && seq === explorerSeq) set((s) => ({ explorer: { ...s.explorer, loading: false } }))
+        throw e
+      }
       if (g !== gen || seq !== explorerSeq) return
       set((s) => ({ explorer: { ...s.explorer, rows: page.items, total: page.total, next: page.next, loading: false } }))
     }
@@ -208,6 +217,13 @@ export function createLiveStore(deps: LiveDeps = {}) {
         await load(g, full)
       } catch (e) {
         fail(g, e)
+        // The stream is fine but a read failed (a restart, a 500): try again rather than stay 'reconnecting'.
+        if (g === gen && streamLive) {
+          inFlight = false
+          pending = pendingFull = true
+          if (!timer) timer = setTimeout(flush, retryMs)
+          return
+        }
       }
       if (g !== gen) return
       inFlight = false
@@ -248,7 +264,7 @@ export function createLiveStore(deps: LiveDeps = {}) {
           set({ status: 'live', error: undefined })
           if (stale) schedule(true)
         },
-        { user: opts().user, fetch: f },
+        { user: opts().user, fetch: f, onDenied: () => g === gen && denied() },
       )
     }
 
@@ -296,7 +312,8 @@ export function createLiveStore(deps: LiveDeps = {}) {
         set({ status: 'connecting', error: undefined })
         stale = false
         try {
-          const design = await getDesign(opts())
+          // Anyone named may read the design: before we know an administrator, say who we'd like to be.
+          const design = await getDesign({ user: get().actingAdmin ?? remembered() ?? 'studio', fetch: f })
           if (g !== gen) return
           const admin = pickAdmin(design, get().actingAdmin ?? remembered())
           if (!admin) {
@@ -305,6 +322,7 @@ export function createLiveStore(deps: LiveDeps = {}) {
           }
           remember(admin)
           set({ design, actingAdmin: admin })
+          ready = true
           set((s) => ({ explorer: { ...s.explorer, loading: true } }))
           lastFetch = Date.now()
           await load(g, true)
