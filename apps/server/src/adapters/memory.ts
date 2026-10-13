@@ -160,7 +160,7 @@ export function memoryStorage(dataDir?: string): Storage {
       await ready
       await writeAtomic(join(dataDir, `state-${appId}.json`), text)
       await writeAtomic(join(dataDir, `meta-${appId}.json`), JSON.stringify({ version: next.version, tickedAt: next.tickedAt }))
-      if (logged.length) await appendFile(join(dataDir, 'events.jsonl'), logged.map((e) => JSON.stringify(e)).join('\n') + '\n')
+      if (logged.length) await appendFile(join(dataDir, 'events.jsonl'), '\n' + logged.map((e) => JSON.stringify(e)).join('\n') + '\n') // leading newline: a torn line from a failed append can't swallow this one
     }
 
     held.set(appId, next)
@@ -212,7 +212,7 @@ export function memoryStorage(dataDir?: string): Storage {
       if (events.length > MAX_EVENTS) events.splice(0, events.length - MAX_EVENTS)
       if (dataDir) {
         await ready
-        await appendFile(join(dataDir, 'events.jsonl'), batch.map((e) => JSON.stringify(e)).join('\n') + '\n')
+        await appendFile(join(dataDir, 'events.jsonl'), '\n' + batch.map((e) => JSON.stringify(e)).join('\n') + '\n')
       }
     },
     async positions(appId) {
