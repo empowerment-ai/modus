@@ -262,7 +262,7 @@ function ExplorerTable({
                     className={cx('border-b border-slate-100 tabular-nums last:border-0 hover:bg-slate-50', onOpenItem && 'cursor-pointer')}
                   >
                     <td className="py-1.5 pr-2 pl-4">
-                      <span className="inline-flex items-center gap-1.5 font-mono text-[11px] font-medium text-brand-700">
+                      <span className={cx('inline-flex items-center gap-1.5 font-mono text-[11px] font-medium', onOpenItem ? 'text-brand-700' : 'text-slate-700')}>
                         <TypeIcon name={type?.icon ?? 'file'} size={13} className="text-slate-400" />
                         {o.number}
                       </span>

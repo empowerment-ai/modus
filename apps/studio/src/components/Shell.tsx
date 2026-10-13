@@ -262,15 +262,20 @@ function SimOrLive() {
   const onMonitor = useUi((s) => s.mode === 'studio' && s.view === 'monitor')
   if (!live || !onMonitor) return <SimControls />
   return (
-    <span
-      className="inline-flex h-7 cursor-help items-center gap-1.5 rounded-md bg-slate-100 px-2.5 text-xs font-medium text-slate-500"
-      title="The Monitor is showing the server’s live state, so the simulation’s speed, arrivals, jumps and reset don’t apply here. Switch the Monitor to Simulation to use them."
+    <button
+      type="button"
+      onClick={() => useUi.getState().toast(LIVE_CONTROLS_OFF)}
+      className="inline-flex h-7 items-center gap-1.5 rounded-md bg-slate-100 px-2.5 text-xs font-medium text-slate-500 hover:bg-slate-200 hover:text-slate-700"
+      title={LIVE_CONTROLS_OFF}
     >
-      <Radio size={13} />
-      Simulation controls off in Live
-    </span>
+      <Radio size={13} aria-hidden />
+      {/* Narrow screens keep the icon; the words stay for screen readers. Clicking says why, for keyboards and touch. */}
+      <span className="max-[1199px]:sr-only">Simulation controls off in Live</span>
+    </button>
   )
 }
+
+const LIVE_CONTROLS_OFF = 'The Monitor is showing the server’s live state, so the simulation’s speed, arrivals, jumps and reset don’t apply here. Switch the Monitor to Simulation to use them.'
 
 function SimControls() {
   const running = useSim((s) => s.running)

@@ -103,11 +103,35 @@ export function designDifference(server: Pick<Design, 'apps'>, local: Pick<Desig
   return `The server’s design differs from this browser’s: ${first.text}${more}. Live shows the server’s.`
 }
 
-/** "updated 4s ago" for the Live badge. */
-export function updatedAgo(lastUpdate: number | undefined, now: number): string {
-  if (lastUpdate === undefined) return 'waiting for data'
-  const s = Math.max(0, Math.floor((now - lastUpdate) / 1000))
-  if (s < 60) return `updated ${s}s ago`
-  const m = Math.floor(s / 60)
-  return m < 60 ? `updated ${m}m ago` : `updated ${Math.floor(m / 60)}h ago`
+/** With no change for this long the badge says "idle" rather than counting on. */
+export const IDLE_AFTER_MS = 30_000
+
+export interface Badge {
+  tone: 'green' | 'amber' | 'red' | 'slate'
+  text: string
+  /** The status alone, for screen readers (the text ticks every second). */
+  word: string
+}
+
+/**
+ * The Live badge. `lastChange` is the last event that moved an item, so a quiet server reads "idle"
+ * instead of an ever-growing age.
+ * TODO: once the stream sends pings (after the load-tests merge), add onActivity/lastHeard to the store and
+ * treat 60 s of silence as a dropped stream (reconnect), so "Live" also means "heard from recently".
+ */
+export function liveBadge(s: { status: LiveState['status']; lastChange?: number; appOnServer: boolean }, now: number): Badge {
+  switch (s.status) {
+    case 'live': {
+      if (s.lastChange === undefined || now - s.lastChange >= IDLE_AFTER_MS) return { tone: 'green', text: 'Live · idle', word: 'Live' }
+      return { tone: 'green', text: `Live · last change ${Math.max(0, Math.floor((now - s.lastChange) / 1000))}s ago`, word: 'Live' }
+    }
+    case 'reconnecting':
+      return { tone: 'amber', text: 'Reconnecting…', word: 'Reconnecting' }
+    case 'connecting':
+      return { tone: 'slate', text: 'Connecting…', word: 'Connecting' }
+    case 'error':
+      return { tone: 'red', text: 'Not connected', word: 'Not connected' }
+    case 'idle':
+      return s.appOnServer ? { tone: 'slate', text: 'Not connected', word: 'Not connected' } : { tone: 'slate', text: 'Not on this server', word: 'Not on this server' }
+  }
 }

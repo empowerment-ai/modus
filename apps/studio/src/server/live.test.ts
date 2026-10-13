@@ -5,7 +5,10 @@ import { fakeStream, json } from './fakes'
 import { createLiveStore } from './live'
 
 const design = {
-  apps: [],
+  apps: [
+    { id: 'app_invoice', name: 'Invoices', workflows: [] },
+    { id: 'app_other', name: 'Other', workflows: [] },
+  ],
   users: [
     { id: 'u_ann', name: 'Ann', title: '', color: '', speed: 1, available: true },
     { id: 'u_boss', name: 'Boss', title: '', color: '', speed: 1, available: true, roles: ['admin'] },
@@ -260,7 +263,7 @@ describe('live store', () => {
     server.stream().fail()
     await vi.advanceTimersByTimeAsync(1000)
     expect(store.getState().status).toBe('error')
-    expect(store.getState().error).toMatch(/u_boss is not an administrator/)
+    expect(store.getState().error).toMatch(/Boss is not an administrator/)
     await vi.advanceTimersByTimeAsync(60_000)
     expect(server.paths('/api/apps/app_invoice/stream')).toHaveLength(2)
   })
@@ -300,14 +303,47 @@ describe('live store', () => {
     expect(store.getState().explorer).toMatchObject({ filters: { q: 'fast' }, rows: [row('fast')], loading: false })
   })
 
-  it('a 403 sets the error and stops', async () => {
+  it('an app the server doesn’t run: idle, no Monitor reads and no stream', async () => {
+    const { server, store } = await setup()
+    await store.getState().connect('app_gone')
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(store.getState()).toMatchObject({ status: 'idle', appId: 'app_gone', error: undefined })
+    expect(store.getState().design).toBeDefined()
+    expect(server.calls.map((c) => c.path)).toEqual(['/api/health', '/api/design'])
+  })
+
+  it('a stream answered 404 stops for good and goes idle', async () => {
+    const { server, store } = await setup()
+    await store.getState().connect('app_invoice')
+    await flush()
+    server.streamStatus = 404
+    server.stream().fail()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(store.getState().status).toBe('idle')
+    expect(server.paths('/api/apps/app_invoice/stream')).toHaveLength(2)
+  })
+
+  it('counts only events that moved items as a change', async () => {
+    const { server, store } = await setup()
+    await store.getState().connect('app_invoice')
+    await flush()
+    expect(store.getState().lastChange).toBeUndefined()
+    server.stream().change({ clock: 11, items: [], counts: {}, active: 1 })
+    await flush()
+    expect(store.getState().lastChange).toBeUndefined()
+    server.stream().change({ clock: 12, items: ['o1'], counts: {}, active: 1 })
+    await flush()
+    expect(store.getState().lastChange).toBe(Date.now())
+  })
+
+  it('a 403 sets the error, naming the person, and stops', async () => {
     const storage = memory()
     storage.setItem('modus-live-admin', 'u_ann')
     const { server, store } = await setup(storage)
     await store.getState().connect('app_invoice')
     await flush()
     expect(store.getState().status).toBe('error')
-    expect(store.getState().error).toMatch(/not an administrator/)
+    expect(store.getState().error).toMatch(/^Ann is not an administrator/)
     expect(server.paths('/api/apps/app_invoice/stream')).toHaveLength(0)
 
     // Choosing an administrator connects again.

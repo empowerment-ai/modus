@@ -120,7 +120,7 @@ export function WorkloadTable({
                       <span className="font-mono text-[11px] font-medium text-slate-700">{r.working.number}</span>
                     )}
                     {r.working.also > 0 && (
-                      <span className="text-[10px] text-slate-400" title={`${r.working.also} more started and not yet released`}>
+                      <span className="text-[10px] text-slate-500" title={`${r.working.also} more started and not yet released`}>
                         +{r.working.also}
                       </span>
                     )}

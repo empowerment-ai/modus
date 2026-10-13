@@ -3,7 +3,7 @@ import { advance, computeView, ensureVersions, newSim, workingNow, type Ctx } fr
 import { seedDesign } from '@modus-bpm/core/model/seed'
 import type { Design } from '@modus-bpm/core/model/types'
 import type { MonitorSnapshot, ServerDesign } from '../../server/client'
-import { adminsOf, designDifference, isLive, liveSource, simSource, updatedAgo } from './source'
+import { adminsOf, designDifference, isLive, liveBadge, liveSource, simSource } from './source'
 
 const design = (): Design => ensureVersions(seedDesign())
 const serverDesign = (d: Design): ServerDesign => ({ ...d, services: d.services.map(({ endpoint: _e, secretRef: _s, auth: _a, owner: _o, ...rest }) => rest) })
@@ -123,12 +123,19 @@ describe('designDifference', () => {
   })
 })
 
-describe('updatedAgo', () => {
-  it('counts seconds, then minutes and hours', () => {
-    expect(updatedAgo(undefined, 0)).toBe('waiting for data')
-    expect(updatedAgo(10_000, 14_900)).toBe('updated 4s ago')
-    expect(updatedAgo(10_000, 9_000)).toBe('updated 0s ago')
-    expect(updatedAgo(0, 125_000)).toBe('updated 2m ago')
-    expect(updatedAgo(0, 2 * 3600_000)).toBe('updated 2h ago')
+describe('liveBadge', () => {
+  const on = { appOnServer: true }
+  it('counts seconds since the last change, then says idle after 30 s', () => {
+    expect(liveBadge({ status: 'live', lastChange: 10_000, ...on }, 14_900)).toEqual({ tone: 'green', text: 'Live · last change 4s ago', word: 'Live' })
+    expect(liveBadge({ status: 'live', lastChange: 10_000, ...on }, 9_000).text).toBe('Live · last change 0s ago')
+    expect(liveBadge({ status: 'live', lastChange: 10_000, ...on }, 40_000).text).toBe('Live · idle')
+    expect(liveBadge({ status: 'live', ...on }, 0).text).toBe('Live · idle')
+  })
+
+  it('amber while reconnecting, red on an error, neutral for an app the server lacks', () => {
+    expect(liveBadge({ status: 'reconnecting', ...on }, 0)).toMatchObject({ tone: 'amber', word: 'Reconnecting' })
+    expect(liveBadge({ status: 'error', ...on }, 0)).toMatchObject({ tone: 'red', text: 'Not connected' })
+    expect(liveBadge({ status: 'idle', appOnServer: false }, 0)).toEqual({ tone: 'slate', text: 'Not on this server', word: 'Not on this server' })
+    expect(liveBadge({ status: 'idle', ...on }, 0).text).toBe('Not connected')
   })
 })
