@@ -14,6 +14,8 @@ export interface ContractTarget {
   reopen(): Promise<Storage>
   /** Drop whatever `create()` made. */
   cleanup(): Promise<void>
+  /** Projections and the outbox survive a restart (memory rebuilds them at startup instead). */
+  persistsProjections?: boolean
 }
 
 function event(appId: string, itemId: string, seq: number, extra: Partial<AuditEntry> = {}): LoggedEvent {
@@ -159,11 +161,15 @@ export function storageContract(name: string, target: ContractTarget) {
       })
       expect(r).toMatchObject({ version: 1, committed: true })
       const o = r.value
-      // Projections may live only in memory (the memory adapter rebuilds them at startup), so read them here.
-      expect(await s.projections.item('app_invoice', o.id)).toMatchObject({ number: o.number, status: 'active', title: expect.any(String) })
-      expect((await s.projections.workItems('app_invoice', o.id)).map((w) => w.state)).toEqual(['auto'])
-      expect((await s.projections.outbox('app_invoice')).map((m) => m.kind)).toEqual(['job.ready'])
+      const projected = async (from: Storage) => {
+        expect(await from.projections.item('app_invoice', o.id)).toMatchObject({ number: o.number, status: 'active', title: expect.any(String), data: { f_invno: 'T-1' } })
+        expect((await from.projections.workItems('app_invoice', o.id)).map((w) => w.state)).toEqual(['auto'])
+        expect((await from.projections.outbox('app_invoice')).map((m) => m.kind)).toEqual(['job.ready'])
+      }
+      // Projections may live only in memory (the memory adapter rebuilds them at startup), so read them here too.
+      await projected(s)
       const again = await reopen()
+      if (target.persistsProjections) await projected(again)
       expect(await again.state.get('app_invoice')).toMatchObject({ version: 1, tickedAt: 1000 })
       const logged = await again.events.read({ itemId: o.id })
       expect(logged.map((e) => e.seq)).toEqual(o.history.map((_, i) => i + 1))
@@ -199,11 +205,13 @@ export function storageContract(name: string, target: ContractTarget) {
     it('numbers new entries after what the log already holds for the item', async () => {
       const s = await create()
       const entry = (text: string) => ({ at: 1, kind: 'note', text }) as never
-      const commit = (version: number, texts: string[]) =>
-        s.transact('app_a', version, () => ({ value: 0, write: { state: newSim('app_a', 1), entries: [{ itemId: 'i1', itemNumber: 'A-1', entries: texts.map(entry) }], items: [], outbox: [], tickedAt: 0 } }))
+      const commit = (version: number, ...groups: string[][]) =>
+        s.transact('app_a', version, () => ({ value: 0, write: { state: newSim('app_a', 1), entries: groups.map((texts) => ({ itemId: 'i1', itemNumber: 'A-1', entries: texts.map(entry) })), items: [], outbox: [], tickedAt: 0 } }))
       await commit(0, ['a', 'b'])
       await commit(1, ['c'])
-      expect((await s.events.read({ itemId: 'i1' })).map((e) => `${e.seq}:${e.text}`)).toEqual(['1:a', '2:b', '3:c'])
+      // Two groups for one item in one write: numbered one after the other.
+      await commit(2, ['d'], ['e'])
+      expect((await s.events.read({ itemId: 'i1' })).map((e) => `${e.seq}:${e.text}`)).toEqual(['1:a', '2:b', '3:c', '4:d', '5:e'])
     })
 
     it('replaces an item’s work-item rows, dropping tokens that left', async () => {

@@ -2,16 +2,15 @@
 // append-only event log, through Kysely on a node-postgres pool. Migrations live
 // in this file (so they bundle with the server) and run at startup.
 //
-// This is the first slice of milestone M2: the same three ports as the memory
-// adapter, durable and shared. Projection tables, the outbox, timers and per-item
-// locking come next (docs/ARCHITECTURE.md).
+// Each command commits in one transaction under its application's row lock: state,
+// audit entries, projection rows and outbox together (docs/ARCHITECTURE.md).
 
-import type { AuditEntry, Design, Id, SimState } from '@modus-bpm/core'
+import type { AuditEntry, Design, Id, OutboxMessage, Priority, ProjectedItem, SimState, TokenState } from '@modus-bpm/core'
 import { type Generated, Kysely, PostgresDialect, sql } from 'kysely'
 import { type Migration, Migrator } from 'kysely/migration'
 import { isDeepStrictEqual } from 'node:util'
 import pg from 'pg'
-import type { DesignStore, EventLog, LoggedEvent, Projections, StateStore, Storage } from '../ports'
+import { type ChangeNotice, type DesignStore, type EventLog, type LoggedEvent, type Projections, type StateStore, type Storage, StorageBusy, type Stored, type Work, type Write } from '../ports'
 
 interface Tables {
   design: { id: number; doc: Design; updated_at: Generated<Date> }
@@ -175,8 +174,19 @@ const migrations: Record<string, Migration> = {
   },
 }
 
-// Transactions, projections, LISTEN/NOTIFY and the clock lock land in the next steps of M2.
-const notYet = () => new Error('not yet: PostgreSQL transactions and projections are still to come')
+// LISTEN/NOTIFY and the clock lock land in the next step of M2.
+const notYet = () => new Error('not yet: PostgreSQL LISTEN and the clock lock are still to come')
+
+/** Thrown inside a Kysely transaction to roll it back while still returning a value. */
+class Rollback {
+  constructor(
+    readonly value: unknown,
+    readonly version: number,
+  ) {}
+}
+
+/** Change notices beyond this many items leave `itemIds` out: NOTIFY payloads must stay under 8000 bytes. */
+const NOTICE_ITEMS = 200
 
 /** Rows per INSERT: well under Postgres's 65,535 bind parameters. */
 const CHUNK = 1000
@@ -233,8 +243,13 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
         .onConflict((oc) => oc.column('app_id').doUpdateSet({ state: (eb) => eb.ref('excluded.state'), version: sql`app_state.version + 1`, updated_at: sql`now()` }))
         .execute()
     },
-    async get() {
-      throw notYet()
+    async get(appId) {
+      const row = await db.selectFrom('app_state').select(['version', 'ticked_at', 'state']).where('app_id', '=', appId).executeTakeFirst()
+      if (!row || Number(row.version) === 0) return undefined
+      const out: Stored = { version: Number(row.version) }
+      if (row.ticked_at) out.tickedAt = row.ticked_at.getTime()
+      if (row.state) out.state = row.state
+      return out
     },
   }
 
@@ -288,11 +303,176 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
     },
   }
 
+  type Tx = Kysely<Tables>
+
+  /** Log new entries, numbered per item after the highest position the log holds (safe: the application's row is locked). */
+  async function appendEntries(tx: Tx, appId: Id, groups: Write['entries']) {
+    if (!groups.length) return
+    const ids = [...new Set(groups.map((g) => g.itemId))]
+    const { rows } = await sql<{ item_id: string; seq: number }>`
+      select item_id, max(seq) as seq from event where app_id = ${appId} and item_id = any(${ids}) group by item_id`.execute(tx)
+    // Running positions, so two groups for one item in the same write don't reuse a number.
+    const last = new Map(rows.map((r) => [r.item_id, Number(r.seq)]))
+    const all = groups.flatMap(({ itemId, itemNumber, entries }) => {
+      let seq = last.get(itemId) ?? 0
+      const out = entries.map((entry) => ({ app_id: appId, item_id: itemId, item_number: itemNumber, seq: ++seq, at: entry.at, kind: entry.kind, entry: json(entry) }))
+      last.set(itemId, seq)
+      return out
+    })
+    try {
+      for (let i = 0; i < all.length; i += CHUNK) await tx.insertInto('event').values(all.slice(i, i + CHUNK)).execute()
+    } catch (err) {
+      // Only a writer that bypassed the row lock can take a position this one numbered.
+      if ((err as { code?: string }).code === '23505') throw new Error(`Event log conflict in ${appId}: another writer logged entries at the same positions.`)
+      throw err
+    }
+  }
+
+  /** Replace these items' projection rows and all their work-item rows. */
+  async function writeItems(tx: Tx, appId: Id, version: number, items: ProjectedItem[]) {
+    for (let i = 0; i < items.length; i += CHUNK) {
+      const chunk = items.slice(i, i + CHUNK)
+      await tx
+        .insertInto('item')
+        .values(
+          chunk.map(({ item: r }) => ({
+            app_id: appId,
+            item_id: r.itemId,
+            number: r.number,
+            title: r.title,
+            status: r.status,
+            priority: r.priority,
+            expedited: r.expedited,
+            due_at: r.dueAt ?? null,
+            created_at: r.createdAt,
+            ended_at: r.endedAt ?? null,
+            version: String(version),
+            data: json(r.data),
+          })),
+        )
+        .onConflict((oc) =>
+          oc.columns(['app_id', 'item_id']).doUpdateSet((eb) => ({
+            number: eb.ref('excluded.number'),
+            title: eb.ref('excluded.title'),
+            status: eb.ref('excluded.status'),
+            priority: eb.ref('excluded.priority'),
+            expedited: eb.ref('excluded.expedited'),
+            due_at: eb.ref('excluded.due_at'),
+            created_at: eb.ref('excluded.created_at'),
+            ended_at: eb.ref('excluded.ended_at'),
+            version: eb.ref('excluded.version'),
+            data: eb.ref('excluded.data'),
+          })),
+        )
+        .execute()
+      await sql`delete from work_item where app_id = ${appId} and item_id = any(${chunk.map((p) => p.item.itemId)})`.execute(tx)
+    }
+    const work = items.flatMap((p) =>
+      p.workItems.map((w) => ({
+        app_id: appId,
+        token_id: w.tokenId,
+        item_id: w.itemId,
+        step_id: w.stepId,
+        state: w.state,
+        assignee: w.assignee ?? null,
+        group_id: w.groupId ?? null,
+        service_id: w.serviceId ?? null,
+        entered_at: w.enteredAt,
+        due_at: w.dueAt ?? null,
+        priority: w.priority,
+      })),
+    )
+    for (let i = 0; i < work.length; i += CHUNK) await tx.insertInto('work_item').values(work.slice(i, i + CHUNK)).execute()
+  }
+
+  async function transact<T>(appId: Id, known: number, work: (stored: Stored) => Work<T> | Promise<Work<T>>) {
+    try {
+      return await db.transaction().execute(async (tx) => {
+        await sql`set local lock_timeout = '5s'`.execute(tx)
+        // Something to lock before the application's first commit; a rollback takes it away again.
+        await tx
+          .insertInto('app_state')
+          .values({ app_id: appId, state: null })
+          .onConflict((oc) => oc.column('app_id').doNothing())
+          .execute()
+        const { rows } = await sql<{ version: string; ticked_at: Date | null; state: SimState | null }>`
+          select version, ticked_at, case when version <> ${known} then state end as state
+          from app_state where app_id = ${appId} for update`.execute(tx)
+        const row = rows[0]!
+        const version = Number(row.version)
+        const stored: Stored = { version }
+        if (row.ticked_at) stored.tickedAt = row.ticked_at.getTime()
+        if (row.state && version > 0) stored.state = row.state
+        const out = await work(stored)
+        if (!out.write) throw new Rollback(out.value, version)
+        const w = out.write
+        const next = version + 1
+        await tx
+          .updateTable('app_state')
+          .set({ state: json(w.state), version: String(next), ticked_at: new Date(w.tickedAt), updated_at: sql`now()` })
+          .where('app_id', '=', appId)
+          .execute()
+        await appendEntries(tx, appId, w.entries)
+        await writeItems(tx, appId, next, w.items)
+        for (let i = 0; i < w.outbox.length; i += CHUNK)
+          await tx
+            .insertInto('outbox')
+            .values(w.outbox.slice(i, i + CHUNK).map((m) => ({ app_id: appId, item_id: m.itemId, kind: m.kind, payload: json(m.payload) })))
+            .execute()
+        const itemIds = w.items.map((p) => p.item.itemId)
+        const notice: ChangeNotice = { appId, version: next, ...(itemIds.length <= NOTICE_ITEMS ? { itemIds } : {}) }
+        // Delivered to listeners on commit, not before.
+        await sql`select pg_notify('modus_change', ${JSON.stringify(notice)})`.execute(tx)
+        return { value: out.value, version: next, committed: true }
+      })
+    } catch (err) {
+      if (err instanceof Rollback) return { value: err.value as T, version: err.version, committed: false }
+      if ((err as { code?: string }).code === '55P03') throw new StorageBusy('Another server is busy with this application. Try again shortly.')
+      throw err
+    }
+  }
+
   const projections: Projections = {
-    item: () => Promise.reject(notYet()),
-    workItems: () => Promise.reject(notYet()),
-    outbox: () => Promise.reject(notYet()),
-    any: () => Promise.reject(notYet()),
+    async item(appId, itemId) {
+      const r = await db.selectFrom('item').selectAll().where('app_id', '=', appId).where('item_id', '=', itemId).executeTakeFirst()
+      if (!r) return undefined
+      return {
+        itemId: r.item_id as Id,
+        number: r.number,
+        title: r.title,
+        status: r.status as ProjectedItem['item']['status'],
+        priority: r.priority as Priority,
+        expedited: r.expedited,
+        ...(r.due_at !== null ? { dueAt: r.due_at } : {}),
+        createdAt: r.created_at,
+        ...(r.ended_at !== null ? { endedAt: r.ended_at } : {}),
+        data: r.data,
+      }
+    },
+    async workItems(appId, itemId) {
+      let q = db.selectFrom('work_item').selectAll().where('app_id', '=', appId)
+      if (itemId) q = q.where('item_id', '=', itemId)
+      const rows = await q.orderBy('item_id').orderBy('entered_at').orderBy('token_id').execute()
+      return rows.map((r) => ({
+        tokenId: r.token_id as Id,
+        itemId: r.item_id as Id,
+        stepId: r.step_id as Id,
+        state: r.state as TokenState,
+        ...(r.assignee !== null ? { assignee: r.assignee as Id } : {}),
+        ...(r.group_id !== null ? { groupId: r.group_id as Id } : {}),
+        ...(r.service_id !== null ? { serviceId: r.service_id as Id } : {}),
+        enteredAt: r.entered_at,
+        ...(r.due_at !== null ? { dueAt: r.due_at } : {}),
+        priority: r.priority as Priority,
+      }))
+    },
+    async outbox(appId) {
+      const rows = await db.selectFrom('outbox').select(['id', 'item_id', 'kind', 'payload']).where('app_id', '=', appId).where('sent_at', 'is', null).orderBy('id').execute()
+      return rows.map((r) => ({ id: Number(r.id), itemId: r.item_id as Id, kind: r.kind as OutboxMessage['kind'], payload: r.payload }))
+    },
+    async any(appId) {
+      return !!(await db.selectFrom('item').select(sql`1`.as('one')).where('app_id', '=', appId).limit(1).executeTakeFirst())
+    },
   }
 
   let closed: Promise<void> | undefined
@@ -302,7 +482,7 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
     state,
     events,
     projections,
-    transact: () => Promise.reject(notYet()),
+    transact,
     listen: () => Promise.reject(notYet()),
     tryClock: () => Promise.reject(notYet()),
     releaseClocks: () => Promise.reject(notYet()),
