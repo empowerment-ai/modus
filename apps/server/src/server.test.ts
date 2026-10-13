@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { memoryStorage } from './adapters/memory'
 import { buildServer } from './http'
@@ -122,6 +122,67 @@ describe('the live stream', () => {
     } finally {
       abort.abort()
       await live.close()
+    }
+  })
+
+  // Counts the runtime subscriptions the stream route holds open.
+  function trackSubscriptions() {
+    const original = rt.subscribe.bind(rt)
+    let open = 0
+    const spy = vi.spyOn(rt, 'subscribe').mockImplementation((listener) => {
+      const off = original(listener)
+      open++
+      let done = false
+      return () => {
+        if (!done) open--
+        done = true
+        return off()
+      }
+    })
+    return { open: () => open, restore: () => spy.mockRestore() }
+  }
+
+  async function openStream(base: string, signal: AbortSignal) {
+    const res = await fetch(`${base}/api/apps/app_invoice/stream`, { signal })
+    const reader = res.body!.getReader()
+    await reader.read()
+    return reader
+  }
+
+  it('lets go of the runtime when the client leaves', async () => {
+    const subs = trackSubscriptions()
+    const live = buildServer(rt, { streamPingMs: 20 })
+    const base = await live.listen({ port: 0, host: '127.0.0.1' })
+    try {
+      const abort = new AbortController()
+      await openStream(base, abort.signal)
+      expect(subs.open()).toBe(1)
+      abort.abort()
+      await vi.waitFor(() => expect(subs.open()).toBe(0))
+    } finally {
+      await live.close()
+      subs.restore()
+    }
+  })
+
+  it('unsubscribes and closes promptly at shutdown with a stream still open', async () => {
+    const subs = trackSubscriptions()
+    const live = buildServer(rt, { streamPingMs: 20 })
+    const base = await live.listen({ port: 0, host: '127.0.0.1' })
+    const abort = new AbortController()
+    try {
+      const reader = await openStream(base, abort.signal)
+      expect(subs.open()).toBe(1)
+      const started = Date.now()
+      await live.close()
+      expect(Date.now() - started).toBeLessThan(1000)
+      expect(subs.open()).toBe(0)
+      // The server ended the stream rather than leaving it hanging.
+      let done = false
+      while (!done) ({ done } = await reader.read())
+    } finally {
+      abort.abort()
+      subs.restore()
     }
   })
 })
