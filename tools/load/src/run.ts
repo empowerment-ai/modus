@@ -238,7 +238,7 @@ async function main() {
   const observer = await maybe('observer stats', () => getJson(`${OBSERVER}/stats`))
   await maybe('observer stop', () => post(`${OBSERVER}/streams/stop`))
   // An overloaded server is still working through the requests k6 left queued, so the end-of-run
-  // reads wait their turn, and try again if nginx gives up first (its 60 s read timeout).
+  // reads wait their turn, and try again if nginx gives up first (its 90 s read timeout).
   const overview = await maybe('overview', () => again(() => getJson(`${NGINX}/api/apps/${APP}/overview`, {}, DRAIN_MS)))
   const outbox = await maybe('outbox', () => again(outboxCounts))
   for (const s of [...serverNames, 'nginx', 'observer']) await docker(compose('logs', '--no-color', s), { to: join(out, `${s}.log`), allowFail: true })
