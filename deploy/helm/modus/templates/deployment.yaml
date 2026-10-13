@@ -64,6 +64,11 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "modus.fullname" $ }}
+            {{- with $.Values.webhooks.existingSecret }}
+            # Webhook secrets, by the names endpoints give in secretEnv.
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
           env:
             - name: MODUS_ROLES
               value: {{ join "," $d.roles | quote }}
@@ -108,6 +113,12 @@ spec:
               mountPath: /data
             - name: tmp
               mountPath: /tmp
+            {{- if $.Values.webhooks.endpoints }}
+            - name: webhooks
+              mountPath: /etc/modus/webhooks.json
+              subPath: webhooks.json
+              readOnly: true
+            {{- end }}
       volumes:
         - name: data
           {{- if and $memory $.Values.persistence.enabled }}
@@ -118,6 +129,14 @@ spec:
           {{- end }}
         - name: tmp
           emptyDir: {}
+        {{- if $.Values.webhooks.endpoints }}
+        - name: webhooks
+          configMap:
+            name: {{ include "modus.fullname" $ }}
+            items:
+              - key: webhooks.json
+                path: webhooks.json
+        {{- end }}
       {{- with $d.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

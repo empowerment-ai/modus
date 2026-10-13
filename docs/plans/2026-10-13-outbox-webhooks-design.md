@@ -1,6 +1,6 @@
 # Outbox sender: webhooks
 
-Status: approved 2026-10-13. Builds on M2 (`outbox` rows written in each command's transaction).
+Status: implemented (approved 2026-10-13; see Refinements). Builds on M2 (`outbox` rows written in each command's transaction).
 
 ## Goal
 
@@ -77,3 +77,24 @@ Administrator role required. Each failure is logged with the endpoint name and s
 
 DEPLOYMENT: a Webhooks section (settings, payload, verifying the signature in Node, retries).
 ROADMAP and ARCHITECTURE: outbox sender done (webhooks); email from Modus and connectors stay in M4.
+
+## Refinements
+
+What changed while building it:
+
+- **Fenced record.** `record` takes the lease its claim returned and applies only while the
+  delivery still holds it, so a server that answers after its lease ran out can't overwrite the
+  result of the server that took over.
+- **Retry restarts the schedule.** Each delivery keeps `since` (fan-out, or the last admin retry),
+  and the 24 hours count from it, not from when the message was written. An admin retry resets
+  `since` and the attempt count.
+- **`outbox.routed`.** A message is marked routed in the transaction that creates its deliveries.
+  The flag is on the row fan-out locks, so a second server's fan-out re-checks it under the lock
+  and skips the message; a check for existing deliveries could miss rows just committed and fan
+  it out twice.
+- **Lease guard.** The sender refuses a lease that isn't more than twice the request timeout: a
+  send plus reading the answer can take one timeout, and recording comes after.
+- **Leftovers settle with no endpoints.** The sender claims even when no endpoint is configured,
+  so deliveries for removed endpoints fail instead of staying pending.
+- **Admin check without applications.** Roles are organization-wide, so the outbox routes check
+  the user's role directly (`isAdmin`), and work in a design with no applications.

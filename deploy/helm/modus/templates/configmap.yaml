@@ -21,3 +21,14 @@ data:
   MODUS_ASSISTANT_MODEL: {{ .Values.assistant.model | quote }}
   MODUS_ASSISTANT_EFFORT: {{ .Values.assistant.effort | quote }}
   MODUS_ASSISTANT_FALLBACKS: {{ .Values.assistant.fallbacks | quote }}
+  {{- if or .Values.webhooks.endpoints .Values.webhooks.existingSecret }}
+  WEBHOOKS_ALLOW_HTTP: {{ .Values.webhooks.allowHttp | toString | quote }}
+  WEBHOOKS_KEEP_DAYS: {{ .Values.webhooks.keepDays | quote }}
+  WEBHOOKS_KEEP_FAILED_DAYS: {{ .Values.webhooks.keepFailedDays | quote }}
+  {{- end }}
+  {{- with .Values.webhooks.endpoints }}
+  WEBHOOKS_FILE: "/etc/modus/webhooks.json"
+  # Mounted as a file by deployment.yaml. Secrets stay in webhooks.existingSecret (secretEnv).
+  webhooks.json: |
+    {{- include "modus.webhooksJson" . | nindent 4 }}
+  {{- end }}
