@@ -9,10 +9,11 @@ export const REQUESTER = 'u_maya'
 /** Services the live invoice workflow calls: n_capture and n_post (ERP), n_remit (mail), n_archive (records). */
 export const SERVICES = ['svc_erp', 'svc_mail', 'svc_records']
 
-const VENDORS = Array.from({ length: 10 }, (_, i) => `l_vendors_${i}`)
+export const VENDORS = Array.from({ length: 10 }, (_, i) => `l_vendors_${i}`)
 
 // Department and one of its cost centers: the clerk can't approve without a cost center.
-const ORG = [
+// src/data.test.ts checks these against the seed.
+export const ORG = [
   ['l_org_0', 'l_org_1'],
   ['l_org_0', 'l_org_4'],
   ['l_org_7', 'l_org_8'],
