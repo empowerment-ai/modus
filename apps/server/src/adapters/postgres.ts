@@ -613,6 +613,7 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
         if (onReconnect) reconnectHandlers.delete(onReconnect)
       }
     },
+    listening: () => !!session,
     // `owner` is the dedicated connection: one storage per runtime.
     async tryClock(appId) {
       // Advisory locks are reentrant and counted: don't take one twice.

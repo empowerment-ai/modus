@@ -169,8 +169,9 @@ describe('expedite', () => {
     const noReason = await api.inject({ method: 'POST', url, headers: as('u_maya'), payload: { on: true } })
     expect(noReason.statusCode).toBe(409)
     expect(noReason.json().error).toMatch(/Say why/)
-    // The clerk holding it is neither the requester nor a supervisor.
-    expect((await api.inject({ method: 'POST', url, headers: as(clerk), payload: { on: true, reason: 'Vendor called' } })).statusCode).toBe(403)
+    // A clerk who is neither the requester nor a supervisor (load balancing can give Maya her own invoice).
+    const clerkNotRequester = clerk === 'u_maya' ? otherClerk(clerk) : clerk
+    expect((await api.inject({ method: 'POST', url, headers: as(clerkNotRequester), payload: { on: true, reason: 'Vendor called' } })).statusCode).toBe(403)
     expect((await api.inject({ method: 'POST', url, headers: as('u_carmen'), payload: { on: true, reason: 'x' } })).statusCode).toBe(404)
 
     expect((await api.inject({ method: 'POST', url, headers: as('u_maya'), payload: { on: true, reason: 'Early-payment discount ends Friday' } })).json()).toEqual({ ok: true, value: true })
