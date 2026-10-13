@@ -18,7 +18,12 @@ spec:
     # Memory's state lives in one process and a ReadWriteOnce volume, so the old pod stops first.
     # SQL dialects share the database, so pods roll (set `strategy: Recreate` for an upgrade from
     # a release before M2; docs/DEPLOYMENT.md).
-    type: {{ $d.strategy | default (ternary "Recreate" "RollingUpdate" $memory) }}
+    {{- $strategy := $d.strategy | default (ternary "Recreate" "RollingUpdate" $memory) }}
+    type: {{ $strategy }}
+    {{- if eq $strategy "Recreate" }}
+    # Clear the rollingUpdate defaults Kubernetes stored on the live object, or switching to Recreate is rejected.
+    rollingUpdate: null
+    {{- end }}
   selector:
     matchLabels:
       {{- include "modus.selectorLabels" $ | nindent 6 }}
