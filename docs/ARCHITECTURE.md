@@ -288,7 +288,10 @@ Worker polls read the cache first and skip applications with no open job for tha
 
 Locking is per application: one command at a time per application across all servers. The
 engine still works on a whole application's state, so per-item locking waits for the engine
-split in M1. Outbox rows are written but nothing sends them yet (M4).
+split in M1. Every server runs an outbox sender: it fans each message out to the configured
+webhook endpoints, claims due deliveries with `FOR UPDATE SKIP LOCKED` and a 60-second lease, posts
+them signed outside any transaction and records the result, with retries for 24 hours
+([DEPLOYMENT.md](DEPLOYMENT.md#webhooks)). Email from Modus and the REST and MCP connectors come in M4.
 
 The memory adapter implements the same contract for one process, with JSON snapshots on disk.
 
@@ -458,7 +461,7 @@ Core server tier feasible; see [backend options](research/backend-options.md#3-m
 | API edge | Node.js LTS, Fastify 5, zod 4 → OpenAPI 3.1; SSE for live updates | **Skeleton** |
 | Data access | Kysely behind storage ports; contract test suite | **Skeleton** (design, state, event log, projections, outbox; M2) |
 | Database | PostgreSQL first; SQL Server, then Oracle | PostgreSQL **done** (M2); SQL Server, Oracle planned (M6, v1.1) |
-| Jobs, timers, outbox | Own tables + SKIP LOCKED / READPAST claims | Outbox table written (M2); claims and dispatch planned (M3–M4) |
+| Jobs, timers, outbox | Own tables + SKIP LOCKED / READPAST claims | Outbox written (M2) and sent to webhooks, claimed with SKIP LOCKED (**done**); timer claims planned (M3) |
 | Automation | REST/OpenAPI connector; MCP client (TypeScript SDK v2, spec 2026-07-28); long-poll worker protocol (gRPC later); JSONata mapping | Protocol **skeleton**; connectors planned (M4) |
 | Event ingest | NATS JetStream (incl. MQTT listener); Kafka connector optional | Planned (M5) |
 | Identity | OIDC (Keycloak, Entra ID, Login.gov), SAML; SCIM 2.0 group sync | Planned (M2–M6) |
@@ -509,9 +512,9 @@ customers who need hard separation.
 | | Milestone | Exit criteria |
 | --- | --- | --- |
 | **M1** | Kernel hardening | Split the engine's command handlers from the simulation drivers further (`decide/evolve` over typed events); property tests and a "one million simulated items, zero stuck tokens" fuzz run; versioned JSON Schemas for designs. *Partly done: live mode, tokens, split/join, subflows, OCEL export, separation of duties, line items, search, assistant, supervisors, expedite, workflow versions and migration.* |
-| **M2** | Server on Postgres | Kysely migrations; events + projections + outbox + timers in one transaction per command, so several servers can share a database; object types, objects, lists, attachments; OIDC login; single image + Compose. *Storage done: a PostgreSQL adapter (Kysely, versioned migrations in code, run at startup) stores the design, each application's state (JSONB) and the event log (`UNIQUE (app_id, item_id, seq)`); every command commits state, audit entries, item and work-item projections, outbox rows and the clock in one transaction under the application's row lock; several replicas share one database (LISTEN/NOTIFY, one clock per application by advisory lock); a shared storage contract suite runs against memory and Postgres; Docker Compose runs Modus on Postgres by default. Locking is per application; per item after M1. The outbox is written, not yet sent (M4). Next: object types, objects, lists, attachments, then OIDC.* |
+| **M2** | Server on Postgres | Kysely migrations; events + projections + outbox + timers in one transaction per command, so several servers can share a database; object types, objects, lists, attachments; OIDC login; single image + Compose. *Storage done: a PostgreSQL adapter (Kysely, versioned migrations in code, run at startup) stores the design, each application's state (JSONB) and the event log (`UNIQUE (app_id, item_id, seq)`); every command commits state, audit entries, item and work-item projections, outbox rows and the clock in one transaction under the application's row lock; several replicas share one database (LISTEN/NOTIFY, one clock per application by advisory lock); a shared storage contract suite runs against memory and Postgres; Docker Compose runs Modus on Postgres by default. Locking is per application; per item after M1. The outbox is written, and sent to signed webhooks with retries by every server. Next: object types, objects, lists, attachments, then OIDC.* |
 | **M3** | Work service and Workspace on the server | Worklists and all distribution modes with SKIP LOCKED claims; delegation, out of office, SLA timers with business calendars; the studio's Workspace and Monitor wired to the API and the live stream. |
-| **M4** | Automation | Outbox dispatcher; REST/OpenAPI and MCP connectors; worker SDKs (TypeScript, Python, .NET, Java) from OpenAPI; retries, incidents, tracing. |
+| **M4** | Automation | Email from Modus; REST/OpenAPI and MCP connectors; worker SDKs (TypeScript, Python, .NET, Java) from OpenAPI; retries, incidents, tracing. *Done ahead of it: the outbox sender (signed webhooks with retries).* |
 | **M5** | Scale, ingest, analytics | Stream ingest and triage; OCEL/XES export; simulation calibrated from the log; Helm chart; load tests (target 100 signals/s sustained, 1,000 concurrent Workspace users). |
 | **M6** | Hardening, second database, v1.0 | SQL Server adapter certified by the contract suite; SCIM/SAML; multi-tenancy; backup/upgrade runbooks; SBOM, signing, air-gap bundle; external security review. Oracle in v1.1. |
 

@@ -3,9 +3,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { FastifyInstance } from 'fastify'
+import { newSim } from '@modus-bpm/core'
 import { memoryStorage } from './adapters/memory'
 import { buildServer } from './http'
+import type { Storage } from './ports'
 import { Runtime } from './runtime'
+import { Sender } from './sender'
 
 // Search, supervision, expedite, readiness and the studio, through the API.
 
@@ -294,5 +297,83 @@ describe('worker polls', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('the outbox, for administrators', () => {
+  const ADMIN = 'u_avery'
+  const failed = async (storage: Storage) => {
+    const now = Date.now()
+    await storage.transact('app_hooks', 0, () => ({ value: 0, write: { state: newSim('app_hooks', 1), entries: [], items: [], outbox: [{ itemId: 'i1', kind: 'notify', payload: { itemId: 'i1' } }], tickedAt: 0 } }))
+    await storage.deliveries.fanOut(() => ['ops'], now, 10)
+    const [d] = await storage.deliveries.claim(now, 60_000, 10)
+    await storage.deliveries.record(d!.outboxId, 'ops', d!.nextAt, { status: 'failed', lastStatus: 400, lastError: 'HTTP 400: bad' }, now)
+    return d!.outboxId
+  }
+
+  it('lists deliveries and retries a failed message, for administrators only', async () => {
+    const storage = memoryStorage()
+    const own = await Runtime.create({ storage })
+    // A real sender and endpoint, so the leak check below means something: its URL and secret are in play.
+    const url = 'https://ops.example.com/in?token=url-t0ken'
+    const secret = 'ops-secret-never-shown'
+    const fetch = vi.fn(async () => new Response('bad', { status: 400 }))
+    const sender = new Sender({ storage, endpoints: [{ name: 'ops', url, secret }], fetch, log: () => {} })
+    await storage.transact('app_hooks', 0, () => ({ value: 0, write: { state: newSim('app_hooks', 1), entries: [], items: [], outbox: [{ itemId: 'i1', kind: 'notify', payload: { itemId: 'i1' } }], tickedAt: 0 } }))
+    await sender.wake()
+    expect(fetch).toHaveBeenCalledWith(url, expect.anything())
+    const [{ outboxId: id }] = await storage.deliveries.list({})
+    // From here on the test takes deliveries itself: the sender must not.
+    const wake = vi.spyOn(sender, 'wake').mockResolvedValue()
+    const server = buildServer(own, { sender })
+    const leaks = (body: string) => ['ops.example.com', 'url-t0ken', secret].filter((s) => body.includes(s))
+
+    expect((await server.inject({ method: 'GET', url: '/api/admin/outbox' })).statusCode).toBe(401)
+    expect((await server.inject({ method: 'GET', url: '/api/admin/outbox', headers: as('u_maya') })).statusCode).toBe(403)
+    expect((await server.inject({ method: 'POST', url: `/api/admin/outbox/${id}/retry`, headers: as('u_maya') })).statusCode).toBe(403)
+    for (const q of ['status=lost', 'limit=0', 'limit=501', 'limit=ten']) expect((await server.inject({ method: 'GET', url: `/api/admin/outbox?${q}`, headers: as(ADMIN) })).statusCode).toBe(400)
+
+    const listed = await server.inject({ method: 'GET', url: '/api/admin/outbox?status=failed&limit=5', headers: as(ADMIN) })
+    expect(listed.statusCode).toBe(200)
+    const { deliveries } = listed.json() as { deliveries: Array<Record<string, unknown>> }
+    expect(deliveries).toEqual([expect.objectContaining({ outboxId: id, endpoint: 'ops', appId: 'app_hooks', status: 'failed', lastStatus: 400, lastError: 'HTTP 400: bad' })])
+    expect(Object.keys(deliveries[0]!)).not.toContain('url')
+    expect(leaks(JSON.stringify(listed.json()))).toEqual([])
+    expect(leaks(listed.body)).toEqual([])
+    expect((await server.inject({ method: 'GET', url: '/api/admin/outbox?status=pending', headers: as(ADMIN) })).json()).toEqual({ deliveries: [] })
+
+    const retried = await server.inject({ method: 'POST', url: `/api/admin/outbox/${id}/retry`, headers: as(ADMIN) })
+    expect(retried.statusCode).toBe(200)
+    expect(retried.json()).toEqual({ ok: true })
+    expect(leaks(retried.body)).toEqual([])
+    expect(wake).toHaveBeenCalledTimes(1)
+    // Back to pending and due now: the next round takes it.
+    expect((await storage.deliveries.claim(Date.now(), 60_000, 10)).map((d) => [d.outboxId, d.endpoint])).toEqual([[id, 'ops']])
+
+    // Nothing failed any more (nor ever, for an unknown message).
+    expect((await server.inject({ method: 'POST', url: `/api/admin/outbox/${id}/retry`, headers: as(ADMIN) })).statusCode).toBe(404)
+    expect((await server.inject({ method: 'POST', url: '/api/admin/outbox/999/retry', headers: as(ADMIN) })).statusCode).toBe(404)
+    expect((await server.inject({ method: 'POST', url: '/api/admin/outbox/abc/retry', headers: as(ADMIN) })).statusCode).toBe(400)
+    expect(wake).toHaveBeenCalledTimes(1)
+    await server.close()
+    await sender.stop()
+    await own.stop()
+  })
+
+  it('knows administrators in a design with no applications, and works without a sender', async () => {
+    const seeded = await Runtime.create({ storage: memoryStorage() })
+    const design = { ...seeded.design, apps: [] }
+    await seeded.stop()
+    const storage = memoryStorage()
+    await storage.designs.save(design)
+    const own = await Runtime.create({ storage })
+    expect(own.design.apps).toEqual([])
+    const server = buildServer(own)
+    const id = await failed(storage)
+    expect((await server.inject({ method: 'GET', url: '/api/admin/outbox', headers: as('u_maya') })).statusCode).toBe(403)
+    expect((await server.inject({ method: 'GET', url: '/api/admin/outbox', headers: as(ADMIN) })).json().deliveries).toHaveLength(1)
+    expect((await server.inject({ method: 'POST', url: `/api/admin/outbox/${id}/retry`, headers: as(ADMIN) })).statusCode).toBe(200)
+    await server.close()
+    await own.stop()
   })
 })

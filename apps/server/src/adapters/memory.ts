@@ -8,7 +8,7 @@
 import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Design, Id, OutboxMessage, ProjectedItem, SimState } from '@modus-bpm/core'
-import type { ChangeNotice, DesignStore, EventLog, LoggedEvent, Projections, StateStore, Storage, Stored, Work } from '../ports'
+import type { ChangeNotice, Deliveries, Delivery, DesignStore, EventLog, LoggedEvent, Projections, StateStore, Storage, Stored, Work } from '../ports'
 
 async function readJson<T>(path: string): Promise<T | undefined> {
   try {
@@ -37,12 +37,26 @@ interface Held {
   state: SimState
 }
 
+/** An outbox message as held: sent once delivered, failed or skipped everywhere. */
+interface Queued {
+  appId: Id
+  message: OutboxMessage & { id: number }
+  /** Wall time of the commit (epoch ms). */
+  createdAt: number
+  sentAt?: number
+  skipped?: boolean
+}
+
 export function memoryStorage(dataDir?: string): Storage {
   let design: Design | undefined
   const held = new Map<Id, Held>()
   const projected = new Map<Id, Map<Id, ProjectedItem>>()
-  const outbox: Array<{ appId: Id; message: OutboxMessage & { id: number } }> = []
-  let outboxId = 0
+  const outbox: Queued[] = []
+  // Ids keep growing across restarts, so receivers that drop ids they've seen never drop a new message.
+  // Nothing to persist: seeded from the clock, 1000 ids per millisecond of uptime before a restart could reuse one.
+  let outboxId = Date.now() * 1000
+  /** Keyed `${outboxId}:${endpoint}`, in the order fanned out. */
+  const sending = new Map<string, Delivery>()
   /** Per application, the end of the queue of transactions: one at a time, like a row lock. */
   const locks = new Map<Id, Promise<unknown>>()
   const listeners = new Set<(n: ChangeNotice) => void>()
@@ -143,7 +157,7 @@ export function memoryStorage(dataDir?: string): Storage {
       numbered.set(itemId, seq)
     }
     const items = write.items.map((p) => structuredClone(p))
-    const messages = write.outbox.map((m) => ({ appId, message: { ...structuredClone(m), id: 0 } }))
+    const messages: Queued[] = write.outbox.map((m) => ({ appId, message: { ...structuredClone(m), id: 0 }, createdAt: 0 }))
     if (dataDir) {
       await ready
       await writeAtomic(join(dataDir, `state-${appId}.json`), text)
@@ -158,7 +172,11 @@ export function memoryStorage(dataDir?: string): Storage {
     let rows = projected.get(appId)
     if (!rows) projected.set(appId, (rows = new Map()))
     for (const p of items) rows.set(p.item.itemId, p)
-    for (const m of messages) m.message.id = ++outboxId
+    const at = Date.now()
+    for (const m of messages) {
+      m.message.id = ++outboxId
+      m.createdAt = at
+    }
     outbox.push(...messages)
     return { value, version: next.version, committed: true, notice: { appId, version: next.version, itemIds: items.map((p) => p.item.itemId) } }
   }
@@ -179,10 +197,88 @@ export function memoryStorage(dataDir?: string): Storage {
         .sort((x, y) => cmp(x.itemId, y.itemId) || x.enteredAt - y.enteredAt || cmp(x.tokenId, y.tokenId))
     },
     async outbox(appId) {
-      return outbox.filter((m) => m.appId === appId).map((m) => structuredClone(m.message))
+      return outbox.filter((m) => m.appId === appId && m.sentAt === undefined).map((m) => structuredClone(m.message))
     },
     async any(appId) {
       return !!projected.get(appId)?.size
+    },
+  }
+
+  // Synchronous inside each call, so concurrent callers can't interleave mid-claim.
+  const byId = (id: number) => outbox.find((m) => m.message.id === id)
+  const of = (id: number) => [...sending.values()].filter((d) => d.outboxId === id)
+  const deliveries: Deliveries = {
+    async fanOut(route, now, limit) {
+      const routed = new Set([...sending.values()].map((d) => d.outboxId))
+      const fresh = outbox.filter((m) => m.sentAt === undefined && !m.skipped && !routed.has(m.message.id)).slice(0, limit)
+      for (const m of fresh) {
+        const endpoints = route({ appId: m.appId, kind: m.message.kind })
+        if (!endpoints.length) {
+          m.skipped = true
+          m.sentAt = now
+        }
+        for (const endpoint of endpoints) {
+          const { id: outboxId, itemId, kind, payload } = m.message
+          sending.set(`${outboxId}:${endpoint}`, { outboxId, endpoint, appId: m.appId, itemId, kind, payload: structuredClone(payload), createdAt: m.createdAt, status: 'pending', attempts: 0, since: now, nextAt: now })
+        }
+      }
+      return fresh.length
+    },
+    async claim(now, leaseMs, limit) {
+      const due = [...sending.values()]
+        .filter((d) => d.status === 'pending' && d.nextAt <= now)
+        .sort((x, y) => x.nextAt - y.nextAt || x.outboxId - y.outboxId || (x.endpoint < y.endpoint ? -1 : x.endpoint > y.endpoint ? 1 : 0))
+        .slice(0, limit)
+      for (const d of due) d.nextAt = now + leaseMs
+      return due.map((d) => structuredClone(d))
+    },
+    async record(outboxId, endpoint, claimedUntil, result, now) {
+      const d = sending.get(`${outboxId}:${endpoint}`)
+      // A late result: the lease ran out and the delivery was claimed again, settled or retried since.
+      if (!d || d.status !== 'pending' || d.nextAt !== claimedUntil) return false
+      d.status = result.status
+      d.attempts++
+      if (result.status === 'pending') d.nextAt = result.nextAt
+      // As a SQL update would: this attempt's answer replaces the last one's.
+      if (result.lastStatus === undefined) delete d.lastStatus
+      else d.lastStatus = result.lastStatus
+      if (result.lastError === undefined) delete d.lastError
+      else d.lastError = result.lastError
+      if (result.status === 'delivered') d.deliveredAt = now
+      const m = byId(outboxId)
+      if (m && !of(outboxId).some((x) => x.status === 'pending')) m.sentAt = now
+      return true
+    },
+    async list({ status, limit = 100 }) {
+      return [...sending.values()]
+        .filter((d) => !status || d.status === status)
+        .sort((x, y) => y.outboxId - x.outboxId || (x.endpoint < y.endpoint ? -1 : x.endpoint > y.endpoint ? 1 : 0))
+        .slice(0, limit)
+        .map((d) => structuredClone(d))
+    },
+    async retry(outboxId, now) {
+      const failed = of(outboxId).filter((d) => d.status === 'failed')
+      for (const d of failed) {
+        // A fresh schedule: the first retry is soon again, and giving up counts from now.
+        d.status = 'pending'
+        d.nextAt = now
+        d.attempts = 0
+        d.since = now
+      }
+      const m = byId(outboxId)
+      if (failed.length && m) delete m.sentAt
+      return failed.length > 0
+    },
+    async prune(now, keepMs, keepFailedMs) {
+      const failed = new Set([...sending.values()].filter((d) => d.status === 'failed').map((d) => d.outboxId))
+      const gone = new Set<number>()
+      // Skipped messages count as sent.
+      for (const m of outbox) if (m.sentAt !== undefined && m.sentAt < now - (failed.has(m.message.id) ? keepFailedMs : keepMs)) gone.add(m.message.id)
+      if (!gone.size) return 0
+      for (const [key, d] of sending) if (gone.has(d.outboxId)) sending.delete(key)
+      const kept = outbox.filter((m) => !gone.has(m.message.id))
+      outbox.splice(0, outbox.length, ...kept)
+      return gone.size
     },
   }
 
@@ -205,6 +301,7 @@ export function memoryStorage(dataDir?: string): Storage {
     state,
     events: log,
     projections,
+    deliveries,
     async transact(appId, known, work) {
       const run = (locks.get(appId) ?? Promise.resolve()).then(() => commit(appId, known, work))
       const done = run.then(
