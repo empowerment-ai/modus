@@ -31,6 +31,10 @@ import {
   type Ctx,
   distributionFor,
   expeditedByStep,
+  exploreItems,
+  type ExplorerKey,
+  explorerRow,
+  explorerSteps,
   exportOcel,
   failJob,
   findToken,
@@ -219,6 +223,67 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     const refused = requireAdmin(req, monitorOnly)
     if (refused) return send(reply, refused)
     return rt.read(appId, (sim, ctx) => ({ clock: sim.clock, view: computeView(sim, ctx), expeditedByStep: expeditedByStep(sim), working: workingNow(sim) }))
+  })
+
+  /** Work in flight over time (a point every 15 sim minutes, the last 3000): only points after `since` when given. */
+  const seriesQuery = z.object({ since: z.coerce.number().optional() })
+  app.get('/api/apps/:app/monitor/series', async (req, reply) => {
+    const { app: appId } = appParams.parse(req.params)
+    const refused = requireAdmin(req, monitorOnly)
+    if (refused) return send(reply, refused)
+    const { since } = seriesQuery.parse(req.query)
+    return rt.read(appId, (sim) => ({ points: since === undefined ? sim.series.slice() : sim.series.filter((p) => p.t > since) }))
+  })
+
+  /** The activity feed, newest first (the engine keeps the last 300). */
+  const feedQuery = z.object({ limit: z.coerce.number().int().min(1).max(300).default(100) })
+  app.get('/api/apps/:app/monitor/feed', async (req, reply) => {
+    const { app: appId } = appParams.parse(req.params)
+    const refused = requireAdmin(req, monitorOnly)
+    if (refused) return send(reply, refused)
+    const { limit } = feedQuery.parse(req.query)
+    return rt.read(appId, (sim) => ({ entries: sim.feed.slice(0, limit) }))
+  })
+
+  // The cursor is where the last row sorts. Sort keys never change, so later pages neither repeat
+  // nor skip items that existed at the first; newer items sort before it and wait for a fresh read.
+  const cursorKey = z.tuple([z.number(), z.string(), z.string()])
+  const encodeCursor = (k: ExplorerKey) => Buffer.from(JSON.stringify([k.createdAt, k.number, k.id])).toString('base64url')
+  const cursor = z
+    .string()
+    .max(1000)
+    .transform((s, c): ExplorerKey => {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(Buffer.from(s, 'base64url').toString())
+      } catch {}
+      const key = cursorKey.safeParse(parsed)
+      if (key.success) return { createdAt: key.data[0], number: key.data[1], id: key.data[2] }
+      c.addIssue({ code: 'custom', message: 'Invalid cursor' })
+      return z.NEVER
+    })
+  const itemsQuery = z.object({
+    status: z.enum(['all', 'active', 'completed', 'rejected']).default('all'),
+    type: z.string().optional(),
+    step: z.string().optional(),
+    assignee: z.string().optional(),
+    q: z.string().max(500).default(''),
+    limit: z.coerce.number().int().min(1).max(200).default(50),
+    cursor: cursor.optional(),
+  })
+
+  /** The item explorer over every item, newest first, with the Studio's filters and text search (core's explorer). */
+  app.get('/api/apps/:app/monitor/items', async (req, reply) => {
+    const { app: appId } = appParams.parse(req.params)
+    const refused = requireAdmin(req, monitorOnly)
+    if (refused) return send(reply, refused)
+    const f = itemsQuery.parse(req.query)
+    return rt.read(appId, (sim, ctx) => {
+      const r = exploreItems(sim, ctx, { status: f.status, typeId: f.type, stepId: f.step, assignee: f.assignee, q: f.q }, { limit: f.limit, after: f.cursor })
+      const steps = explorerSteps(ctx.app)
+      const last = r.items[r.items.length - 1]
+      return { items: r.items.map((o) => explorerRow(o, ctx, sim.clock, steps)), total: r.total, ...(r.more && last ? { next: encodeCursor(last) } : {}) }
+    })
   })
 
   /** The event log as OCEL 2.0 JSON, for process-mining tools. */
