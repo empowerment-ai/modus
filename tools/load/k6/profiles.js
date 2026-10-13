@@ -33,6 +33,9 @@ const people = {
 }
 
 const workers = { smoke: 2, baseline: 4, full: 8 }
+
+/** One load clerk per simulated person at the peak, so no two VUs share a basket. setup.ts makes them. */
+export const CLERKS = { smoke: 10, baseline: 100, full: 1000 }
 const duration = { smoke: '1m', baseline: '10m', full: '20m' }
 
 export const PROFILES = Object.keys(duration)

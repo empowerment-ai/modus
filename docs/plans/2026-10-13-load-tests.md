@@ -88,7 +88,7 @@ Commit: `load: k6 scenarios — items, people, workers; smoke, baseline and full
 `run.ts` (`pnpm load [--profile smoke|baseline|full] [--servers 1|2|3] [--keep]`):
 1. Results dir `tools/load/results/<YYYYMMDD-HHMM>-<profile>-<n>srv/`.
 2. `docker compose -p modus-load -f tools/load/compose.yml [--profile s2 s3] build` then `up -d postgres`; wait for health.
-3. Run `setup.ts` (clerks: 20 smoke, 200 baseline, 1,000 full).
+3. Run `setup.ts` with the profile's clerks: 10 smoke, 100 baseline, 1,000 full (one per person at the peak; `CLERKS` in `k6/profiles.js`, which `main.js` defaults to).
 4. `up -d` servers, nginx, observer; wait for `/api/ready` on each server.
 5. Observer: `POST /reset`, `POST /streams/start` with the profile's count and the server URLs (inside the network: `http://modus1:8787`…).
 6. Print where to watch: `http://localhost:5665` (k6) and `http://localhost:8790` (Studio).
@@ -97,7 +97,7 @@ Commit: `load: k6 scenarios — items, people, workers; smoke, baseline and full
 9. `report.ts` builds `summary.json` and `summary.md`; print the summary path.
 10. `down -v` unless `--keep`. Always tear down on Ctrl-C or error (trap signals).
 
-`report.ts`: pure function from (k6 summary JSON, observer stats, backlog, settings) to `{ json, markdown }`, including the soft limits with ✓/⚠. Tests with fixture inputs (a small k6 summary sample), including a run with missing pieces (observer down → "not measured").
+`report.ts`: pure function from (k6 summary JSON, observer stats, backlog, settings) to `{ json, markdown }`, including the soft limits with ✓/⚠. Also surface k6's `dropped_iterations` (item arrivals k6 couldn't start because every VU was busy: the offered rate wasn't reached) and the script's counters (`busy`, `races`, `jobs_gone`, `next_empty`). Explain the expected backlog next to the numbers: nobody plays the exception subflow (unmatched POs, ~30% of items have none) or the manager and Controller approval steps (invoices over 1,000), so those items wait there by design; only a backlog at the clerk step or in waiting jobs means the load outran the people or workers. Tests with fixture inputs (a small k6 summary sample), including a run with missing pieces (observer down → "not measured").
 
 `compare.ts` (`pnpm load:compare <dirA> <dirB>`): table of the main numbers with absolute and % change, marking better/worse. Tests with two fixture summaries.
 
