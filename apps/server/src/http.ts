@@ -132,7 +132,7 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     if (err instanceof NotFound) return reply.code(404).send({ ok: false, error: err.message })
     if (err instanceof Unauthorized) return reply.code(401).send({ ok: false, error: err.message })
     if (err instanceof StorageUnavailable) {
-      reply.log.warn(err.message)
+      reply.log.warn({ err }, err.message)
       return reply.code(503).header('retry-after', '5').send({ ok: false, error: err.message })
     }
     if (err instanceof z.ZodError) return reply.code(400).send({ ok: false, error: 'Invalid request', issues: err.issues })

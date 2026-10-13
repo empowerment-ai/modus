@@ -21,8 +21,11 @@ export interface RuntimeOptions {
   tickMs?: number
   /** Start from the sample design when storage has none. */
   seedIfEmpty?: boolean
-  /** Background work that failed: a clock tick, or reloading another server's change. Both are retried. */
-  onError?: (err: unknown, during: 'tick' | 'listen') => void
+  /**
+   * Background work that failed: a clock tick or reloading another server's change (both retried), or a
+   * subscriber that threw on a change (not retried; the change stands).
+   */
+  onError?: (err: unknown, during: 'tick' | 'listen' | 'subscriber') => void
 }
 
 export interface Change {
@@ -42,6 +45,9 @@ interface Cached {
   version: number
   sim: SimState
 }
+
+/** Items that differ between two committed states (both left unchanged). */
+const moved = (before: SimState, after: SimState) => changesBetween(before, after).itemIds
 
 /** A tick that logged nothing and comes this soon after the last stored clock time is rolled back. */
 const IDLE_TICK_MS = 30_000
@@ -82,6 +88,7 @@ export class Runtime {
 
   /** Start the clock. */
   start() {
+    if (this.timer) return
     this.timer = setInterval(() => {
       // A slow tick (a busy database) isn't overlapped by the next one.
       if (!this.ticking) this.ticking = this.tick().finally(() => (this.ticking = undefined))
@@ -226,17 +233,20 @@ export class Runtime {
           }
         })
       } catch (err) {
-        if (fresh) this.adopt(appId, fresh.version, fresh.sim)
+        // The command failed, but another server's change it was handed is real: keep and show it.
+        if (fresh && this.adopt(appId, fresh.version, fresh.sim)) this.emit({ appId, clock: fresh.sim.clock, itemIds: moved(cached.sim, fresh.sim) })
         if (failed) throw failed.err
-        if (err instanceof StorageBusy) throw new StorageUnavailable('Another server is busy with this application. Try again shortly.')
-        throw new StorageUnavailable('Storage is unavailable, so the change wasn’t made. Try again shortly.')
+        if (err instanceof StorageBusy) throw new StorageUnavailable(err.message, { cause: err })
+        throw new StorageUnavailable('Storage is unavailable, so the change wasn’t made. Try again shortly.', { cause: err })
       }
+      // Items another server moved since our cached version, which this runtime hasn't told anyone about.
+      const theirs = fresh ? moved(cached.sim, fresh.sim) : []
       if (r.committed) {
         this.adopt(appId, r.version, sim)
-        this.emit({ appId, clock: sim.clock, itemIds })
+        this.emit({ appId, clock: sim.clock, itemIds: [...new Set([...theirs, ...itemIds])].sort() })
       } else if (fresh && this.adopt(appId, fresh.version, fresh.sim)) {
         // A rolled-back idle tick still brought another server's change: show it.
-        this.emit({ appId, clock: fresh.sim.clock, itemIds: Object.keys(fresh.sim.objects) })
+        this.emit({ appId, clock: fresh.sim.clock, itemIds: theirs })
       }
       return r.value
     })
@@ -247,7 +257,7 @@ export class Runtime {
     if (this.stopping || !this.design.apps.some((a) => a.id === n.appId)) return Promise.resolve()
     // Cheap check first: this process's own commits arrive here too.
     if (n.version <= (this.cache.get(n.appId)?.version ?? 0)) return Promise.resolve()
-    return this.reload(n.appId, n.itemIds)
+    return this.reload(n.appId, n)
   }
 
   /** The connection to storage came back: anything may have been missed. */
@@ -257,11 +267,16 @@ export class Runtime {
   }
 
   /** Load the stored state when it is newer than the cache, and tell listeners. Never throws. */
-  private reload(appId: Id, itemIds?: Id[]): Promise<void> {
+  private reload(appId: Id, n?: ChangeNotice): Promise<void> {
     return this.serial(appId, async () => {
+      const was = this.cached(appId)
+      // Checked again in turn: a commit queued ahead (this runtime's own, say) may have brought the cache there.
+      if (n && n.version <= was.version) return
       const s = await this.opts.storage.state.get(appId)
       if (!s?.state || !this.adopt(appId, s.version, s.state)) return
-      this.emit({ appId, clock: s.state.clock, itemIds: itemIds ?? Object.keys(s.state.objects) })
+      // The notice's items cover the state only when it is the one commit between the cache and storage.
+      const one = n?.itemIds && s.version === n.version && was.version === n.version - 1
+      this.emit({ appId, clock: s.state.clock, itemIds: one ? n.itemIds! : moved(was.sim, s.state) })
     }).catch((err) => this.opts.onError(err, 'listen'))
   }
 
@@ -287,7 +302,7 @@ export class Runtime {
       try {
         l(change)
       } catch (err) {
-        this.opts.onError(err, 'listen')
+        this.opts.onError(err, 'subscriber')
       }
     }
   }
