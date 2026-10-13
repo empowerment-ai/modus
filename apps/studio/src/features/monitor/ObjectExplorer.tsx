@@ -1,9 +1,8 @@
 import { Search } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { TypeIcon } from '../../components/icons'
 import { Avatar, Badge, cx, EmptyState, Input, Select } from '../../components/ui'
-import { exploreItems, type ExplorerStatus, explorerState, explorerSteps, type SimObject, type SimState } from '@modus-bpm/core'
-import { formatFieldValue, objectTitle } from '@modus-bpm/core/model/format'
+import { explorerCache, exploreItems, explorerRow, type ExplorerStatus, explorerSteps, type SimObject, type SimState } from '@modus-bpm/core'
 import type { App, Id, ObjectType, User } from '@modus-bpm/core/model/types'
 import { formatDuration } from '@modus-bpm/core/model/util'
 import { useSim } from '../../store/sim'
@@ -36,23 +35,33 @@ export function ObjectExplorer({ app, users, sim, version }: { app: App; users: 
   const usersById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users])
   const typesById = useMemo(() => new Map(app.objectTypes.map((t) => [t.id, t])), [app.objectTypes])
   // Includes steps the map no longer has, where items on older versions can still be.
-  const nodesById = useMemo(() => explorerSteps(app), [app.workflows])
+  const steps = useMemo(() => explorerSteps(app), [app])
+
+  // Search text per item for this app (the explorer is keyed by app); a reset simulation starts it over.
+  const [cache] = useState(explorerCache)
+  const cacheOwner = useRef(sim)
+  if (cacheOwner.current !== sim) {
+    cache.entries.clear()
+    cacheOwner.current = sim
+  }
 
   // While the simulation runs this re-renders every tick; refilter about twice a second.
   // When paused, every change (fast-forward, admin actions) refilters immediately.
   const running = useSim((s) => s.running)
   const bucket = running ? Math.floor(version / 5) : version
   // The same filters, search and order as the server's explorer (core), which caches search text per item.
-  const { rows, total } = useMemo(() => {
-    if (!sim) return { rows: [] as SimObject[], total: 0 }
-    const r = exploreItems(sim, { app, users }, { status, typeId, stepId: nodeId, assignee, q: query }, { limit: ROW_LIMIT })
-    return { rows: r.items, total: r.total }
-  }, [sim, bucket, query, status, typeId, nodeId, assignee, app, users])
+  const { matched, total } = useMemo(() => {
+    if (!sim) return { matched: [] as SimObject[], total: 0 }
+    const r = exploreItems(sim, { app, users }, { status, typeId, stepId: nodeId, assignee, q: query }, { limit: ROW_LIMIT, cache })
+    return { matched: r.items, total: r.total }
+  }, [sim, bucket, query, status, typeId, nodeId, assignee, app, users, cache])
 
   // Summary columns come from one object type: the only one, or the one filtered to.
   const columnType: ObjectType | undefined = app.objectTypes.length === 1 ? app.objectTypes[0] : typeId ? typesById.get(typeId) : undefined
   const summaryFields = columnType ? columnType.fields.filter((f) => f.summary && f.id !== columnType.titleFieldId) : []
   const clock = sim?.clock ?? 0
+  // The same rows the server's explorer sends, so both modes draw from one shape.
+  const rows = matched.map((o) => explorerRow(o, { app, users }, clock, steps))
   const stepOptions = app.workflows.map((wf) => ({ wf, nodes: wf.nodes.filter((n) => n.type !== 'start' && n.type !== 'decision') }))
 
   return (
@@ -133,13 +142,8 @@ export function ObjectExplorer({ app, users, sim, version }: { app: App; users: 
             <tbody>
               {rows.map((o) => {
                 const type = typesById.get(o.typeId)
-                const tok = o.tokens[0]
-                const node = nodesById.get(tok?.nodeId ?? o.endNodeId ?? '')
-                const holder = o.tokens.find((t) => t.userId)
-                const user = holder?.userId ? usersById.get(holder.userId) : undefined
-                const badge = STATE_BADGE[explorerState(o)] ?? { label: explorerState(o), tone: 'slate' as const }
-                const more = o.tokens.length > 1 ? o.tokens.length - 1 : 0
-                const age = (o.completedAt ?? clock) - o.createdAt
+                const user = o.assignee ? usersById.get(o.assignee) : undefined
+                const badge = STATE_BADGE[o.state] ?? { label: o.state, tone: 'slate' as const }
                 return (
                   <tr key={o.id} onClick={() => openObject(o.id)} className="cursor-pointer border-b border-slate-100 tabular-nums last:border-0 hover:bg-slate-50">
                     <td className="py-1.5 pr-2 pl-4">
@@ -148,15 +152,15 @@ export function ObjectExplorer({ app, users, sim, version }: { app: App; users: 
                         {o.number}
                       </span>
                     </td>
-                    <td className="max-w-[200px] truncate px-2 py-1.5 text-slate-800">{objectTitle(type, o.data, app.lists, users) || <span className="text-slate-400">—</span>}</td>
+                    <td className="max-w-[200px] truncate px-2 py-1.5 text-slate-800">{o.title || <span className="text-slate-400">—</span>}</td>
                     {summaryFields.map((f) => (
                       <td key={f.id} className={cx('max-w-[180px] truncate px-2 py-1.5 text-slate-700', (f.type === 'currency' || f.type === 'number') && 'text-right')}>
-                        {formatFieldValue(f, o.data[f.id], app.lists, users) || <span className="text-slate-300">—</span>}
+                        {o.summary[f.id] || <span className="text-slate-300">—</span>}
                       </td>
                     ))}
                     <td className="px-2 py-1.5 text-slate-700">
-                      {node?.data.label ?? <span className="text-slate-400">{o.status === 'active' ? 'Removed step' : '—'}</span>}
-                      {more > 0 && <span className="ml-1 rounded bg-indigo-50 px-1 text-[10px] font-semibold text-indigo-700" title="Parallel branches">+{more}</span>}
+                      {o.step ?? <span className="text-slate-400">{o.status === 'active' ? 'Removed step' : '—'}</span>}
+                      {o.more > 0 && <span className="ml-1 rounded bg-indigo-50 px-1 text-[10px] font-semibold text-indigo-700" title="Parallel branches">+{o.more}</span>}
                     </td>
                     <td className="px-2 py-1.5">
                       {user ? (
@@ -165,13 +169,13 @@ export function ObjectExplorer({ app, users, sim, version }: { app: App; users: 
                           {user.name}
                         </span>
                       ) : (
-                        <span className="text-slate-400">{o.status === 'active' && tok?.state === 'unassigned' ? 'Unassigned' : '—'}</span>
+                        <span className="text-slate-400">{o.state === 'unassigned' ? 'Unassigned' : '—'}</span>
                       )}
                     </td>
                     <td className="px-2 py-1.5">
                       <Badge tone={badge.tone}>{badge.label}</Badge>
                     </td>
-                    <td className="py-1.5 pr-4 pl-2 text-right text-slate-600">{formatDuration(age)}</td>
+                    <td className="py-1.5 pr-4 pl-2 text-right text-slate-600">{formatDuration(o.age)}</td>
                   </tr>
                 )
               })}
