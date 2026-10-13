@@ -1,7 +1,8 @@
 # Live Monitor: the Studio's Monitor on a real server
 
-Status: approved 2026-10-13. A slice of M3 ("the studio's Workspace and Monitor wired to the API and the
-live stream"): the Monitor only, read-only.
+Status: implemented 2026-10-13 on `feat/live-monitor` (approved the same day). A slice of M3 ("the
+studio's Workspace and Monitor wired to the API and the live stream"): the Monitor only, read-only.
+See "Refinements" at the end for what changed while building it.
 
 ## Goal
 
@@ -54,3 +55,29 @@ Studio served by a server opens Live and shows an invoice created through the AP
 
 ARCHITECTURE and ROADMAP (M3 slice: Monitor live), and the load-test README (watch at
 `localhost:8790`).
+
+## Refinements
+
+What building it changed or added to the design above:
+
+- **Working now comes from tokens.** `workingNow` (core) finds what each person is working on from
+  tokens in the working state, not from the simulated person's current task, which a live server
+  doesn't track. "+N more" counts the rest.
+- **Redacted design.** `GET /api/design` drops each service's endpoint, auth, secret reference and
+  owner. Connection details stay on the server.
+- **One explorer for both.** The item explorer's filtering and paging live in core and serve the
+  Studio's simulation and the server alike. The server keeps a search cache per app that survives
+  commits.
+- **Ready before admin reads.** The live store fetches the design first (as anyone named), picks an
+  administrator from it, and only then calls the administrator-only endpoints.
+- **Denied and not found.** A 401/403 on the stream ends it with a message naming the person. A 404
+  ends it too: an error if the design still lists the app (the server dropped it), idle otherwise.
+- **Unknown app.** An app the server doesn't run makes no Monitor reads and opens no stream; the
+  badge reads "Not on this server".
+- **Badge.** "Live · last change Ns ago", counting only events that moved an item, then "Live · idle"
+  on a quiet server; "Connecting…" pulses; amber "Reconnecting…" keeps the last data.
+- **Merge note.** `feat/load-tests` owns the stream handler and adds pings. After both merge, take its
+  handler, then do the TODO in `source.ts`: track `lastHeard` and treat 60 s of silence as a dropped
+  stream, so "Live" also means "heard from recently".
+- **Smoke check.** `pnpm --filter @modus-bpm/server smoke:live` (after a studio build) runs the
+  end-to-end check against a real server.

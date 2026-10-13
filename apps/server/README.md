@@ -13,7 +13,15 @@ pnpm --filter @modus-bpm/server test           # the API end to end, the assista
 TEST_DATABASE_URL=postgres://modus:modus-dev-only@127.0.0.1:5432/modus \
   pnpm --filter @modus-bpm/server test:pg      # the storage contract against PostgreSQL too
 pnpm --filter @modus-bpm/server build          # one bundled file: dist/server.mjs
+pnpm --filter @modus-bpm/studio build && \
+  pnpm --filter @modus-bpm/server smoke:live   # the live Monitor end to end (see below)
 ```
+
+`smoke:live` starts the server on a free port (or `SMOKE_PORT`) serving `apps/studio/dist`, checks
+that `/` is the Studio, reads the design and the Monitor as the sample administrator, opens the
+stream, creates an invoice, and expects `/monitor` to count it and the stream to name it within a
+few seconds. It stops the server either way and exits non-zero on the first failed check. It needs
+the studio build, so it isn't part of `pnpm test`.
 
 | Concern | Where |
 | --- | --- |
@@ -54,6 +62,8 @@ do it, `404` when the thing doesn't exist (or they can't see it), `409` when the
 | Administration | `POST …/admin/work/:id/assign · move · retry` (administrators, or supervisors of that work) |
 | Workers | `POST /api/jobs/poll`, `POST /api/jobs/:id/complete`, `POST /api/jobs/:id/fail` |
 | Process mining | `GET …/export/ocel` (OCEL 2.0 JSON of the event log) |
+| Design | `GET /api/design` (the published design, services without connection details; any named user) |
+| Monitor | `GET …/monitor`, `…/monitor/series?since=`, `…/monitor/feed?limit=`, `…/monitor/items?status&type&step&assignee&q&limit&cursor` (administrators) |
 | Live | `GET …/stream` (Server-Sent Events) |
 | Studio | Everything outside `/api` when `STATIC_DIR` is set, with single-page-app fallback |
 
