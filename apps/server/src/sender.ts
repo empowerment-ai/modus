@@ -56,13 +56,21 @@ export class Sender {
     this.route = (m) => endpoints.filter((e) => matches(e, m)).map((e) => e.name)
     this.fetch = opts.fetch ?? globalThis.fetch
     this.now = opts.now ?? Date.now
-    this.log = opts.log ?? defaultLog
+    // A throwing log must never fail a round (or leave a delivery unrecorded).
+    const log = opts.log ?? defaultLog
+    this.log = (level, msg, extra) => {
+      try {
+        log(level, msg, extra)
+      } catch {}
+    }
     this.intervalMs = opts.intervalMs ?? 2000
     this.leaseMs = opts.leaseMs ?? 60_000
     this.timeoutMs = opts.timeoutMs ?? 10_000
     this.batch = opts.batch ?? 20
     this.keepMs = opts.keepMs ?? 7 * DAY
     this.keepFailedMs = opts.keepFailedMs ?? 30 * DAY
+    // A send (request + body) can take up to timeoutMs, and recording comes after; a lease that ran out first would let another server send it again.
+    if (this.leaseMs <= this.timeoutMs * 2) throw new Error(`webhooks: leaseMs (${this.leaseMs}) must be more than twice timeoutMs (${this.timeoutMs})`)
   }
 
   /** Wake every intervalMs (commits wake it sooner) and prune once an hour. Unref'd: they never keep the process alive. */
@@ -113,9 +121,10 @@ export class Sender {
     const { deliveries } = this.storage
     const now = this.now()
     for (let i = 0; i < FAN_OUT_LOOPS; i++) if ((await deliveries.fanOut(this.route, now, FAN_OUT)) < FAN_OUT) break
-    // With no endpoints, fan-out marks everything skipped and nothing is ever pending.
-    if (!this.byName.size) return
-    const claimed = await deliveries.claim(now, this.leaseMs, this.batch)
+    // Claim even with no endpoints: deliveries left pending for removed ones still settle (as failed).
+    // The clock again: a slow fan-out must not eat into the lease.
+    const claimed = await deliveries.claim(this.now(), this.leaseMs, this.batch)
+    // Known limit: one slow endpoint holds the round (and the next claim) for up to timeoutMs.
     await Promise.all(claimed.map((d) => this.send(d)))
   }
 
@@ -165,7 +174,8 @@ export class Sender {
       // Our lease ran out and another server took the delivery over; its result counts.
       return this.log('debug', 'webhooks: lease lost, result dropped', { endpoint: d.endpoint, outboxId: d.outboxId })
     }
-    if (result.status === 'failed') this.log('warn', 'webhooks: gave up on a delivery', { endpoint: d.endpoint, outboxId: d.outboxId, status: result.lastStatus, error: result.lastError })
+    // Logs get the gist only: an endpoint's answer may echo payload data. The admin route shows the full error.
+    if (result.status === 'failed') this.log('warn', 'webhooks: gave up on a delivery', { endpoint: d.endpoint, outboxId: d.outboxId, status: result.lastStatus, error: brief(result.lastError) })
   }
 
   private async prune() {
@@ -176,6 +186,9 @@ export class Sender {
     }
   }
 }
+
+const LOG_ERROR = 100
+const brief = (error?: string) => (error === undefined ? undefined : Array.from(error).length > LOG_ERROR ? `${Array.from(error).slice(0, LOG_ERROR).join('')}…` : error)
 
 /** The first MAX_BODY bytes of a response as text; the rest is never read. */
 async function head(res: Response): Promise<string | undefined> {

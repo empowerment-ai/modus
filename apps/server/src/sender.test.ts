@@ -208,14 +208,86 @@ describe('Sender', () => {
     expect(hook.seen).toHaveLength(0)
   })
 
-  it('marks messages skipped with no endpoints, and claims nothing', async () => {
-    const claim = vi.spyOn(storage.deliveries, 'claim')
+  it('marks messages skipped with no endpoints', async () => {
     const s = sender([])
     await commit(msg())
     await s.wake()
     expect(await storage.projections.outbox('app_a')).toEqual([])
     expect(await storage.deliveries.list({})).toEqual([])
-    expect(claim).not.toHaveBeenCalled()
+  })
+
+  it('with no endpoints left, still settles pending deliveries to removed ones as failed', async () => {
+    await commit(msg())
+    await storage.deliveries.fanOut(() => ['gone'], now, 100)
+    const s = sender([])
+    await s.wake()
+    expect(await only()).toMatchObject({ endpoint: 'gone', status: 'failed', lastError: 'endpoint no longer configured' })
+    expect(await storage.projections.outbox('app_a')).toEqual([])
+  })
+
+  it('refuses a lease that would not outlast two timeouts', () => {
+    expect(() => new Sender({ storage, endpoints: [], leaseMs: 20_000, timeoutMs: 10_000 })).toThrow(/leaseMs/)
+    expect(() => new Sender({ storage, endpoints: [], leaseMs: 20_001, timeoutMs: 10_000 })).not.toThrow()
+  })
+
+  it('warns with a short error; storage keeps the full one', async () => {
+    const hook = await listen(answer(400, {}, 'x'.repeat(400)))
+    const s = sender([{ name: 'ops', url: hook.url, secret: SECRET }])
+    await commit(msg())
+    await s.wake()
+    expect((await only()).lastError).toBe(`HTTP 400: ${'x'.repeat(400)}`)
+    const [, , extra] = logged.find(([level]) => level === 'warn')!
+    expect(extra).toMatchObject({ status: 400 })
+    expect((extra as { error: string }).error.length).toBeLessThanOrEqual(101)
+  })
+
+  it('survives a log function that throws', async () => {
+    const hook = await listen(answer(400))
+    const s = sender([{ name: 'ops', url: hook.url, secret: SECRET }], {
+      log: () => {
+        throw new Error('log broke')
+      },
+    })
+    await commit(msg())
+    await expect(s.wake()).resolves.toBeUndefined()
+    expect(await only()).toMatchObject({ status: 'failed' })
+  })
+
+  it('reads only the head of an endless error body, in time, and lets the connection go', async () => {
+    let closed = false
+    const hook = await listen((_, res) => {
+      res.socket!.on('close', () => (closed = true))
+      res.writeHead(500, { 'content-type': 'text/plain' })
+      res.write('y'.repeat(1024 * 1024)) // ~1 MB, and the body never ends
+    })
+    const s = sender([{ name: 'ops', url: hook.url, secret: SECRET }], { timeoutMs: 2000 })
+    await commit(msg())
+    const started = performance.now()
+    await s.wake()
+    expect(performance.now() - started).toBeLessThan(2000)
+    const d = await only()
+    expect(d).toMatchObject({ status: 'pending', lastStatus: 500, lastError: expect.stringMatching(/^HTTP 500: y+$/) })
+    expect(d.lastError!.length).toBeLessThanOrEqual(500)
+    await vi.waitFor(() => expect(closed).toBe(true))
+  })
+
+  it('stop() drops a queued round', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((ok) => (release = ok))
+    const fetch = vi.fn(async () => {
+      await gate
+      return new Response(null, { status: 200 })
+    })
+    const claim = vi.spyOn(storage.deliveries, 'claim')
+    const s = sender([{ name: 'ops', url: 'http://127.0.0.1:1/', secret: SECRET }], { fetch })
+    await commit(msg())
+    const first = s.wake()
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+    const queued = s.wake()
+    const stopped = s.stop()
+    release()
+    await Promise.all([first, queued, stopped])
+    expect(claim).toHaveBeenCalledTimes(1)
   })
 
   it('drops a result when another server took the delivery over', async () => {
