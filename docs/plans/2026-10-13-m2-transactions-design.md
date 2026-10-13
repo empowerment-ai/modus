@@ -149,5 +149,13 @@ per item after M1"), ARCHITECTURE M2, DEPLOYMENT (replicas).
 - **Readiness reflects the listener.** `/api/ready` answers 503 while the listening connection
   is down; a heartbeat on that connection notices a half-open one, and a reconnect reloads every
   application.
-- **Deployment.** The chart's values are `deployments.<name>.replicas` and `autoscaling`, not
-  `replicaCount`. Memory keeps one deployment, one replica, no autoscaling and `Recreate`.
+- **Stalled transactions are bounded.** Beside `lock_timeout`, each transaction sets
+  `statement_timeout` 30 s and `idle_in_transaction_session_timeout` 15 s, so a hung server
+  can't hold an application's row for the others.
+- **A starting server listens before it loads**, so a commit made by another server during
+  startup isn't missed.
+- **Deployment.** The chart's values are `deployments.<name>.replicas`, `.strategy` and
+  `autoscaling`, not `replicaCount`. Memory keeps one deployment, one replica, no autoscaling
+  and `Recreate`. The first upgrade from a release before M2 needs `Recreate` (old pods would
+  write over the new ones); after that every migration must work with the previous release.
+  `DATABASE_URL` must reach Postgres directly or through a session-mode pooler.

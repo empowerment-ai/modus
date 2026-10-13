@@ -39,6 +39,9 @@ deployments:
     enabled: true
     roles: [api, engine, automation, scheduler, ingest, realtime]
     replicas: 1
+    # Empty: Recreate for memory, RollingUpdate for SQL dialects. Set Recreate for the first
+    # upgrade from a release before M2 (docs/DEPLOYMENT.md). Memory refuses RollingUpdate.
+    strategy: ''
     resources:
       requests:
         cpu: 100m
