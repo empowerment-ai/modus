@@ -12,7 +12,7 @@ import type { AuditEntry, Design, Id, OutboxMessage, Priority, ProjectedItem, Si
 import { type Generated, Kysely, PostgresDialect, sql } from 'kysely'
 import { type Migration, Migrator } from 'kysely/migration'
 import pg from 'pg'
-import { type ChangeNotice, type Deliveries, type DesignStore, type EventLog, type LoggedEvent, type Projections, type StateStore, type Storage, StorageBusy, type Stored, type Work, type Write } from '../ports'
+import { type ChangeNotice, type Deliveries, type Delivery, type DesignStore, type EventLog, type LoggedEvent, type Projections, type StateStore, type Storage, StorageBusy, type Stored, type Work, type Write } from '../ports'
 
 interface Tables {
   design: { id: number; doc: Design; updated_at: Generated<Date> }
@@ -63,6 +63,18 @@ interface Tables {
     payload: Record<string, unknown>
     created_at: Generated<Date>
     sent_at: Date | null
+    skipped: Generated<boolean>
+  }
+  outbox_delivery: {
+    outbox_id: string
+    endpoint: string
+    status: Delivery['status']
+    attempts: Generated<number>
+    next_at: Date
+    last_status: number | null
+    last_error: string | null
+    delivered_at: Date | null
+    since: Date
   }
 }
 
@@ -172,6 +184,34 @@ export const migrations: Record<string, Migration> = {
       await sql`delete from app_state where state is null`.execute(db)
       await db.schema.alterTable('app_state').alterColumn('state', (c) => c.setNotNull()).execute()
       await db.schema.alterTable('app_state').dropColumn('ticked_at').dropColumn('version').execute()
+    },
+  },
+  '0003_outbox_delivery': {
+    async up(db) {
+      // A message no endpoint wanted: sent, with nothing to deliver.
+      await db.schema.alterTable('outbox').addColumn('skipped', 'boolean', (c) => c.notNull().defaultTo(false)).execute()
+      await db.schema
+        .createTable('outbox_delivery')
+        .addColumn('outbox_id', 'bigint', (c) => c.notNull().references('outbox.id').onDelete('cascade'))
+        .addColumn('endpoint', 'text', (c) => c.notNull())
+        .addColumn('status', 'text', (c) => c.notNull())
+        .addColumn('attempts', 'integer', (c) => c.notNull().defaultTo(0))
+        // Due, or claimed until then (the lease a result must present).
+        .addColumn('next_at', 'timestamptz', (c) => c.notNull())
+        .addColumn('last_status', 'integer')
+        .addColumn('last_error', 'text')
+        .addColumn('delivered_at', 'timestamptz')
+        // When the retry schedule started: fan-out, or the last retry.
+        .addColumn('since', 'timestamptz', (c) => c.notNull())
+        .addPrimaryKeyConstraint('outbox_delivery_pk', ['outbox_id', 'endpoint'])
+        .execute()
+      await sql`create index outbox_delivery_due on outbox_delivery (next_at) where status = 'pending'`.execute(db)
+      // Messages not yet fanned out: unsent and without deliveries.
+      await sql`create index outbox_unrouted on outbox (id) where sent_at is null and not skipped`.execute(db)
+    },
+    async down(db) {
+      await db.schema.dropTable('outbox_delivery').execute()
+      await db.schema.alterTable('outbox').dropColumn('skipped').execute()
     },
   },
 }
@@ -393,9 +433,130 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
     }
   }
 
-  // Replaced by migration 0003 and SKIP LOCKED claims (outbox webhooks plan, Task 3).
-  const notYet = () => Promise.reject(new Error('not yet: Task 3'))
-  const deliveries: Deliveries = { fanOut: notYet, claim: notYet, record: notYet, list: notYet, retry: notYet, prune: notYet }
+  type DeliveryRow = Omit<Tables['outbox_delivery'], 'attempts'> & { attempts: number; app_id: string; item_id: string; kind: string; payload: Record<string, unknown>; created_at: Date }
+  const delivery = (r: DeliveryRow): Delivery => ({
+    outboxId: Number(r.outbox_id),
+    endpoint: r.endpoint,
+    appId: r.app_id as Id,
+    itemId: r.item_id as Id,
+    kind: r.kind as OutboxMessage['kind'],
+    payload: r.payload,
+    createdAt: r.created_at.getTime(),
+    status: r.status,
+    attempts: r.attempts,
+    since: r.since.getTime(),
+    nextAt: r.next_at.getTime(),
+    ...(r.last_status !== null ? { lastStatus: r.last_status } : {}),
+    ...(r.last_error !== null ? { lastError: r.last_error } : {}),
+    ...(r.delivered_at !== null ? { deliveredAt: r.delivered_at.getTime() } : {}),
+  })
+
+  // Every time is passed in as a Date from epoch ms (exact in timestamptz), never now() in SQL: tests
+  // control the clock, and record's fence compares the lease claim wrote for equality.
+  const deliveries: Deliveries = {
+    fanOut(route, now, limit) {
+      return db.transaction().execute(async (tx) => {
+        // SKIP LOCKED: another server fanning out at the same time takes the next messages instead.
+        const { rows } = await sql<{ id: string; app_id: string; kind: string }>`
+          select id, app_id, kind from outbox o
+          where sent_at is null and not skipped and not exists (select 1 from outbox_delivery d where d.outbox_id = o.id)
+          order by id limit ${limit} for update skip locked`.execute(tx)
+        const at = new Date(now)
+        const made: Array<{ outbox_id: string; endpoint: string; status: 'pending'; next_at: Date; since: Date }> = []
+        const skipped: string[] = []
+        for (const r of rows) {
+          const endpoints = [...new Set(route({ appId: r.app_id as Id, kind: r.kind }))]
+          if (!endpoints.length) skipped.push(r.id)
+          for (const endpoint of endpoints) made.push({ outbox_id: r.id, endpoint, status: 'pending', next_at: at, since: at })
+        }
+        // A message whose fan-out committed just as this one read it is fanned out once all the same.
+        for (let i = 0; i < made.length; i += CHUNK)
+          await tx
+            .insertInto('outbox_delivery')
+            .values(made.slice(i, i + CHUNK))
+            .onConflict((oc) => oc.columns(['outbox_id', 'endpoint']).doNothing())
+            .execute()
+        if (skipped.length) await tx.updateTable('outbox').set({ skipped: true, sent_at: at }).where('id', 'in', skipped).execute()
+        return rows.length
+      })
+    },
+    async claim(now, leaseMs, limit) {
+      const { rows } = await sql<DeliveryRow & { due: Date }>`
+        with c as (
+          select outbox_id, endpoint, next_at from outbox_delivery
+          where status = 'pending' and next_at <= ${new Date(now)}
+          order by next_at, outbox_id, endpoint collate "C" limit ${limit} for update skip locked
+        ), u as (
+          update outbox_delivery d set next_at = ${new Date(now + leaseMs)} from c
+          where d.outbox_id = c.outbox_id and d.endpoint = c.endpoint
+          returning d.*, c.next_at as due
+        )
+        select u.*, o.app_id, o.item_id, o.kind, o.payload, o.created_at from u join outbox o on o.id = u.outbox_id
+        order by u.due, u.outbox_id, u.endpoint collate "C"`.execute(db)
+      return rows.map(delivery)
+    },
+    record(outboxId, endpoint, claimedUntil, result, now) {
+      const id = String(outboxId)
+      const at = new Date(now)
+      return db.transaction().execute(async (tx) => {
+        const fenced = await tx
+          .updateTable('outbox_delivery')
+          .set({
+            status: result.status,
+            attempts: sql<number>`attempts + 1`,
+            // This attempt's answer replaces the last one's.
+            last_status: result.lastStatus ?? null,
+            last_error: result.lastError ?? null,
+            ...(result.status === 'pending' ? { next_at: new Date(result.nextAt) } : {}),
+            ...(result.status === 'delivered' ? { delivered_at: at } : {}),
+          })
+          .where('outbox_id', '=', id)
+          .where('endpoint', '=', endpoint)
+          .where('status', '=', 'pending')
+          // A late result: the lease ran out and the delivery was claimed again, settled or retried since.
+          .where('next_at', '=', new Date(claimedUntil))
+          .executeTakeFirst()
+        if (!Number(fenced.numUpdatedRows)) return false
+        // Two endpoints of one message settling at once on two servers would each still see the other
+        // pending. The message's row lock orders them, and the check after it (a new statement, so a
+        // fresh snapshot) sees whichever settled first.
+        await sql`select 1 from outbox where id = ${id} for update`.execute(tx)
+        await sql`update outbox set sent_at = ${at} where id = ${id}
+          and not exists (select 1 from outbox_delivery where outbox_id = ${id} and status = 'pending')`.execute(tx)
+        return true
+      })
+    },
+    async list({ status, limit = 100 }) {
+      let q = db.selectFrom('outbox_delivery as d').innerJoin('outbox as o', 'o.id', 'd.outbox_id').selectAll('d').select(['o.app_id', 'o.item_id', 'o.kind', 'o.payload', 'o.created_at'])
+      if (status) q = q.where('d.status', '=', status)
+      const rows = await q.orderBy('d.outbox_id', 'desc').orderBy(sql`d.endpoint collate "C"`).limit(Math.max(0, limit)).execute()
+      return rows.map(delivery)
+    },
+    retry(outboxId, now) {
+      const id = String(outboxId)
+      const at = new Date(now)
+      return db.transaction().execute(async (tx) => {
+        // A fresh schedule: the first retry is soon again, and giving up counts from now. The last answer stays.
+        const r = await tx.updateTable('outbox_delivery').set({ status: 'pending', next_at: at, attempts: 0, since: at }).where('outbox_id', '=', id).where('status', '=', 'failed').executeTakeFirst()
+        if (!Number(r.numUpdatedRows)) return false
+        await tx.updateTable('outbox').set({ sent_at: null }).where('id', '=', id).execute()
+        return true
+      })
+    },
+    async prune(now, keepMs, keepFailedMs) {
+      // Skipped messages count as sent; the cascade takes their deliveries.
+      const r = await db
+        .deleteFrom('outbox as o')
+        .where('o.sent_at', 'is not', null)
+        .where(
+          sql<boolean>`o.sent_at < case
+            when exists (select 1 from outbox_delivery d where d.outbox_id = o.id and d.status = 'failed') then ${new Date(now - keepFailedMs)}::timestamptz
+            else ${new Date(now - keepMs)}::timestamptz end`,
+        )
+        .executeTakeFirst()
+      return Number(r.numDeletedRows)
+    },
+  }
 
   const projections: Projections = {
     async item(appId, itemId) {
