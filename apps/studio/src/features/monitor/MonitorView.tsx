@@ -279,7 +279,7 @@ function LiveBadge({ appId }: { appId: Id }) {
         className={cx('inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium whitespace-nowrap tabular-nums', tone)}
         title={status === 'reconnecting' ? `${error ?? 'The server stopped answering'}. Showing its last data until it’s back.` : (error ?? undefined)}
       >
-        <span className={cx('h-1.5 w-1.5 rounded-full', dot)} />
+        <span className={cx('h-1.5 w-1.5 rounded-full', dot, status === 'connecting' && 'animate-pulse')} />
         {badge.text}
       </span>
       {/* The visible text ticks every second; announce only when the status itself changes. */}

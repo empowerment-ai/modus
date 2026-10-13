@@ -274,11 +274,13 @@ export function createLiveStore(deps: LiveDeps = {}) {
           user: opts().user,
           fetch: f,
           onDenied: () => g === gen && denied(),
-          // The server doesn't run this app (any more): nothing to follow.
+          // The server doesn't run this app (any more): nothing to follow. If the design we hold still lists
+          // it, the server dropped it after we loaded: say so rather than going quietly idle.
           onNotFound: () => {
             if (g !== gen) return
             stop()
-            set({ status: 'idle' })
+            if (get().design?.apps.some((a) => a.id === appId)) set({ status: 'error', error: 'The server no longer runs this app. Reload to see its current design.' })
+            else set({ status: 'idle' })
           },
         },
       )
