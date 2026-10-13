@@ -212,6 +212,9 @@ export const migrations: Record<string, Migration> = {
         .addPrimaryKeyConstraint('outbox_delivery_pk', ['outbox_id', 'endpoint'])
         .execute()
       await sql`create index outbox_delivery_due on outbox_delivery (next_at) where status = 'pending'`.execute(db)
+      // M2 wrote messages that nothing sent; they're old news. Count them as sent with nothing to deliver, so the
+      // first sender doesn't post the whole backlog as new.
+      await sql`update outbox set skipped = true, sent_at = now() where sent_at is null`.execute(db)
       // Messages not yet fanned out.
       await sql`create index outbox_unrouted on outbox (id) where sent_at is null and not skipped and not routed`.execute(db)
     },

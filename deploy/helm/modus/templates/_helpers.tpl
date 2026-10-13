@@ -94,6 +94,19 @@ database: one command at a time per application, under its row lock.
 {{- fail (printf "keep autoscaling.enabled=false: %s." $why) -}}
 {{- end -}}
 {{- end -}}
+{{- range $i, $e := .Values.webhooks.endpoints -}}
+{{- if hasKey $e "secret" -}}
+{{- fail (printf "webhooks.endpoints[%d]: put the secret in webhooks.existingSecret and name its key with secretEnv; no secret in values." $i) -}}
+{{- end -}}
+{{- range $k, $_ := $e -}}
+{{- if not (has $k (list "name" "url" "secretEnv" "apps" "kinds")) -}}
+{{- fail (printf "webhooks.endpoints[%d]: unknown key %q (name, url, secretEnv, apps, kinds)." $i $k) -}}
+{{- end -}}
+{{- end -}}
+{{- if and $e.secretEnv (not $.Values.webhooks.existingSecret) -}}
+{{- fail (printf "webhooks.endpoints[%d] uses secretEnv: set webhooks.existingSecret to the Secret that holds %s." $i $e.secretEnv) -}}
+{{- end -}}
+{{- end -}}
 {{- if and (ne .Values.database.dialect "memory") (not .Values.database.existingSecret) -}}
 {{- fail (printf "database.existingSecret (a Secret holding %s) is required for database.dialect=%s." .Values.database.urlKey .Values.database.dialect) -}}
 {{- end -}}
@@ -103,9 +116,6 @@ database: one command at a time per application, under its row lock.
 {{- define "modus.webhooksJson" -}}
 {{- $out := list -}}
 {{- range . -}}
-{{- if .secret -}}
-{{- fail "webhooks.endpoints: put secrets in webhooks.existingSecret and name the key with secretEnv, not secret." -}}
-{{- end -}}
 {{- $out = append $out (pick . "name" "url" "secretEnv" "apps" "kinds") -}}
 {{- end -}}
 {{- toPrettyJson $out -}}

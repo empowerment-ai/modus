@@ -303,6 +303,10 @@ Every server runs a sender. Servers sharing a PostgreSQL database share the work
 claimed by one of them at a time, and a server that dies mid-send loses its claim after 60 seconds,
 when another takes it. With no endpoint configured, messages are marked sent at once.
 
+The memory store keeps deliveries in the process only: a restart loses pending and failed ones
+(and unsent messages). Its message ids keep growing across restarts, so receivers can still drop
+ids they have seen.
+
 ### Settings
 
 | Variable | What it does |
@@ -342,7 +346,8 @@ Modus-Delivery: 42
 
 `id` (also in `Modus-Delivery`) is the outbox message id. A message can arrive more than once, so
 drop ids you have already handled. A `job.ready` payload is
-`{ tokenId, serviceId, nodeId, attempt }`. `Modus-Signature` holds the time the request was signed
+`{ tokenId, serviceId, nodeId, attempt }`. A `notify` payload is the item's audit entry, so an
+escalation also arrives as `kind: "notify"`, with `payload.kind` set to `"escalated"`. `Modus-Signature` holds the time the request was signed
 (`t`, Unix seconds) and `v1`, the hex HMAC-SHA256 of `"<t>.<raw body>"` with the endpoint's
 secret.
 
@@ -371,8 +376,10 @@ seconds.
 - Network errors, timeouts, 408, 429 and 5xx are retried after 10 s, 30 s, 2 min, 10 min and 1 h,
   then every hour. A longer `Retry-After` is honored.
 - Any other answer fails at once, including 3xx: redirects are not followed.
-- A delivery that is still failing 24 hours after its first attempt (or after an administrator's
-  retry) fails.
+- An endpoint this server doesn't know (another pod may, during a rollout) is retried on the same
+  schedule.
+- No retry is scheduled past 24 hours after the first attempt (or after an administrator's retry):
+  a delivery still failing then fails.
 
 Each endpoint has its own delivery, so a failing endpoint never delays or repeats another. The
 status and the first 500 characters of the answer are kept; failures are logged with the endpoint's
@@ -406,11 +413,15 @@ webhooks:
 kubectl create secret generic modus-webhooks --from-literal=OPS_HOOK_SECRET="$(openssl rand -hex 32)"
 ```
 
-The chart writes the list (without secrets; it refuses an inline `secret`) to `webhooks.json` in
-its ConfigMap, mounts it at `/etc/modus/webhooks.json` and sets `WEBHOOKS_FILE`. Every key of
-`existingSecret` becomes an environment variable, so `secretEnv` names resolve; it may instead
-hold `WEBHOOK_URL` and `WEBHOOK_SECRET` for a single endpoint. Changing the list rolls the pods.
-With an empty list and no Secret, nothing is rendered.
+The chart writes the list to `webhooks.json` in its own `<release>-modus-webhooks` ConfigMap,
+mounts it at `/etc/modus/webhooks.json` and sets `WEBHOOKS_FILE`. It refuses an inline `secret`,
+keys other than `name`, `url`, `secretEnv`, `apps` and `kinds`, and `secretEnv` without
+`existingSecret`. Every key of `existingSecret` becomes an environment variable, so `secretEnv`
+names resolve; it may instead hold `WEBHOOK_URL` and `WEBHOOK_SECRET` for a single endpoint.
+Changing the list or the settings rolls the pods (checksum annotations). The checksums don't
+cover Secrets: after rotating a webhook secret, restart the pods
+(`kubectl -n modus rollout restart deploy/modus-all`). With an empty list and no Secret, nothing
+is rendered.
 
 ### Known limits
 
@@ -418,6 +429,8 @@ With an empty list and no Secret, nothing is rendered.
   claimed in that round wait for it.
 - The outbox list isn't scoped per application: it shows every application's deliveries, because
   roles are organization-wide.
+- Each server routes messages with its own endpoint list. During a rollout that adds an endpoint,
+  messages that old pods fan out are not sent to the new endpoint.
 
 ## Configuration reference
 
@@ -539,6 +552,10 @@ the older server refuses to start because it doesn't know that migration.
 From now on pods roll while one of them migrates, so the release before a migration keeps
 running against the new schema for a moment. Every migration must work with the previous
 release.
+
+**Upgrading to the release with webhooks** (migration `0003`): messages written before it were
+never sent, and the migration marks them sent, so the first sender doesn't post that backlog as
+new. Only messages committed after the upgrade go to your endpoints.
 
 ## The assistant and your data
 

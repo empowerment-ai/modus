@@ -6,6 +6,28 @@ import { afterAll, describe, expect, it, vi } from 'vitest'
 import { Runtime } from '../runtime'
 import { memoryStorage } from './memory'
 
+describe('memory storage', () => {
+  it('numbers outbox messages past every id a previous process gave out', async () => {
+    const commit = async (s: ReturnType<typeof memoryStorage>, version: number) => {
+      await s.transact('app_a', version, () => ({ value: 0, write: { state: newSim('app_a', 1), entries: [], items: [], outbox: [{ itemId: 'i1', kind: 'notify', payload: {} }], tickedAt: 0 } }))
+      return (await s.projections.outbox('app_a')).at(-1)!.id
+    }
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const first = memoryStorage()
+      let before = 0
+      for (let v = 0; v < 5; v++) before = await commit(first, v)
+      // A restart a millisecond later: a new store, which keeps nothing of the old one's outbox.
+      vi.setSystemTime(Date.now() + 1)
+      const after = await commit(memoryStorage(), 0)
+      expect(Number.isSafeInteger(after)).toBe(true)
+      expect(after).toBeGreaterThan(before)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('memory storage with a data directory', () => {
   const dirs: string[] = []
   afterAll(async () => {

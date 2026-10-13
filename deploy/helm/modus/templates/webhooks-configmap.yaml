@@ -1,0 +1,12 @@
+{{- with .Values.webhooks.endpoints }}
+# Webhook endpoints, mounted as a file (not loaded as environment). Secrets stay in webhooks.existingSecret (secretEnv).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "modus.fullname" $ }}-webhooks
+  labels:
+    {{- include "modus.labels" $ | nindent 4 }}
+data:
+  webhooks.json: |
+    {{- include "modus.webhooksJson" . | nindent 4 }}
+{{- end }}

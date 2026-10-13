@@ -52,7 +52,9 @@ export function memoryStorage(dataDir?: string): Storage {
   const held = new Map<Id, Held>()
   const projected = new Map<Id, Map<Id, ProjectedItem>>()
   const outbox: Queued[] = []
-  let outboxId = 0
+  // Ids keep growing across restarts, so receivers that drop ids they've seen never drop a new message.
+  // Nothing to persist: seeded from the clock, 1000 ids per millisecond of uptime before a restart could reuse one.
+  let outboxId = Date.now() * 1000
   /** Keyed `${outboxId}:${endpoint}`, in the order fanned out. */
   const sending = new Map<string, Delivery>()
   /** Per application, the end of the queue of transactions: one at a time, like a row lock. */

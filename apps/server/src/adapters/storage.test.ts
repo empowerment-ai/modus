@@ -101,6 +101,30 @@ describe.skipIf(!url)('postgres', () => {
       await drop(schema)
     })
 
+    it('counts outbox messages written before 0003 as sent, so the first sender never posts the backlog', async () => {
+      const schema = await fresh()
+      const old = new Kysely<never>({ dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: url, max: 1, options: `-c search_path=${schema}` }) }) })
+      const migrated = await new Migrator({ db: old, provider: { getMigrations: async () => migrations }, migrationTableSchema: schema }).migrateTo('0002_projections')
+      expect(migrated.error).toBeUndefined()
+      await old.destroy()
+      // Two that nothing sent under M2, and one already marked sent.
+      await admin.query(`insert into ${schema}.outbox (app_id, item_id, kind, payload, sent_at) values ('app_a', 'i1', 'notify', '{}', null), ('app_a', 'i2', 'job.ready', '{}', null), ('app_a', 'i3', 'notify', '{}', '2026-01-01')`)
+
+      const s = postgresStorage(url!, { schema })
+      await s.migrate()
+      const { rows } = await admin.query(`select item_id, skipped, routed, sent_at is not null as sent from ${schema}.outbox order by id`)
+      expect(rows).toEqual([
+        { item_id: 'i1', skipped: true, routed: false, sent: true },
+        { item_id: 'i2', skipped: true, routed: false, sent: true },
+        { item_id: 'i3', skipped: false, routed: false, sent: true },
+      ])
+      expect(await s.deliveries.fanOut(() => ['ops'], Date.now(), 100)).toBe(0)
+      expect(await s.deliveries.list({})).toEqual([])
+      expect(await s.projections.outbox('app_a')).toEqual([])
+      await s.close()
+      await drop(schema)
+    })
+
     it('upgrades a database written before M2: backfills projections, starts the clock, numbers after the stored log', async () => {
       const schema = await fresh()
       // The schema as the release before M2 left it: 0001 only.
