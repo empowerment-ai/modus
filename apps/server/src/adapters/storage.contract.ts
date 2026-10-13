@@ -12,6 +12,8 @@ export interface ContractTarget {
   create(): Promise<Storage>
   /** A second adapter over the same data as the last `create()`: a restart. */
   reopen(): Promise<Storage>
+  /** Another adapter over the same data as the last `create()`, used at the same time: another replica (memory: the same instance). */
+  peer(): Promise<Storage>
   /** Drop whatever `create()` made. */
   cleanup(): Promise<void>
   /** Projections and the outbox survive a restart (memory rebuilds them at startup instead). */
@@ -54,6 +56,11 @@ export function storageContract(name: string, target: ContractTarget) {
     const reopen = async () => {
       const s = await target.reopen()
       opened.push(s)
+      return s
+    }
+    const peer = async () => {
+      const s = await target.peer()
+      if (!opened.includes(s)) opened.push(s)
       return s
     }
     afterEach(async () => {
@@ -247,6 +254,73 @@ export function storageContract(name: string, target: ContractTarget) {
       expect(await s.tryClock('app_a', 'one')).toBe(true)
       await s.releaseClocks('one')
       expect(await s.tryClock('app_a', 'two')).toBe(true)
+    })
+
+    describe('two replicas', () => {
+      it('lose no update across 50 interleaved commands, with unique numbers and gapless logs', async () => {
+        const a = await Runtime.create({ storage: await create() })
+        const b = await Runtime.create({ storage: await peer() })
+        const runs = Array.from({ length: 50 }, (_, i) => (i % 2 ? a : b).run('app_invoice', (sim, ctx) => createObject(sim, ctx, 'w_invoice', { f_invno: `R-${i}` }, 'u_maya')!.id))
+        const ids = await Promise.all(runs)
+        expect(new Set(ids).size).toBe(50)
+        const storage = await reopen()
+        const stored = (await storage.state.load('app_invoice'))!.state!
+        const objs = Object.values(stored.objects)
+        expect(objs).toHaveLength(50)
+        expect(new Set(objs.map((o) => o.number)).size).toBe(50)
+        for (const o of objs) {
+          const log = await storage.events.read({ itemId: o.id, limit: 1000 })
+          expect(log.map((e) => e.seq)).toEqual(log.map((_, i) => i + 1))
+        }
+        await a.stop()
+        await b.stop()
+      })
+
+      it('shows one replica’s change to the other’s subscribers', async () => {
+        const a = await Runtime.create({ storage: await create() })
+        const b = await Runtime.create({ storage: await peer() })
+        const seen: string[][] = []
+        b.subscribe((c) => seen.push(c.itemIds))
+        const id = await a.run('app_invoice', (sim, ctx) => createObject(sim, ctx, 'w_invoice', { f_invno: 'SEEN' }, 'u_maya')!.id)
+        await vi.waitFor(() => expect(seen.flat()).toContain(id))
+        expect(await b.read('app_invoice', (sim) => !!sim.objects[id])).toBe(true)
+        await a.stop()
+        await b.stop()
+      })
+
+      it('count ten minutes of wall time once, whoever moves the clock', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] })
+        try {
+          const a = await Runtime.create({ storage: await create(), timeScale: 2 })
+          const b = await Runtime.create({ storage: await peer(), timeScale: 2 })
+          await a.tick()
+          const start = await a.read('app_invoice', (s) => s.clock)
+          vi.setSystemTime(Date.now() + 5 * 60_000)
+          await b.run('app_invoice', () => undefined)
+          vi.setSystemTime(Date.now() + 5 * 60_000)
+          await a.tick()
+          expect(await a.read('app_invoice', (s) => s.clock)).toBeCloseTo(start + 20)
+          await a.stop()
+          await b.stop()
+        } finally {
+          vi.useRealTimers()
+        }
+      })
+
+      it('moves ticking to the other replica when the ticker stops', async () => {
+        const sa = await create()
+        const sb = await peer()
+        const a = await Runtime.create({ storage: sa })
+        const b = await Runtime.create({ storage: sb })
+        expect(await sa.tryClock('app_invoice', 'x-a')).toBe(true)
+        expect(await sb.tryClock('app_invoice', 'x-b')).toBe(false)
+        await sa.releaseClocks('x-a')
+        await a.stop()
+        // Memory: letting go frees the clock. Postgres: closing the connection does too (afterEach closes it again, a no-op).
+        await sa.close?.()
+        expect(await sb.tryClock('app_invoice', 'x-b')).toBe(true)
+        await b.stop()
+      })
     })
   })
 }

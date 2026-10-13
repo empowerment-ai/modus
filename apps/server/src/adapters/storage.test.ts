@@ -12,19 +12,24 @@ import { join } from 'node:path'
 import { newSim } from '@modus-bpm/core'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { type ChangeNotice, StorageBusy } from '../ports'
+import { type ChangeNotice, type Storage, StorageBusy } from '../ports'
 import { memoryStorage } from './memory'
 import { postgresStorage } from './postgres'
 import { storageContract } from './storage.contract'
 
 let dir = ''
+let shared: Storage | undefined
 storageContract('memory with a data directory', {
   async create() {
     dir = await mkdtemp(join(tmpdir(), 'modus-contract-'))
-    return memoryStorage(dir)
+    return (shared = memoryStorage(dir))
   },
   async reopen() {
     return memoryStorage(dir)
+  },
+  // One process: a second replica shares the first's memory.
+  async peer() {
+    return shared!
   },
   async cleanup() {
     await rm(dir, { recursive: true, force: true })
@@ -58,6 +63,9 @@ describe.skipIf(!url)('postgres', () => {
       const s = postgresStorage(url!, { schema, max: 4 })
       await s.migrate()
       return s
+    },
+    async peer() {
+      return postgresStorage(url!, { schema, max: 4 })
     },
     cleanup: () => drop(schema).then(() => undefined),
     persistsProjections: true,
