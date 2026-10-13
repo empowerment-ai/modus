@@ -87,6 +87,8 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | Outbox messages (`job.ready`, `notify`) written in each command's transaction, then sent to webhooks | Done |
 | Locking per application: one command at a time across replicas | Done (M2) |
 | Locking per item | Planned (after M1) |
+| Load tests (local harness): `pnpm load` runs 1-3 servers on a throwaway Postgres under k6 and saves a comparable report ([tools/load](../tools/load/README.md)) | Done |
+| Load targets: 100 signals/s sustained, 1,000 concurrent Workspace users | Planned (M5) |
 | OIDC / SAML sign-in, SCIM group sync | Planned (M2–M6) |
 | SQL Server adapter (certified) | Planned (M6) |
 | Oracle adapter (certified) | Planned (v1.1) |
