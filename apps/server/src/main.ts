@@ -40,7 +40,11 @@ if (config.db.dialect === 'postgres') {
   storage = memoryStorage(config.dataDir)
 }
 
-const runtime = await Runtime.create({ storage, timeScale: config.timeScale, onError: (err, during) => server.log.error({ err }, `${during} failed; retrying`) })
+const runtime = await Runtime.create({
+  storage,
+  timeScale: config.timeScale,
+  onError: (err, during) => server.log.error({ err }, during === 'subscriber' ? 'A change subscriber failed' : `${during} failed; retrying`),
+})
 runtime.start()
 
 const server = buildServer(runtime, { logger: { level: config.logLevel }, staticDir: config.staticDir, assistant: anthropicModel(config.assistant) })

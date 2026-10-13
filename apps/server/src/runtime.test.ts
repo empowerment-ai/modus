@@ -5,10 +5,17 @@ import { createObject, newSim } from '@modus-bpm/core'
 import { seedDesign } from '@modus-bpm/core/model/seed'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { memoryStorage } from './adapters/memory'
-import { StorageBusy } from './ports'
+import { type ChangeNotice, type Storage, StorageBusy } from './ports'
 import { Runtime, StorageUnavailable } from './runtime'
 
 const make = (rt: Runtime, n: string, by = 'u_maya') => rt.run('app_invoice', (sim, ctx) => createObject(sim, ctx, 'w_invoice', { f_invno: n }, by))
+/** The same store, with this replica's change notices held back until `deliver` (as if they were slow to arrive). */
+function slowNotices(storage: Storage) {
+  const held: ChangeNotice[] = []
+  let hear: (n: ChangeNotice) => void = () => undefined
+  const peer: Storage = { ...storage, listen: async (onChange) => ((hear = onChange), async () => undefined) }
+  return { peer, held, deliver: (n: ChangeNotice) => hear(n), watch: () => storage.listen((n) => void held.push(n)) }
+}
 const numbers = (rt: Runtime) => rt.read('app_invoice', (sim) => Object.values(sim.objects).map((o) => o.data.f_invno))
 
 describe('runtime', () => {
@@ -117,6 +124,86 @@ describe('runtime', () => {
     await b.stop()
   })
 
+  it('tells subscribers about another runtime’s items it picks up in a command, even one that fails', async () => {
+    const storage = memoryStorage()
+    const { peer } = slowNotices(storage)
+    const a = await Runtime.create({ storage })
+    const b = await Runtime.create({ storage: peer })
+    const seen: string[][] = []
+    b.subscribe((c) => seen.push(c.itemIds))
+    // b hasn't heard of X when it makes Y: the transaction hands it X's state.
+    const x = await make(a, 'X')
+    const y = await make(b, 'Y')
+    expect(seen).toEqual([[x!.id, y!.id].sort()])
+    // A command that fails on top of another's change still shows that change.
+    const z = await make(a, 'Z')
+    await expect(
+      b.run('app_invoice', () => {
+        throw new Error('nope')
+      }),
+    ).rejects.toThrow('nope')
+    expect(seen[1]).toEqual([z!.id])
+    expect(await numbers(b)).toEqual(['X', 'Y', 'Z'])
+    await a.stop()
+    await b.stop()
+  })
+
+  it('tells subscribers about every item it reloads, across versions it never heard of', async () => {
+    const storage = memoryStorage()
+    const { peer, held, deliver, watch } = slowNotices(storage)
+    await watch()
+    const a = await Runtime.create({ storage })
+    const b = await Runtime.create({ storage: peer })
+    const seen: string[][] = []
+    b.subscribe((c) => seen.push(c.itemIds))
+    const x = await make(a, 'X')
+    const y = await make(a, 'Y')
+    await vi.waitFor(() => expect(held).toHaveLength(2))
+    // The first notice arrives after storage has moved on: the reload shows both items.
+    deliver(held[0]!)
+    await vi.waitFor(() => expect(seen).toHaveLength(1))
+    expect(seen[0]).toEqual([x!.id, y!.id].sort())
+    // The second is now old news.
+    deliver(held[1]!)
+    expect(await numbers(b)).toEqual(['X', 'Y'])
+    expect(seen).toHaveLength(1)
+    await a.stop()
+    await b.stop()
+  })
+
+  it('doesn’t reload its own commits', async () => {
+    const storage = memoryStorage()
+    const rt = await Runtime.create({ storage })
+    const get = vi.spyOn(storage.state, 'get')
+    for (let i = 0; i < 10; i++) await make(rt, `OWN-${i}`)
+    expect(await numbers(rt)).toHaveLength(10)
+    expect(get).not.toHaveBeenCalled()
+    await rt.stop()
+  })
+
+  it('keeps the storage error as the cause, and a busy lock’s own message', async () => {
+    const storage = memoryStorage()
+    const rt = await Runtime.create({ storage })
+    const down = new Error('database unreachable')
+    storage.transact = () => Promise.reject(down)
+    await expect(make(rt, 'LOST')).rejects.toMatchObject({ cause: down })
+    const busy = new StorageBusy('Another server is busy with this application.')
+    storage.transact = () => Promise.reject(busy)
+    await expect(make(rt, 'BUSY')).rejects.toMatchObject({ message: busy.message, cause: busy })
+    await rt.stop()
+  })
+
+  it('reports a subscriber that throws, and the command still succeeds', async () => {
+    const errors: string[] = []
+    const rt = await Runtime.create({ storage: memoryStorage(), onError: (_e, during) => errors.push(during) })
+    rt.subscribe(() => {
+      throw new Error('subscriber bug')
+    })
+    expect(await make(rt, 'SUB')).toBeDefined()
+    expect(errors).toEqual(['subscriber'])
+    await rt.stop()
+  })
+
   it('reports a failed reload of another runtime’s change instead of throwing', async () => {
     const storage = memoryStorage()
     const errors: string[] = []
@@ -180,6 +267,7 @@ describe('runtime', () => {
   it('leaves no timers behind when stopped', async () => {
     vi.useFakeTimers()
     const rt = await Runtime.create({ storage: memoryStorage() })
+    rt.start()
     rt.start()
     expect(vi.getTimerCount()).toBe(1)
     await rt.stop()
