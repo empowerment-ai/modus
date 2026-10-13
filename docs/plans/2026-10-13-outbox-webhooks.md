@@ -218,7 +218,7 @@ With no endpoints: `route` returns `[]`, so fan-out marks everything skipped; no
 
 Errors in a round (storage down) are logged and the next round retries; a round never throws to the caller of `wake` except in tests via `log`.
 
-**Tests** (memory storage; a real local HTTP server via `node:http` on port 0 so the HTTP path is real; fake `now` starting at or after the real `Date.now()`, because messages get a real wall-clock `createdAt` and `since` at commit):
+**Tests** (memory storage; a real local HTTP server via `node:http` on port 0 so the HTTP path is real; fake `now` starting at or after the real `Date.now()`, because messages get a real wall-clock `createdAt` at commit; `since` comes from the `now` passed to `fanOut`):
 1. A message created through `transact` reaches the server once, with a body matching the format and a signature `verify` accepts.
 2. Two endpoints, one filtered by `kinds: ['notify']`: a `job.ready` reaches only the other.
 3. Server answers 500: delivery pending with nextAt = now + 10 s; advance `now` 10 s, wake, server answers 200 → delivered; the server saw 2 requests.
