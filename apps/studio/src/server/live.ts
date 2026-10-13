@@ -53,6 +53,8 @@ export interface LiveState {
   lastUpdate?: number
   /** Date.now() of the last change event that moved an item, for "last change Ns ago". */
   lastChange?: number
+  /** Date.now() of the last bytes from the stream, keep-alive pings included (kept to the second). */
+  lastHeard?: number
   status: LiveStatus
   error?: string
 
@@ -80,6 +82,8 @@ export interface LiveDeps {
   retryMs?: number
   /** Whether the tab is hidden, and a way to hear when that changes. Default: the document's, or always visible. */
   visibility?: Visibility
+  /** A stream silent this long counts as dropped, and is reopened (default SILENT_AFTER_MS). */
+  silentMs?: number
 }
 
 export interface Visibility {
@@ -93,6 +97,12 @@ function documentVisibility(): Visibility {
   if (typeof document === 'undefined') return { hidden: () => false, subscribe: () => {} }
   return { hidden: () => document.hidden, subscribe: (cb) => document.addEventListener('visibilitychange', cb) }
 }
+
+/**
+ * The server pings a quiet stream every 25 s; hearing nothing for 60 s means the connection is gone even if
+ * the socket says otherwise (a proxy or a sleeping laptop can leave one half-open), so "Live" means heard from recently.
+ */
+export const SILENT_AFTER_MS = 60_000
 
 const ADMIN_KEY = 'modus-live-admin'
 /** The server keeps the last 3000 points; so does the Studio. */
@@ -125,6 +135,7 @@ export function createLiveStore(deps: LiveDeps = {}) {
   const feedLimit = deps.feedLimit ?? 300
   const retryMs = deps.retryMs ?? 3000
   const visibility = deps.visibility ?? documentVisibility()
+  const silentMs = deps.silentMs ?? SILENT_AFTER_MS
 
   const remembered = (): Id | undefined => {
     try {
@@ -143,6 +154,10 @@ export function createLiveStore(deps: LiveDeps = {}) {
   let gen = 0
   let closeStream: (() => void) | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
+  /** Watches the open stream for silence. */
+  let watch: ReturnType<typeof setTimeout> | undefined
+  /** When the open stream was last heard from, or opened: what the watch measures silence from. */
+  let heardAt = 0
   let lastFetch = 0
   let pending = false
   let pendingFull = false
@@ -164,6 +179,8 @@ export function createLiveStore(deps: LiveDeps = {}) {
       closeStream = undefined
       clearTimeout(timer)
       timer = undefined
+      clearTimeout(watch)
+      watch = undefined
       pending = pendingFull = inFlight = streamLive = ready = false
     }
 
@@ -274,7 +291,31 @@ export function createLiveStore(deps: LiveDeps = {}) {
       schedule(e.items === null)
     }
 
+    /** Any bytes at all: the connection is alive. The store's copy moves at most once a second. */
+    const heard = () => {
+      heardAt = Date.now()
+      if (heardAt - (get().lastHeard ?? 0) >= 1000) set({ lastHeard: heardAt })
+    }
+
+    /** Nothing heard for `silentMs`, not even a ping: drop this connection and open a new one. */
+    const watchSilence = (g: number, appId: Id, delay = silentMs) => {
+      clearTimeout(watch)
+      watch = setTimeout(() => {
+        if (g !== gen) return
+        const quiet = Date.now() - heardAt
+        if (quiet < silentMs) return watchSilence(g, appId, silentMs - quiet)
+        closeStream?.()
+        closeStream = undefined
+        streamLive = false
+        stale = true
+        set({ status: 'reconnecting' })
+        follow(g, appId)
+      }, delay)
+    }
+
     const follow = (g: number, appId: Id) => {
+      heardAt = Date.now()
+      watchSilence(g, appId)
       closeStream = openStream(
         appId,
         (e) => g === gen && onChange(e),
@@ -292,6 +333,7 @@ export function createLiveStore(deps: LiveDeps = {}) {
         {
           user: opts().user,
           fetch: f,
+          onActivity: () => g === gen && heard(),
           onDenied: () => g === gen && denied(),
           // The server doesn't run this app (any more): nothing to follow. If the design we hold still lists
           // it, the server dropped it after we loaded: say so rather than going quietly idle.
@@ -348,7 +390,7 @@ export function createLiveStore(deps: LiveDeps = {}) {
         const g = gen
         set({
           appId,
-          ...(sameApp ? {} : { monitor: undefined, series: [], feed: [], explorer: emptyExplorer(), lastUpdate: undefined, lastChange: undefined }),
+          ...(sameApp ? {} : { monitor: undefined, series: [], feed: [], explorer: emptyExplorer(), lastUpdate: undefined, lastChange: undefined, lastHeard: undefined }),
         })
         if (get().mode !== 'live') return
         set({ status: 'connecting', error: undefined })

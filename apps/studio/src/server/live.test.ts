@@ -236,6 +236,73 @@ describe('live store', () => {
     expect(server.calls.slice(before).map((c) => c.path)).toContain('/api/apps/app_invoice/monitor/series')
   })
 
+  it('a quiet stream that keeps pinging stays live, and lastHeard follows the pings', async () => {
+    const { server, store } = await setup()
+    await store.getState().connect('app_invoice')
+    await flush()
+    server.stream().push(': connected\n\n')
+    await flush()
+    expect(store.getState().lastHeard).toBe(Date.now())
+    for (let i = 0; i < 8; i++) {
+      await vi.advanceTimersByTimeAsync(25_000)
+      server.stream().push(': ping\n\n')
+      await flush()
+      expect(store.getState().status).toBe('live')
+      expect(store.getState().lastHeard).toBe(Date.now())
+    }
+    expect(server.paths('/api/apps/app_invoice/stream')).toHaveLength(1)
+    expect(server.stream().cancelled()).toBe(false)
+  })
+
+  it('60 s without a byte counts as a dropped stream: reconnecting, a new stream, then live and a full reload', async () => {
+    const { server, store } = await setup()
+    await store.getState().connect('app_invoice')
+    await flush()
+    server.stream().push(': connected\n\n')
+    await flush()
+    await vi.advanceTimersByTimeAsync(59_000)
+    expect(store.getState().status).toBe('live')
+    const old = server.stream()
+    const before = server.calls.length
+
+    // Opening a new stream answers at once in the fake; hold it to see the state in between.
+    const held = gate()
+    server.hold = (path) => (path.endsWith('/stream') ? held.promise : undefined)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(old.cancelled()).toBe(true)
+    expect(store.getState().status).toBe('reconnecting')
+    expect(server.paths('/api/apps/app_invoice/stream')).toHaveLength(2)
+
+    server.hold = undefined
+    held.open()
+    await flush()
+    expect(store.getState().status).toBe('live')
+    await vi.advanceTimersByTimeAsync(1000)
+    // A full reload: the series from the start, not since the last point.
+    expect(server.calls.slice(before).map((c) => c.path)).toContain('/api/apps/app_invoice/monitor/series')
+    expect(store.getState().monitor?.clock).toBe(10)
+  })
+
+  it('the silence watch counts from the last byte, and stops with the connection', async () => {
+    const { server, store } = await setup()
+    await store.getState().connect('app_invoice')
+    await flush()
+    await vi.advanceTimersByTimeAsync(40_000)
+    server.stream().change({ clock: 11, items: [], counts: {}, active: 1 })
+    await flush()
+    await vi.advanceTimersByTimeAsync(40_000) // 80 s since opening, 40 s since the event
+    expect(store.getState().status).toBe('live')
+    expect(server.paths('/api/apps/app_invoice/stream')).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(server.paths('/api/apps/app_invoice/stream')).toHaveLength(2)
+
+    store.getState().setMode('simulation')
+    await flush()
+    await vi.advanceTimersByTimeAsync(180_000)
+    expect(server.paths('/api/apps/app_invoice/stream')).toHaveLength(2)
+    expect(store.getState().status).toBe('idle')
+  })
+
   it('retries the connect when the design cannot be loaded', async () => {
     const { server, store } = await setup()
     const real = server.fetch.getMockImplementation()!

@@ -78,8 +78,9 @@ What building it changed or added to the design above:
   badge reads "Not on this server".
 - **Badge.** "Live · last change Ns ago", counting only events that moved an item, then "Live · idle"
   on a quiet server; "Connecting…" pulses; amber "Reconnecting…" keeps the last data.
-- **Merge note.** `feat/load-tests` owns the stream handler and adds pings. After both merge, take its
-  handler, then do the TODO in `source.ts`: track `lastHeard` and treat 60 s of silence as a dropped
-  stream, so "Live" also means "heard from recently".
+- **Heard from recently.** `feat/load-tests` owns the stream handler and its 25 s pings. After the
+  merge the stream reports every chunk (pings included) and the store keeps `lastHeard`: 60 s with
+  nothing heard counts as a dropped stream, which it closes and reopens, showing "Reconnecting…" in
+  between. So "Live" means heard from recently, not just a socket the browser believes is open.
 - **Smoke check.** `pnpm --filter @modus-bpm/server smoke:live` (after a studio build) runs the
   end-to-end check against a real server.
