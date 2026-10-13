@@ -117,18 +117,16 @@ with `memory` (the image's default) snapshots go to `/data`.
 - **`memory`** (default): everything in the process, snapshotted to JSON files in `DATA_DIR`.
 - **`postgres`**: `DATABASE_URL=postgres://…`. On startup the server applies any pending
   migrations (Kysely's migrator; the history is in `kysely_migration`) and refuses to start if
-  it can't. Tables: `design` (one row, JSONB), `app_state` (one JSONB row per application) and
-  `event` (the append-only log: `app_id`, `item_id`, `item_number`, `seq`, `at`, `kind`, the full
-  audit entry as JSONB; `UNIQUE (app_id, item_id, seq)`).
+  it can't. Tables: `design` (one row, JSONB), `app_state` (one JSONB row per application, with
+  its `version` and `ticked_at`), `event` (the append-only log: `app_id`, `item_id`,
+  `item_number`, `seq`, `at`, `kind`, the full audit entry as JSONB;
+  `UNIQUE (app_id, item_id, seq)`), and the projections `item` and `work_item` with an `outbox`.
 
-What this slice does not do yet: the live state is still held by the one process and written
-back as a whole (every five seconds and on shutdown), not as projection tables updated in the
-command's transaction; there is no outbox, no timer table and no per-item locking, so run one
-server per database. A command's reply can go out before its events reach the database; a
-failed write makes the server refuse changes (`503`) until it is written (appends are
-idempotent, so a batch that partly landed is safe to resend; a different entry at a taken
-position is refused as a conflict), but a crash in between loses it. After a crash the state can be a few seconds behind the log; at
-startup new entries are numbered after what the log holds, so the log keeps everything, though an
-item created in those lost seconds can have its number handed out again (and state written
-back up to five seconds late). Those come next in milestone M2, along with OIDC sign-in. The Helm chart is in
+Every command runs in one `Storage.transact`: under the application's row lock it catches the
+clock up, runs on a copy of the state, and commits the state, audit entries, projection rows,
+outbox rows and clock time together, or nothing. A lock not granted within 5 seconds answers
+`503` (busy). Several servers can share one database: each `LISTEN`s for the others' commits
+and reloads, and one server per application (the holder of its advisory lock) moves the clock.
+Locking is per application; per item waits for the engine split (M1). Outbox rows are written
+but nothing sends them yet (M4). The Helm chart is in
 [`deploy/helm/modus`](../../deploy/helm/modus).

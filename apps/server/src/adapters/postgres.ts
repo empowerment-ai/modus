@@ -1,9 +1,12 @@
-// PostgreSQL storage: the published design, each application's live state and the
-// append-only event log, through Kysely on a node-postgres pool. Migrations live
-// in this file (so they bundle with the server) and run at startup.
+// PostgreSQL storage: the published design, each application's live state, the
+// append-only event log, item and work-item projections and the outbox, through
+// Kysely on a node-postgres pool. Migrations live in this file (so they bundle
+// with the server) and run at startup.
 //
 // Each command commits in one transaction under its application's row lock: state,
-// audit entries, projection rows and outbox together (docs/ARCHITECTURE.md).
+// audit entries, projection rows and outbox together (docs/ARCHITECTURE.md). Several
+// servers can share one database: a dedicated connection LISTENs for their commits
+// and holds the session advisory locks that pick one clock ticker per application.
 
 import type { AuditEntry, Design, Id, OutboxMessage, Priority, ProjectedItem, SimState, TokenState } from '@modus-bpm/core'
 import { type Generated, Kysely, PostgresDialect, sql } from 'kysely'

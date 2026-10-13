@@ -49,8 +49,8 @@ data model and request sequences. [DEPLOYMENT.md](DEPLOYMENT.md) has the operato
 | Web app | React 19, Vite 8, Tailwind CSS 4, React Flow 12, Zustand 5, Immer, Lucide icons | MIT | **Prototype complete** |
 | Server state in the browser | TanStack Query (cache, retries, optimistic updates) over the REST API | MIT | Planned (M3) |
 | API | Fastify 5 + zod 4 → OpenAPI 3.1; Server-Sent Events for live updates | MIT | **Skeleton** |
-| SQL layer | Kysely (typed SQL builder) behind storage ports | MIT | Planned (M2) |
-| Database | PostgreSQL 16–18 first; SQL Server 2022/2025; Oracle 19c/23ai+ | PostgreSQL / commercial | Planned (M2, M6, v1.1) |
+| SQL layer | Kysely (typed SQL builder) behind storage ports | MIT | Done for PostgreSQL (M2) |
+| Database | PostgreSQL 16–18 first; SQL Server 2022/2025; Oracle 19c/23ai+ | PostgreSQL / commercial | PostgreSQL done (M2); SQL Server (M6), Oracle (v1.1) planned |
 | Search | Postgres full-text + `pg_trgm` + typed field index; optional `pgvector`; optional OpenSearch 3 | PostgreSQL / Apache-2.0 | Built in the engine; DB-backed planned (M3) |
 | Assistant | Built-in interpreter (offline) + Claude via the Anthropic API with tool use; a pluggable model port | — | Built-in **done**; model path in the server |
 | Messaging | Outbox tables first; NATS JetStream (with its MQTT listener) for event ingest and fan-out | Apache-2.0 | Planned (M4–M5) |
@@ -438,7 +438,7 @@ flowchart TB
 | Try it | Open the [live demo](https://empowerment-ai.github.io/modus/) — or the single-file build, which runs from disk with no install. |
 | Develop | `pnpm install && pnpm dev` (studio on Vite) and `pnpm --filter @modus-bpm/server dev` (API). |
 | Run the product | `docker run -p 8787:8787 ghcr.io/empowerment-ai/modus` → studio and API on one port, in-memory storage with a JSON snapshot on a volume. |
-| With a database and sign-in | `docker compose --profile postgres --profile keycloak up` (Postgres support lands in M2). |
+| With a database and sign-in | `docker compose --profile keycloak up` (Postgres starts by default; Keycloak is not used yet). |
 | Without Docker | A planned embedded mode uses **PGlite** (Postgres compiled to WebAssembly) so the same Postgres adapter runs in one process, and Node's single-executable applications can ship it as one binary. |
 
 Local and SaaS differ only in configuration: the same image, the same storage adapter, the
