@@ -43,8 +43,11 @@ the Modus logo in the top bar returns to the front page.
    live until you publish*: nothing in flight is touched yet.
 2. Press **Publish…**. The dialog lists what changes; add a note and choose **Who uses version
    2?** — *New items only* (recommended: invoices in flight finish on version 1), *New items
-   and items in flight* (move them now), or *Nobody yet* (keep the draft). Publish for new
-   items only.
+   and items in flight* (move them now), or *Nobody yet* (keep the draft). Under **Try it
+   first**, press **Simulate**: the live state runs forward 8 hours with version 2 and without
+   it, and the dialog says what changes (completions, cycle time, the bottleneck). Changed
+   and added steps carry a **Changed** / **New** mark on the map until you publish. Publish
+   for new items only.
 3. Now delete **Manager approval** from the map (invoices are waiting there) and **Publish…**
    with *New items and items in flight*: the dialog asks where the invoices at *Manager
    approval* should go. Leave them where they are for now; everything else moves to version 3,

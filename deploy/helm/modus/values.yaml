@@ -2,9 +2,10 @@
 #
 #   helm install modus deploy/helm/modus --set image.tag=main
 #
-# What is real today and what is planned: docs/DEPLOYMENT.md. In short, storage
-# is in memory with JSON snapshots on a volume, so the chart runs one pod and
-# refuses settings that would need a shared SQL store.
+# What is real today and what is planned: docs/DEPLOYMENT.md. In short, the
+# memory dialect keeps all state in one process (JSON snapshots on a volume), so
+# the chart runs one pod for it. On PostgreSQL, replicas share the database and
+# the chart allows several replicas, several deployments and autoscaling.
 
 image:
   repository: ghcr.io/empowerment-ai/modus
@@ -24,9 +25,10 @@ fullnameOverride: ''
 #   scheduler   the clock: timers, SLAs, escalations, retries
 #   ingest      stream intake and triage (NATS / MQTT / Kafka)
 #   realtime    the live event stream (SSE)
-# Today every process runs every role (MODUS_ROLES is accepted and logged) and
-# keeps state in memory, so keep the single all-in-one deployment at one replica.
-# Once a SQL store ships, split them, for example:
+# Today every process runs every role (MODUS_ROLES is accepted and logged).
+# With database.dialect=memory keep the single all-in-one deployment at one
+# replica. On PostgreSQL raise `replicas` (or turn on autoscaling) as needed.
+# Once processes honor their roles, split them, for example:
 #   all:        { enabled: false }
 #   api:        { enabled: true, roles: [api, realtime], replicas: 3 }
 #   engine:     { enabled: true, roles: [engine, scheduler], replicas: 2 }
@@ -37,6 +39,9 @@ deployments:
     enabled: true
     roles: [api, engine, automation, scheduler, ingest, realtime]
     replicas: 1
+    # Empty: Recreate for memory, RollingUpdate for SQL dialects. Set Recreate for the first
+    # upgrade from a release before M2 (docs/DEPLOYMENT.md). Memory refuses RollingUpdate.
+    strategy: ''
     resources:
       requests:
         cpu: 100m
@@ -63,8 +68,9 @@ tenancy:
   mode: single
 
 database:
-  # memory is implemented. postgres, mssql and oracle are planned: the server validates
-  # DATABASE_URL and then refuses to start until their adapters ship.
+  # memory (JSON snapshots on the volume) or postgres (DATABASE_URL from existingSecret).
+  # mssql and oracle are planned: the server validates DATABASE_URL and refuses to start.
+  # memory allows one replica; postgres allows several (they share the database).
   dialect: memory
   # An existing Secret with the connection string (SQL dialects only).
   existingSecret: ''
@@ -111,7 +117,7 @@ ingress:
   #    hosts: [modus.example.com]
 
 autoscaling:
-  # Planned: needs a SQL store. The chart refuses it while database.dialect=memory.
+  # SQL dialects only: replicas share the database (one command at a time per application).
   enabled: false
   deployment: all
   minReplicas: 2
