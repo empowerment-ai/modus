@@ -2,7 +2,8 @@
 // a restart picks up where it left off. Good for development, demos and tests;
 // not for production: one process only, and a crash between the files of one
 // commit can leave the state ahead of the log. Projections and the outbox live in
-// memory only; the runtime rebuilds projections at startup.
+// memory only; the runtime rebuilds projections at startup. `transact` waits its
+// turn behind the application's queue instead of raising StorageBusy.
 
 import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -56,9 +57,24 @@ export function memoryStorage(dataDir?: string): Storage {
   const history = dataDir
     ? readFile(join(dataDir, 'events.jsonl'), 'utf8').then(
         (text) => {
-          const lines = text.split('\n').filter(Boolean).slice(-MAX_EVENTS)
-          events.unshift(...lines.map((l) => JSON.parse(l) as LoggedEvent))
-          for (const e of events) lastSeq.set(`${e.appId}:${e.itemId}`, Math.max(e.seq, lastSeq.get(`${e.appId}:${e.itemId}`) ?? 0))
+          // A crash mid-append can leave a torn last line, and a retried append the same entry twice:
+          // skip what doesn't parse and keep the first entry at each position.
+          const seen = new Set<string>()
+          const loaded: LoggedEvent[] = []
+          for (const line of text.split('\n')) {
+            let e: LoggedEvent
+            try {
+              e = JSON.parse(line) as LoggedEvent
+            } catch {
+              continue
+            }
+            const key = `${e.appId}:${e.itemId}:${e.seq}`
+            if (seen.has(key)) continue
+            seen.add(key)
+            loaded.push(e)
+            lastSeq.set(`${e.appId}:${e.itemId}`, Math.max(e.seq, lastSeq.get(`${e.appId}:${e.itemId}`) ?? 0))
+          }
+          events.unshift(...loaded.slice(-MAX_EVENTS))
         },
         () => undefined,
       )
@@ -131,9 +147,12 @@ export function memoryStorage(dataDir?: string): Storage {
     const text = JSON.stringify(write.state)
     const next: Held = { version: version + 1, tickedAt: write.tickedAt, state: JSON.parse(text) as SimState }
     const logged: LoggedEvent[] = []
+    // Local positions, so two groups for one item in the same write don't reuse a number.
+    const numbered = new Map<Id, number>()
     for (const { itemId, itemNumber, entries } of write.entries) {
-      let seq = lastSeq.get(`${appId}:${itemId}`) ?? 0
+      let seq = numbered.get(itemId) ?? lastSeq.get(`${appId}:${itemId}`) ?? 0
       for (const e of entries) logged.push({ ...structuredClone(e), appId, itemId, itemNumber, seq: ++seq })
+      numbered.set(itemId, seq)
     }
     const items = write.items.map((p) => structuredClone(p))
     const messages = write.outbox.map((m) => ({ appId, message: { ...structuredClone(m), id: 0 } }))
@@ -211,7 +230,7 @@ export function memoryStorage(dataDir?: string): Storage {
       for (let i = events.length - 1; i >= 0 && out.length < limit; i--) {
         const e = events[i]!
         if ((appId && e.appId !== appId) || (itemId && e.itemId !== itemId)) continue
-        out.push(e)
+        out.push(structuredClone(e))
       }
       return out.reverse()
     },
@@ -235,15 +254,12 @@ export function memoryStorage(dataDir?: string): Storage {
       })
       const { notice, ...result } = await run
       // After the lock is released, as NOTIFY is delivered after COMMIT.
+      // A listener's failure (thrown or rejected) is its own; the commit stands. Each gets its own copy.
       if (notice)
         for (const l of listeners)
-          queueMicrotask(() => {
-            try {
-              l(notice)
-            } catch {
-              // A listener's failure is its own; the commit stands.
-            }
-          })
+          void Promise.resolve()
+            .then(() => l(structuredClone(notice)))
+            .catch(() => undefined)
       return result
     },
     async listen(onChange) {
