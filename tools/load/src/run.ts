@@ -210,7 +210,7 @@ async function main() {
   await post(`${OBSERVER}/reset`)
   await post(`${OBSERVER}/streams/start`, { count: streams, servers: serverNames.map((s) => `http://${s}:8787`) })
 
-  console.log('\nWatch live:\n  k6 dashboard  http://localhost:5665\n  Studio        http://localhost:8790  (Monitor, Workspace)\n')
+  console.log('\nWatch live:\n  k6 dashboard  http://localhost:5665\n  Studio        http://localhost:8790  (its own simulation until the live Monitor lands)\n')
 
   const k6 = await docker(
     [
@@ -238,7 +238,9 @@ async function main() {
   const observer = await maybe('observer stats', () => getJson(`${OBSERVER}/stats`))
   await maybe('observer stop', () => post(`${OBSERVER}/streams/stop`))
   // An overloaded server is still working through the requests k6 left queued, so the end-of-run
-  // reads wait their turn, and try again if nginx gives up first (its 90 s read timeout).
+  // reads wait their turn (DRAIN_MS) and try once more. On one server nginx's 90 s read timeout
+  // answers 504 first. On two, nginx hands a timed-out GET to the other server (proxy_next_upstream),
+  // so our own 120 s timeout fires first.
   const overview = await maybe('overview', () => again(() => getJson(`${NGINX}/api/apps/${APP}/overview`, {}, DRAIN_MS)))
   const outbox = await maybe('outbox', () => again(outboxCounts))
   for (const s of [...serverNames, 'nginx', 'observer']) await docker(compose('logs', '--no-color', s), { to: join(out, `${s}.log`), allowFail: true })
