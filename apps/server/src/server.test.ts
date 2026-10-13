@@ -96,3 +96,32 @@ describe('the API runs the same engine live', () => {
     expect(r.statusCode).toBe(401)
   })
 })
+
+describe('the live stream', () => {
+  it('opens at once on an idle app and pings while quiet', async () => {
+    const live = buildServer(rt, { streamPingMs: 50 })
+    const base = await live.listen({ port: 0, host: '127.0.0.1' })
+    const abort = new AbortController()
+    try {
+      const started = Date.now()
+      const res = await fetch(`${base}/api/apps/app_invoice/stream`, { signal: abort.signal })
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toBe('text/event-stream')
+      expect(res.headers.get('x-accel-buffering')).toBe('no')
+      const reader = res.body!.getReader()
+      const decoder = new TextDecoder()
+      let text = ''
+      while (!text.includes(': ping\n\n')) {
+        const { value, done } = await reader.read()
+        if (done) break
+        text += decoder.decode(value, { stream: true })
+      }
+      expect(text.startsWith(': connected\n\n')).toBe(true)
+      expect(text).toContain(': ping\n\n')
+      expect(Date.now() - started).toBeLessThan(2000)
+    } finally {
+      abort.abort()
+      await live.close()
+    }
+  })
+})
