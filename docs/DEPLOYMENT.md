@@ -192,6 +192,10 @@ clock (timers, SLAs, escalations, retries). If it stops, another takes over on i
 To try two replicas with Compose, uncomment `modus-2` in `docker-compose.yml`, run
 `docker compose up -d`, and open http://localhost:8787 and http://localhost:8788 side by side.
 
+To put 1-3 replicas under load on your machine, run `pnpm load`; see
+[tools/load/README.md](../tools/load/README.md). Its numbers are for comparing runs, not for
+sizing production.
+
 ### Ingress and TLS
 
 Set `ingress.tls` and let cert-manager issue the certificate:
