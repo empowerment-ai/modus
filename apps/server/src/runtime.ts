@@ -44,6 +44,8 @@ export class StorageUnavailable extends Error {}
 interface Cached {
   version: number
   sim: SimState
+  /** Wall time (epoch ms) `sim.clock` corresponds to. Absent: never ticked. */
+  tickedAt?: number
 }
 
 /** Items that differ between two committed states (both left unchanged). */
@@ -75,7 +77,7 @@ export class Runtime {
     for (const app of rt.design.apps) {
       const s = await storage.state.load(app.id)
       if (!s?.state) continue
-      rt.cache.set(app.id, { version: s.version, sim: s.state })
+      rt.cache.set(app.id, { version: s.version, sim: s.state, tickedAt: s.tickedAt })
       // Projections arrived after this state was first written: fill them in once.
       if (Object.keys(s.state.objects).length && !(await storage.projections.any(app.id))) await rt.backfill(app.id)
     }
@@ -141,6 +143,16 @@ export class Runtime {
     return this.cached(appId).sim
   }
 
+  /**
+   * The application's clock as of now: the cached clock plus the wall time since it was stored. The
+   * cached clock lags on a quiet application (idle ticks aren't committed); this doesn't.
+   */
+  clockNow(appId: Id): number {
+    const c = this.cached(appId)
+    if (c.tickedAt === undefined) return c.sim.clock
+    return c.sim.clock + (Math.max(0, Date.now() - c.tickedAt) / 60_000) * this.opts.timeScale
+  }
+
   /** Run a command against one application's live state, in one storage transaction. */
   run<T>(appId: Id, fn: (sim: SimState, ctx: Ctx) => T): Promise<T> {
     return this.command(appId, fn)
@@ -190,9 +202,9 @@ export class Runtime {
   }
 
   /** Adopt a committed state unless the cache already holds that version or a later one. */
-  private adopt(appId: Id, version: number, sim: SimState): boolean {
-    if (version <= (this.cache.get(appId)?.version ?? 0)) return false
-    this.cache.set(appId, { version, sim })
+  private adopt(appId: Id, c: Cached): boolean {
+    if (c.version <= (this.cache.get(appId)?.version ?? 0)) return false
+    this.cache.set(appId, c)
     return true
   }
 
@@ -205,12 +217,13 @@ export class Runtime {
       // Another server's newer state, handed over under the lock: worth keeping whatever happens next.
       let fresh: Cached | undefined
       let sim!: SimState
+      let tickedAt: number | undefined
       let itemIds: Id[] = []
       let r: { value: T; version: number; committed: boolean }
       try {
         r = await this.opts.storage.transact(appId, cached.version, (stored) => {
           try {
-            if (stored.state) fresh = { version: stored.version, sim: stored.state }
+            if (stored.state) fresh = { version: stored.version, sim: stored.state, tickedAt: stored.tickedAt }
             const before = stored.state ?? cached.sim
             sim = structuredClone(before)
             // Taken under the lock: waiting for it doesn't count as clock time already spent.
@@ -226,7 +239,8 @@ export class Runtime {
             const idx = buildIndex(ctx)
             const items = c.itemIds.map((id) => projectItem(sim, ctx, id, idx)).filter((p): p is ProjectedItem => !!p)
             // Never write a clock time earlier than the stored one (another server's clock may run ahead).
-            return { value, write: { state: sim, entries: c.entries, items, outbox: c.outbox, tickedAt: Math.max(now, last ?? now) } }
+            tickedAt = Math.max(now, last ?? now)
+            return { value, write: { state: sim, entries: c.entries, items, outbox: c.outbox, tickedAt } }
           } catch (err) {
             failed = { err }
             throw err
@@ -234,7 +248,7 @@ export class Runtime {
         })
       } catch (err) {
         // The command failed, but another server's change it was handed is real: keep and show it.
-        if (fresh && this.adopt(appId, fresh.version, fresh.sim)) this.emit({ appId, clock: fresh.sim.clock, itemIds: moved(cached.sim, fresh.sim) })
+        if (fresh && this.adopt(appId, fresh)) this.emit({ appId, clock: fresh.sim.clock, itemIds: moved(cached.sim, fresh.sim) })
         if (failed) throw failed.err
         if (err instanceof StorageBusy) throw new StorageUnavailable(err.message, { cause: err })
         throw new StorageUnavailable('Storage is unavailable, so the change wasn’t made. Try again shortly.', { cause: err })
@@ -242,9 +256,9 @@ export class Runtime {
       // Items another server moved since our cached version, which this runtime hasn't told anyone about.
       const theirs = fresh ? moved(cached.sim, fresh.sim) : []
       if (r.committed) {
-        this.adopt(appId, r.version, sim)
+        this.adopt(appId, { version: r.version, sim, tickedAt })
         this.emit({ appId, clock: sim.clock, itemIds: [...new Set([...theirs, ...itemIds])].sort() })
-      } else if (fresh && this.adopt(appId, fresh.version, fresh.sim)) {
+      } else if (fresh && this.adopt(appId, fresh)) {
         // A rolled-back idle tick still brought another server's change: show it.
         this.emit({ appId, clock: fresh.sim.clock, itemIds: theirs })
       }
@@ -273,7 +287,7 @@ export class Runtime {
       // Checked again in turn: a commit queued ahead (this runtime's own, say) may have brought the cache there.
       if (n && n.version <= was.version) return
       const s = await this.opts.storage.state.load(appId)
-      if (!s?.state || !this.adopt(appId, s.version, s.state)) return
+      if (!s?.state || !this.adopt(appId, { version: s.version, sim: s.state, tickedAt: s.tickedAt })) return
       // The notice's items cover the state only when it is the one commit between the cache and storage.
       const one = n?.itemIds && s.version === n.version && was.version === n.version - 1
       this.emit({ appId, clock: s.state.clock, itemIds: one ? n.itemIds! : moved(was.sim, s.state) })
@@ -285,15 +299,17 @@ export class Runtime {
     const ctx = this.ctx(appId)
     const cached = this.cached(appId)
     let sim = cached.sim
+    let tickedAt: number | undefined
     const r = await this.opts.storage.transact(appId, cached.version, (stored) => {
       sim = stored.state ?? cached.sim
+      tickedAt = stored.tickedAt ?? Date.now()
       const idx = buildIndex(ctx)
       const items = Object.keys(sim.objects)
         .map((id) => projectItem(sim, ctx, id, idx))
         .filter((p): p is ProjectedItem => !!p)
-      return { value: undefined, write: { state: sim, entries: [], items, outbox: [], tickedAt: stored.tickedAt ?? Date.now() } }
+      return { value: undefined, write: { state: sim, entries: [], items, outbox: [], tickedAt: tickedAt! } }
     })
-    this.adopt(appId, r.version, sim)
+    this.adopt(appId, { version: r.version, sim, tickedAt })
   }
 
   private emit(change: Change) {

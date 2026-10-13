@@ -103,10 +103,9 @@ export function storageContract(name: string, target: ContractTarget) {
     it('logs committed entries and reads them back in order, with every field', async () => {
       const s = await create()
       const first = [event('app_a', 'i1', 1, { userId: 'u_maya', fieldIds: ['f_1', 'f_2'], comment: 'ok' }), event('app_a', 'i1', 2)]
-      await commitEntries(s, 'app_a', 0, [])
-      await commitEntries(s, 'app_a', 1, first)
+      await commitEntries(s, 'app_a', 0, first)
       await commitEntries(s, 'app_b', 0, [event('app_b', 'i9', 1)])
-      await commitEntries(s, 'app_a', 2, [event('app_a', 'i2', 1)])
+      await commitEntries(s, 'app_a', 1, [event('app_a', 'i2', 1)])
       const all = await (await reopen()).events.read({})
       expect(all).toEqual([...first, event('app_b', 'i9', 1), event('app_a', 'i2', 1)])
     })
@@ -199,13 +198,17 @@ export function storageContract(name: string, target: ContractTarget) {
     it('numbers new entries after what the log already holds for the item', async () => {
       const s = await create()
       const entry = (text: string) => ({ at: 1, kind: 'note', text }) as never
-      const commit = (version: number, ...groups: string[][]) =>
-        s.transact('app_a', version, () => ({ value: 0, write: { state: newSim('app_a', 1), entries: groups.map((texts) => ({ itemId: 'i1', itemNumber: 'A-1', entries: texts.map(entry) })), items: [], outbox: [], tickedAt: 0 } }))
-      await commit(0, ['a', 'b'])
-      await commit(1, ['c'])
+      const commit = (to: Storage, version: number, ...groups: string[][]) =>
+        to.transact('app_a', version, () => ({ value: 0, write: { state: newSim('app_a', 1), entries: groups.map((texts) => ({ itemId: 'i1', itemNumber: 'A-1', entries: texts.map(entry) })), items: [], outbox: [], tickedAt: 0 } }))
+      await commit(s, 0, ['a', 'b'])
+      await commit(s, 1, ['c'])
       // Two groups for one item in one write: numbered one after the other.
-      await commit(2, ['d'], ['e'])
+      await commit(s, 2, ['d'], ['e'])
       expect((await s.events.read({ itemId: 'i1' })).map((e) => `${e.seq}:${e.text}`)).toEqual(['1:a', '2:b', '3:c', '4:d', '5:e'])
+      // After a restart, numbering carries on from what the log holds.
+      const again = await reopen()
+      await commit(again, 3, ['f'])
+      expect((await again.events.read({ itemId: 'i1' })).map((e) => `${e.seq}:${e.text}`)).toEqual(['1:a', '2:b', '3:c', '4:d', '5:e', '6:f'])
     })
 
     it('replaces an item’s work-item rows, dropping tokens that left', async () => {
@@ -297,6 +300,9 @@ export function storageContract(name: string, target: ContractTarget) {
           const start = await a.read('app_invoice', (s) => s.clock)
           vi.setSystemTime(Date.now() + 5 * 60_000)
           await b.run('app_invoice', () => undefined)
+          expect(await b.read('app_invoice', (s) => s.clock)).toBeCloseTo(start + 10)
+          // a hears b's commit and takes its clock.
+          await vi.waitFor(async () => expect(await a.read('app_invoice', (s) => s.clock)).toBeCloseTo(start + 10))
           vi.setSystemTime(Date.now() + 5 * 60_000)
           await a.tick()
           expect(await a.read('app_invoice', (s) => s.clock)).toBeCloseTo(start + 20)
@@ -312,14 +318,23 @@ export function storageContract(name: string, target: ContractTarget) {
         const sb = await peer()
         const a = await Runtime.create({ storage: sa })
         const b = await Runtime.create({ storage: sb })
-        expect(await sa.tryClock('app_invoice', 'x-a')).toBe(true)
-        expect(await sb.tryClock('app_invoice', 'x-b')).toBe(false)
-        await sa.releaseClocks('x-a')
-        await a.stop()
-        // Memory: letting go frees the clock. Postgres: closing the connection does too (afterEach closes it again, a no-op).
-        await sa.close?.()
-        expect(await sb.tryClock('app_invoice', 'x-b')).toBe(true)
-        await b.stop()
+        vi.useFakeTimers({ toFake: ['Date'] })
+        try {
+          await a.tick()
+          const ticked = (await sb.state.load('app_invoice'))!.version
+          // Past the idle-tick window, so a tick by the clock's holder would commit: b's skips the application.
+          vi.setSystemTime(Date.now() + 60_000)
+          await b.tick()
+          expect((await sb.state.load('app_invoice'))!.version).toBe(ticked)
+          // Memory: stopping lets go of the clock. Postgres: closing the connection does (afterEach closes it again, a no-op).
+          await a.stop()
+          await sa.close?.()
+          await b.tick()
+          expect((await sb.state.load('app_invoice'))!.version).toBe(ticked + 1)
+          await b.stop()
+        } finally {
+          vi.useRealTimers()
+        }
       })
     })
   })
