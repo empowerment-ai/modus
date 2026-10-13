@@ -505,6 +505,8 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
   const pollBody = z.object({ serviceId: z.string(), workerId: z.string(), max: z.number().int().min(1).max(100).default(1), leaseSeconds: z.number().int().min(5).max(3600).default(300) })
   app.post('/api/jobs/poll', async (req) => {
     const b = pollBody.parse(req.body)
+    // Leases are on the application's clock; a worker means real seconds, whatever the time scale.
+    const lease = (b.leaseSeconds / 60) * rt.timeScale
     const jobs = []
     for (const a of rt.design.apps) {
       if (jobs.length >= b.max) break
@@ -512,7 +514,7 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
       // Leases are compared with the clock as of now (the cached one lags on a quiet application). A stale
       // cache can still lead to a commit that claims nothing (another replica took the job): harmless.
       if (!(await rt.read(a.id, (sim) => activeTokens(sim).some((t) => openJob(sim, t, b.serviceId, rt.clockNow(a.id)))))) continue
-      const got = await rt.run(a.id, (sim, ctx) => pollJobs(sim, ctx, b.serviceId, b.workerId, b.max - jobs.length, b.leaseSeconds / 60))
+      const got = await rt.run(a.id, (sim, ctx) => pollJobs(sim, ctx, b.serviceId, b.workerId, b.max - jobs.length, lease))
       jobs.push(...got.map((j) => ({ ...j, id: `${a.id}:${j.id}`, appId: a.id })))
     }
     return { jobs }
