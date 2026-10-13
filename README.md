@@ -27,7 +27,7 @@ they changed something.
 
 > **Status: prototype.** The studio and the Workspace run entirely in the browser with a
 > simulated organization. The server is a working skeleton that ships as one container image
-> (in-memory storage for now). See the [roadmap](docs/ROADMAP.md).
+> (PostgreSQL, with several replicas on one database, or in memory). See the [roadmap](docs/ROADMAP.md).
 
 ## What it does
 

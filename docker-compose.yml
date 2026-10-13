@@ -1,15 +1,19 @@
 # Modus with Docker Compose.
 #
-#   docker compose up --build                  # Modus on http://localhost:8787
-#   docker compose --profile postgres up       # also start the optional services you name
+#   docker compose up --build                  # Modus on http://localhost:8787, stored in Postgres
+#   docker compose --profile nats up           # also start the optional services you name
+#   DB_DIALECT=memory docker compose up --no-deps modus   # no database: JSON snapshots in the modus-data volume
 #
-# Only `modus` starts by default and it is all you need today: storage is in
-# memory, snapshotted to the modus-data volume. The profiles below are the
-# infrastructure the roadmap adds (docs/DEPLOYMENT.md); Modus does not use any
-# of them yet, so starting them changes nothing about how it runs.
+# `modus` and `postgres` start by default: Modus keeps the design, live state
+# and event log in PostgreSQL (the postgres-data volume) and runs its schema
+# migrations at startup. The nats and keycloak profiles are infrastructure the
+# roadmap adds (docs/DEPLOYMENT.md); Modus does not use them yet.
 #
 # Secrets come from your shell or an untracked .env file next to this one,
 # never from this file: ANTHROPIC_API_KEY=... docker compose up
+# POSTGRES_PASSWORD has a development-only default; set your own in .env (URL-safe
+# characters only: it is also spliced into DATABASE_URL below). It takes effect
+# when the postgres-data volume is first created.
 
 name: modus
 
@@ -25,16 +29,37 @@ services:
       # Optional: turns on the language-model assistant (built-in assistant otherwise).
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       MODUS_ASSISTANT_MODEL: ${MODUS_ASSISTANT_MODEL:-claude-opus-5-5}
+      # `memory` ignores DATABASE_URL and snapshots to /data instead.
+      DB_DIALECT: ${DB_DIALECT:-postgres}
+      DATABASE_URL: postgres://modus:${POSTGRES_PASSWORD:-modus-dev-only}@postgres:5432/modus
     volumes:
       - modus-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
-  # ----- Optional, planned: not used by Modus yet -----
+  # A second replica on the same database: uncomment, then `docker compose up` and open both ports.
+  # modus-2:
+  #   image: modus:local
+  #   ports:
+  #     - '${MODUS_2_PORT:-8788}:8787'
+  #   environment:
+  #     TIME_SCALE: ${TIME_SCALE:-1}
+  #     LOG_LEVEL: ${LOG_LEVEL:-info}
+  #     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  #     MODUS_ASSISTANT_MODEL: ${MODUS_ASSISTANT_MODEL:-claude-opus-5-5}
+  #     DB_DIALECT: postgres
+  #     DATABASE_URL: postgres://modus:${POSTGRES_PASSWORD:-modus-dev-only}@postgres:5432/modus
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     modus:
+  #       condition: service_started
+  #   restart: unless-stopped
 
-  # PostgreSQL 18, the first SQL storage adapter (milestone M2). The server
-  # refuses DB_DIALECT=postgres until that adapter ships.
+  # PostgreSQL 18: Modus's storage (milestone M2).
   postgres:
-    profiles: [postgres]
     image: postgres:18-alpine
     environment:
       POSTGRES_DB: modus
@@ -42,15 +67,21 @@ services:
       # Development only; set your own in .env.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-modus-dev-only}
     ports:
-      - '127.0.0.1:5432:5432'
+      # For psql and `pnpm test:pg` from the host; POSTGRES_PORT moves it off a local server's 5432.
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
     volumes:
       # Postgres 18 images keep data under /var/lib/postgresql/18/docker.
       - postgres-data:/var/lib/postgresql
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U modus -d modus']
-      interval: 10s
+      # Over TCP: the image's first-run initialization server listens only on the socket.
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U modus -d modus']
+      interval: 5s
       timeout: 3s
       retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ----- Optional, planned: not used by Modus yet -----
 
   # NATS JetStream with its MQTT listener: event ingest for high-volume signals (milestone M5).
   nats:

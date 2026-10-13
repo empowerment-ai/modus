@@ -15,8 +15,15 @@ spec:
   {{- end }}
   revisionHistoryLimit: 5
   strategy:
-    # In-memory state and a ReadWriteOnce volume: the old pod must stop before the new one starts.
-    type: {{ ternary "Recreate" "RollingUpdate" $memory }}
+    # Memory's state lives in one process and a ReadWriteOnce volume, so the old pod stops first.
+    # SQL dialects share the database, so pods roll (set `strategy: Recreate` for an upgrade from
+    # a release before M2; docs/DEPLOYMENT.md).
+    {{- $strategy := $d.strategy | default (ternary "Recreate" "RollingUpdate" $memory) }}
+    type: {{ $strategy }}
+    {{- if eq $strategy "Recreate" }}
+    # Clear the rollingUpdate defaults Kubernetes stored on the live object, or switching to Recreate is rejected.
+    rollingUpdate: null
+    {{- end }}
   selector:
     matchLabels:
       {{- include "modus.selectorLabels" $ | nindent 6 }}

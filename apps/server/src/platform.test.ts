@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { memoryStorage } from './adapters/memory'
 import { buildServer } from './http'
@@ -169,8 +169,9 @@ describe('expedite', () => {
     const noReason = await api.inject({ method: 'POST', url, headers: as('u_maya'), payload: { on: true } })
     expect(noReason.statusCode).toBe(409)
     expect(noReason.json().error).toMatch(/Say why/)
-    // The clerk holding it is neither the requester nor a supervisor.
-    expect((await api.inject({ method: 'POST', url, headers: as(clerk), payload: { on: true, reason: 'Vendor called' } })).statusCode).toBe(403)
+    // A clerk who is neither the requester nor a supervisor (load balancing can give Maya her own invoice).
+    const clerkNotRequester = clerk === 'u_maya' ? otherClerk(clerk) : clerk
+    expect((await api.inject({ method: 'POST', url, headers: as(clerkNotRequester), payload: { on: true, reason: 'Vendor called' } })).statusCode).toBe(403)
     expect((await api.inject({ method: 'POST', url, headers: as('u_carmen'), payload: { on: true, reason: 'x' } })).statusCode).toBe(404)
 
     expect((await api.inject({ method: 'POST', url, headers: as('u_maya'), payload: { on: true, reason: 'Early-payment discount ends Friday' } })).json()).toEqual({ ok: true, value: true })
@@ -207,6 +208,19 @@ describe('health, readiness and the studio', () => {
     await server.close()
   })
 
+  it('says storage is unreachable without repeating the driver’s error', async () => {
+    const storage = memoryStorage()
+    storage.ping = () => Promise.reject(new Error('connect ECONNREFUSED db.internal:5432 for user "modus_admin"'))
+    const own = await Runtime.create({ storage })
+    const server = buildServer(own, { logger: false })
+    const res = await server.inject({ method: 'GET', url: '/api/ready' })
+    expect(res.statusCode).toBe(503)
+    expect(res.json()).toEqual({ ok: false, storage: 'memory', error: 'Storage unreachable' })
+    expect(res.body).not.toMatch(/db\.internal|modus_admin/)
+    await own.stop()
+    await server.close()
+  })
+
   it('serves the built studio with a single-page fallback, keeping /api for the API', async () => {
     const server = buildServer(rt, { staticDir: dir })
     const home = await server.inject({ method: 'GET', url: '/' })
@@ -234,5 +248,51 @@ describe('health, readiness and the studio', () => {
   it('refuses a STATIC_DIR without a build, and serves no studio without one', async () => {
     expect(() => buildServer(rt, { staticDir: join(dir, 'assets') })).toThrow(/no index.html/)
     expect((await api.inject({ method: 'GET', url: '/' })).statusCode).toBe(404)
+  })
+})
+
+describe('worker polls', () => {
+  it('lock only the applications with an open job for the service', async () => {
+    const storage = memoryStorage()
+    const own = await Runtime.create({ storage })
+    const server = buildServer(own)
+    const transact = vi.spyOn(storage, 'transact')
+    const poll = async () => (await server.inject({ method: 'POST', url: '/api/jobs/poll', payload: { serviceId: 'svc_erp', workerId: 'erp-idle', max: 10 } })).json() as { jobs: Array<{ appId: string }> }
+
+    expect((await poll()).jobs).toEqual([])
+    expect(transact).not.toHaveBeenCalled()
+
+    const created = await server.inject({ method: 'POST', url: '/api/apps/app_invoice/items', headers: as('u_maya'), payload: { workflowId: 'w_invoice', data: { f_invno: 'POLL-1' } } })
+    expect(created.statusCode).toBe(201)
+    transact.mockClear()
+    expect((await poll()).jobs.map((j) => j.appId)).toEqual(['app_invoice'])
+    expect(transact.mock.calls.map((c) => c[0])).toEqual(['app_invoice'])
+    // Leased now: the next poll finds nothing open and locks nothing.
+    transact.mockClear()
+    expect((await poll()).jobs).toEqual([])
+    expect(transact).not.toHaveBeenCalled()
+    await server.close()
+    await own.stop()
+  })
+
+  it('offer a job again once its lease runs out, though the quiet application’s clock hasn’t moved', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const own = await Runtime.create({ storage: memoryStorage() })
+      const server = buildServer(own)
+      const poll = async () => (await server.inject({ method: 'POST', url: '/api/jobs/poll', payload: { serviceId: 'svc_erp', workerId: 'erp-slow', max: 10, leaseSeconds: 5 } })).json() as { jobs: Array<{ id: string }> }
+      const created = await server.inject({ method: 'POST', url: '/api/apps/app_invoice/items', headers: as('u_maya'), payload: { workflowId: 'w_invoice', data: { f_invno: 'LEASE-1' } } })
+      expect(created.statusCode).toBe(201)
+      const [job] = (await poll()).jobs
+      expect(job).toBeDefined()
+      expect((await poll()).jobs).toEqual([])
+      // Nothing ticks (the runtime isn't started): only wall time passes.
+      vi.setSystemTime(Date.now() + 10_000)
+      expect((await poll()).jobs.map((j) => j.id)).toEqual([job!.id])
+      await server.close()
+      await own.stop()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

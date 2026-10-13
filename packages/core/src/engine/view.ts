@@ -285,7 +285,8 @@ export interface WorkItem {
   expedited: boolean
 }
 
-function toItem(sim: SimState, base: Index, t: Token): WorkItem | undefined {
+/** A token as a worklist row: its step, due times and age. Undefined when the token isn't at a work step. */
+export function workItemOf(sim: SimState, base: Index, t: Token): WorkItem | undefined {
   const obj = sim.objects[t.objectId]
   const idx = indexFor(base, obj)
   const found = idx.node.get(t.nodeId)
@@ -320,7 +321,7 @@ export function basketOf(sim: SimState, ctx: Ctx, userId: Id): WorkItem[] {
   return activeTokens(sim)
     .filter((t) => t.userId === userId && (t.state === 'assigned' || t.state === 'working'))
     .sort(urgent(sim))
-    .map((t) => toItem(sim, idx, t))
+    .map((t) => workItemOf(sim, idx, t))
     .filter((x): x is WorkItem => !!x)
 }
 
@@ -349,7 +350,7 @@ export function queuesFor(sim: SimState, ctx: Ctx, userId: Id): QueueSummary[] {
     const items = waiting
       .filter((t) => t.nodeId === nodeId && mine(t))
       .sort(urgent(sim))
-      .map((t) => toItem(sim, idx, t))
+      .map((t) => workItemOf(sim, idx, t))
       .filter((x): x is WorkItem => !!x)
     return { nodeId, label: node.data.label, path: found.wf.name, groupName: idx.group.get(groupId ?? '')?.name ?? '', items }
   })
@@ -385,7 +386,7 @@ export function distributionFor(sim: SimState, ctx: Ctx, userId: Id): Distributi
     if (!distributorsOf(idx, ws).includes(userId)) continue
     seen.add(node.id)
     const here = tokens.filter((t) => t.nodeId === node.id && handsOut(t)).sort(urgent(sim))
-    const items = (pred: (t: Token) => boolean) => here.filter(pred).map((t) => toItem(sim, idx, t)).filter((x): x is WorkItem => !!x)
+    const items = (pred: (t: Token) => boolean) => here.filter(pred).map((t) => workItemOf(sim, idx, t)).filter((x): x is WorkItem => !!x)
     out.push({
       nodeId: node.id,
       label: node.data.label,
@@ -461,7 +462,7 @@ export function supervisionFor(sim: SimState, ctx: Ctx, userId: Id): Supervision
     if (!at.length && !(idx.node.has(node.id) && supervisesStep(idx, node.id, userId))) continue
     const here = at
       .sort(urgent(sim))
-      .map((t) => toItem(sim, idx, t))
+      .map((t) => workItemOf(sim, idx, t))
       .filter((x): x is WorkItem => !!x)
     const callers = workflows.filter((w) => w.nodes.some((n) => n.type === 'subflow' && n.data.workflowId === wf.id)).map((w) => w.name)
     steps.push({
@@ -482,7 +483,7 @@ export function workItem(sim: SimState, ctx: Ctx, tokenId: Id): WorkItem | undef
   const idx = buildIndex(ctx)
   const objId = tokenId.slice(0, tokenId.lastIndexOf('~'))
   const t = sim.objects[objId]?.tokens.find((x) => x.id === tokenId)
-  return t ? toItem(sim, idx, t) : undefined
+  return t ? workItemOf(sim, idx, t) : undefined
 }
 
 /** Human description of where a token is and what it is waiting for. */

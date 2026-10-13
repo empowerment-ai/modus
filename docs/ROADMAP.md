@@ -23,7 +23,7 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | DMN decision tables bound to object fields | Planned |
 | Case handling: stages, milestones, ad-hoc tasks | Planned |
 | Natural language → draft workflow (always editable as a diagram) | Planned |
-| Simulate a draft before publishing; the version differences drawn on the map | Planned (next) |
+| Try a draft before publishing: run the live state forward with and without the new version (new items only, or work in flight moved too) and compare; steps the draft adds or changes marked on the map | Prototype |
 | BPMN 2.0 XML export / import | Planned |
 
 ## Work and people
@@ -79,11 +79,17 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | --- | --- |
 | Same engine in browser and server (live mode) | Skeleton |
 | REST API + live stream (SSE) | Skeleton |
-| PostgreSQL adapter, event log + projections + outbox + timers | Planned (M2) |
+| PostgreSQL storage: design, live state and the event log, with migrations at startup; Compose runs Modus on Postgres by default | Done (M2) |
+| One transaction per command: state, audit entries, item and work-item projections, outbox and clock commit together | Done (M2) |
+| Durable clock: one replica per application moves it (advisory lock); a restart catches it up | Done (M2) |
+| Several replicas on one PostgreSQL database; changes reach the others through LISTEN/NOTIFY | Done (M2) |
+| Outbox messages (`job.ready`, `notify`) are written; nothing sends them yet | Done (M2); sending in M4 |
+| Locking per application: one command at a time across replicas | Done (M2) |
+| Locking per item | Planned (after M1) |
 | OIDC / SAML sign-in, SCIM group sync | Planned (M2–M6) |
 | SQL Server adapter (certified) | Planned (M6) |
 | Oracle adapter (certified) | Planned (v1.1) |
-| One container image (server + studio), Docker Compose, Helm chart, GHCR images | Done (in-memory storage) |
+| One container image (server + studio), Docker Compose, Helm chart (several replicas on PostgreSQL), GHCR images | Done |
 | Multi-tenancy (pooled with row-level security, database per tenant, dedicated cells), SaaS control plane | Planned (M6) |
 | Air-gapped bundle, SBOM and signed images | Planned (M5–M6) |
 
