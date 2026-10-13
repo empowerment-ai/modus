@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit -p .",
     "test": "vitest run",
     "worker": "tsx examples/worker.ts",
-    "test:pg": "vitest run src/adapters"
+    "test:pg": "vitest run src/adapters",
+    "smoke:live": "tsx scripts/live-monitor-smoke.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",

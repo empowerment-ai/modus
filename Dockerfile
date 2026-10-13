@@ -21,9 +21,11 @@ RUN npm install --global corepack@latest && corepack enable
 
 # Manifests first, so dependencies are only reinstalled when they change.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# Every workspace package's manifest must be listed here, or --frozen-lockfile fails on the lockfile's importers.
 COPY apps/studio/package.json apps/studio/
 COPY apps/server/package.json apps/server/
 COPY packages/core/package.json packages/core/
+COPY tools/load/package.json tools/load/
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile
 

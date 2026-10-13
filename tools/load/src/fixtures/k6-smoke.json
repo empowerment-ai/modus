@@ -1,0 +1,203 @@
+{
+  "metrics": {
+    "http_reqs": {
+      "count": 1582,
+      "rate": 23.81651096462793
+    },
+    "http_req_failed": {
+      "passes": 0,
+      "fails": 1582,
+      "value": 0
+    },
+    "http_req_duration": {
+      "min": 0.289167,
+      "med": 3.778625,
+      "p(95)": 32.04835414999999,
+      "p(99)": 67.32200428999994,
+      "max": 111.142958,
+      "avg": 8.571363728192154
+    },
+    "http_req_duration{op:read}": {
+      "avg": 2.712657640569394,
+      "min": 0.289167,
+      "med": 0.844,
+      "p(95)": 11.65125,
+      "p(99)": 20.626691399999995,
+      "max": 71.957875,
+      "thresholds": {
+        "max>=0": false
+      }
+    },
+    "http_req_duration{op:change}": {
+      "p(95)": 34.874125,
+      "p(99)": 74.1525,
+      "max": 111.142958,
+      "avg": 9.836772191391223,
+      "min": 0.291,
+      "med": 5.661541,
+      "thresholds": {
+        "max>=0": false
+      }
+    },
+    "items_created": {
+      "count": 120,
+      "rate": 1.8065621464951653
+    },
+    "releases": {
+      "count": 39,
+      "rate": 0.5871326976109287
+    },
+    "jobs_completed": {
+      "count": 231,
+      "rate": 3.477632132003193
+    },
+    "jobs_failed": {
+      "count": 22,
+      "rate": 0.33120306019078033
+    },
+    "next_empty": {
+      "count": 82,
+      "rate": 1.234484133438363
+    },
+    "busy": {
+      "count": 0,
+      "rate": 0
+    },
+    "iterations": {
+      "count": 497,
+      "rate": 7.48217822340081
+    },
+    "http_req_duration{kind:create}": {
+      "min": 2.023375,
+      "med": 5.114625,
+      "p(95)": 11.894227049999982,
+      "p(99)": 18.800099229999997,
+      "max": 40.867125,
+      "avg": 6.218160725,
+      "thresholds": {
+        "max>=0": false
+      }
+    },
+    "http_req_failed{kind:create}": {
+      "passes": 0,
+      "fails": 120,
+      "thresholds": {
+        "rate>=0": false
+      },
+      "value": 0
+    },
+    "http_reqs{kind:create}": {
+      "count": 120,
+      "rate": 1.8065621464951653,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "busy{kind:create}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "http_req_duration{kind:next}": {
+      "p(99)": 19.30213146,
+      "max": 20.684667,
+      "avg": 8.57472313414634,
+      "min": 3.407208,
+      "med": 7.1020205,
+      "p(95)": 16.46065865,
+      "thresholds": {
+        "max>=0": false
+      }
+    },
+    "http_req_failed{kind:next}": {
+      "passes": 0,
+      "fails": 82,
+      "thresholds": {
+        "rate>=0": false
+      },
+      "value": 0
+    },
+    "http_reqs{kind:next}": {
+      "count": 82,
+      "rate": 1.234484133438363,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "busy{kind:next}": {
+      "rate": 0,
+      "count": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "http_req_duration{kind:release}": {
+      "avg": 14.339480743589746,
+      "min": 8.030833,
+      "med": 13.918,
+      "p(95)": 23.437554799999997,
+      "p(99)": 26.41515888,
+      "max": 27.701791,
+      "thresholds": {
+        "max>=0": false
+      }
+    },
+    "http_req_failed{kind:release}": {
+      "passes": 0,
+      "fails": 39,
+      "thresholds": {
+        "rate>=0": false
+      },
+      "value": 0
+    },
+    "http_reqs{kind:release}": {
+      "rate": 0.5871326976109287,
+      "count": 39,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "busy{kind:release}": {
+      "rate": 0,
+      "count": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "http_req_duration{kind:complete}": {
+      "avg": 26.640181290043298,
+      "min": 4.856417,
+      "med": 18.707792,
+      "p(95)": 70.28516699999992,
+      "p(99)": 95.5075999,
+      "max": 111.142958,
+      "thresholds": {
+        "max>=0": false
+      }
+    },
+    "http_req_failed{kind:complete}": {
+      "passes": 0,
+      "fails": 231,
+      "thresholds": {
+        "rate>=0": false
+      },
+      "value": 0
+    },
+    "http_reqs{kind:complete}": {
+      "count": 231,
+      "rate": 3.477632132003193,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "busy{kind:complete}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    }
+  }
+}

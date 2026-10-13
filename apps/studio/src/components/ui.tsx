@@ -124,18 +124,22 @@ export function Segmented<T extends string | number>({
   options,
   onChange,
   size = 'md',
+  ariaLabel,
 }: {
   value: T
   options: Array<{ value: T; label: ReactNode; title?: string }>
   onChange: (v: T) => void
   size?: 'sm' | 'md'
+  /** What the choice is about, for screen readers ("Monitor source"). */
+  ariaLabel?: string
 }) {
   return (
-    <div className="inline-flex rounded-md bg-slate-100 p-0.5">
+    <div role="group" aria-label={ariaLabel} className="inline-flex rounded-md bg-slate-100 p-0.5">
       {options.map((o) => (
         <button
           key={String(o.value)}
           type="button"
+          aria-pressed={o.value === value}
           title={o.title}
           onClick={() => onChange(o.value)}
           className={cx(

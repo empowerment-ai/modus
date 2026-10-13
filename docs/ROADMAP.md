@@ -67,6 +67,7 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | --- | --- |
 | Live heat map, bottleneck detection (people and automated steps), SLA breaches | Prototype |
 | Monitor: KPIs, work in flight over time, workload per person, services, activity, item explorer | Prototype |
+| Monitor on the server: the served Studio shows the server's live state, with a switch back to the simulation | Done (M3) |
 | Complete audit history per item | Prototype |
 | What-if lab on the live state (staffing, handling time, arrivals, distribution, capacity, outages), apply to design | Prototype |
 | Three-layer field security enforced by the engine; security matrix; "check as a person" | Prototype |
@@ -80,6 +81,7 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | --- | --- |
 | Same engine in browser and server (live mode) | Skeleton |
 | REST API + live stream (SSE) | Skeleton |
+| Workspace on the server: worklists, forms and requests against the API | Next (M3) |
 | PostgreSQL storage: design, live state and the event log, with migrations at startup; Compose runs Modus on Postgres by default | Done (M2) |
 | One transaction per command: state, audit entries, item and work-item projections, outbox and clock commit together | Done (M2) |
 | Durable clock: one replica per application moves it (advisory lock); a restart catches it up | Done (M2) |
@@ -87,6 +89,8 @@ browser studio (simulated); *Skeleton* means the server path exists in a first f
 | Outbox messages (`job.ready`, `notify`) written in each command's transaction, then sent to webhooks | Done |
 | Locking per application: one command at a time across replicas | Done (M2) |
 | Locking per item | Planned (after M1) |
+| Load tests (local harness): `pnpm load` runs 1-3 servers on a throwaway Postgres under k6 and saves a comparable report ([tools/load](../tools/load/README.md)) | Done |
+| Load targets: 100 signals/s sustained, 1,000 concurrent Workspace users | Planned (M5) |
 | OIDC / SAML sign-in, SCIM group sync | Planned (M2–M6) |
 | SQL Server adapter (certified) | Planned (M6) |
 | Oracle adapter (certified) | Planned (v1.1) |
