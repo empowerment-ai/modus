@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, api, detectServer, openStream, sseParser, type StreamState } from './client'
+import { ApiError, api, detectServer, getOcel, openStream, sseParser, type StreamState } from './client'
 import { fakeStream, json } from './fakes'
 
 describe('sseParser', () => {
@@ -65,6 +65,16 @@ describe('api', () => {
     expect(err).toBeInstanceOf(ApiError)
     expect(err.status).toBe(403)
     expect(err.message).toBe('Only an administrator can see the Monitor.')
+  })
+
+  it('downloads the OCEL log as a blob, as the given user', async () => {
+    const f = vi.fn(async () => json({ objects: [], events: [] }))
+    const blob = await getOcel('a b', { user: 'u_admin', fetch: f })
+    expect(JSON.parse(await blob.text())).toEqual({ objects: [], events: [] })
+    const [path, init] = f.mock.calls[0] as unknown as [string, RequestInit]
+    expect(path).toBe('/api/apps/a%20b/export/ocel')
+    expect(new Headers(init.headers).get('x-user-id')).toBe('u_admin')
+    await expect(getOcel('a', { user: 'u', fetch: async () => json({ error: 'nope' }, 404) })).rejects.toThrow('nope')
   })
 })
 

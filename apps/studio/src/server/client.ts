@@ -77,7 +77,8 @@ export async function detectServer(f: Fetch = fetch, timeoutMs = 1500): Promise<
   }
 }
 
-export async function api<T>(path: string, o: ApiOptions): Promise<T> {
+/** A GET as `o.user`; an error answer throws an ApiError with the server's message. */
+async function request(path: string, o: ApiOptions): Promise<Response> {
   const res = await (o.fetch ?? fetch)(path, { signal: o.signal, headers: { accept: 'application/json', 'x-user-id': o.user } })
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`.trim()
@@ -88,7 +89,11 @@ export async function api<T>(path: string, o: ApiOptions): Promise<T> {
     } catch {}
     throw new ApiError(res.status, message)
   }
-  return (await res.json()) as T
+  return res
+}
+
+export async function api<T>(path: string, o: ApiOptions): Promise<T> {
+  return (await (await request(path, o)).json()) as T
 }
 
 const appPath = (appId: Id) => `/api/apps/${encodeURIComponent(appId)}`
@@ -103,6 +108,9 @@ export const getSeries = (appId: Id, since: number | undefined, o: ApiOptions) =
 
 /** Newest first. */
 export const getFeed = (appId: Id, limit: number, o: ApiOptions) => api<{ entries: FeedEntry[] }>(`${appPath(appId)}/monitor/feed?limit=${limit}`, o)
+
+/** The event log as OCEL 2.0 JSON, as a file to save (a plain link can't send `x-user-id`). */
+export const getOcel = async (appId: Id, o: ApiOptions) => (await request(`${appPath(appId)}/export/ocel`, o)).blob()
 
 export function getItems(appId: Id, f: ItemFilters, page: { limit: number; cursor?: string }, o: ApiOptions) {
   const q = new URLSearchParams({ status: f.status, limit: String(page.limit) })

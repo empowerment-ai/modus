@@ -3,7 +3,6 @@ import { Avatar, cx, EmptyState } from '../../components/ui'
 import type { AuditKind, FeedEntry } from '@modus-bpm/core'
 import type { Id, User } from '@modus-bpm/core/model/types'
 import { formatClock } from '@modus-bpm/core/model/util'
-import { useUi } from '../../store/ui'
 
 const KIND: Partial<Record<AuditKind, { icon: LucideIcon; tone: string }>> = {
   created: { icon: FilePlus, tone: 'bg-brand-50 text-brand-600' },
@@ -17,8 +16,8 @@ const KIND: Partial<Record<AuditKind, { icon: LucideIcon; tone: string }>> = {
   assigned: { icon: UserPlus, tone: 'bg-sky-50 text-sky-600' },
 }
 
-export function ActivityFeed({ feed, users }: { feed: FeedEntry[]; users: Map<Id, User> }) {
-  const openObject = useUi((s) => s.openObject)
+/** `onOpenItem` is left out where the item can't be opened here (Live). */
+export function ActivityFeed({ feed, users, onOpenItem }: { feed: FeedEntry[]; users: Map<Id, User>; onOpenItem?: (id: Id) => void }) {
   const items = feed.slice(0, 60)
   if (!items.length) {
     return (
@@ -40,9 +39,13 @@ export function ActivityFeed({ feed, users }: { feed: FeedEntry[]; users: Map<Id
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-baseline gap-2 text-[11px] text-slate-500">
-                <button type="button" onClick={() => openObject(e.objectId)} className="font-mono font-medium text-brand-700 hover:underline">
-                  {e.number}
-                </button>
+                {onOpenItem ? (
+                  <button type="button" onClick={() => onOpenItem(e.objectId)} className="font-mono font-medium text-brand-700 hover:underline">
+                    {e.number}
+                  </button>
+                ) : (
+                  <span className="font-mono font-medium text-slate-700">{e.number}</span>
+                )}
                 <span className="tabular-nums">{formatClock(e.at)}</span>
               </div>
               <p className="text-xs leading-snug text-slate-700">{e.text}</p>
