@@ -8,7 +8,6 @@
 import type { AuditEntry, Design, Id, OutboxMessage, Priority, ProjectedItem, SimState, TokenState } from '@modus-bpm/core'
 import { type Generated, Kysely, PostgresDialect, sql } from 'kysely'
 import { type Migration, Migrator } from 'kysely/migration'
-import { isDeepStrictEqual } from 'node:util'
 import pg from 'pg'
 import { type ChangeNotice, type DesignStore, type EventLog, type LoggedEvent, type Projections, type StateStore, type Storage, StorageBusy, type Stored, type Work, type Write } from '../ports'
 
@@ -239,18 +238,6 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
 
   const state: StateStore = {
     async load(appId) {
-      const row = await db.selectFrom('app_state').select('state').where('app_id', '=', appId).executeTakeFirst()
-      return row?.state ?? undefined
-    },
-    async save(appId, s) {
-      // Counts as a commit, as in the memory adapter, so a transaction started before it sees the change.
-      await db
-        .insertInto('app_state')
-        .values({ app_id: appId, state: json(s), version: '1' })
-        .onConflict((oc) => oc.column('app_id').doUpdateSet({ state: (eb) => eb.ref('excluded.state'), version: sql`app_state.version + 1`, updated_at: sql`now()` }))
-        .execute()
-    },
-    async get(appId) {
       const row = await db.selectFrom('app_state').select(['version', 'ticked_at', 'state']).where('app_id', '=', appId).executeTakeFirst()
       if (!row || Number(row.version) === 0) return undefined
       const out: Stored = { version: Number(row.version) }
@@ -261,45 +248,6 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
   }
 
   const events: EventLog = {
-    async append(batch) {
-      if (!batch.length) return
-      await db.transaction().execute(async (tx) => {
-        for (let i = 0; i < batch.length; i += CHUNK) {
-          const chunk = batch.slice(i, i + CHUNK)
-          const rows = chunk.map(({ appId, itemId, itemNumber, seq, ...entry }) => ({
-            app_id: appId,
-            item_id: itemId,
-            item_number: itemNumber,
-            seq,
-            at: entry.at,
-            kind: entry.kind,
-            entry: json(entry),
-          }))
-          // A batch sent again after a lost acknowledgement must not fail on what already landed,
-          // but only an identical entry counts as already landed: a different one at a taken
-          // position is a real conflict, and the whole batch is refused rather than dropped quietly.
-          const landed = await tx
-            .insertInto('event')
-            .values(rows)
-            .onConflict((oc) => oc.columns(['app_id', 'item_id', 'seq']).doNothing())
-            .returning(['app_id', 'item_id', 'seq'])
-            .execute()
-          const key = (r: { app_id: string; item_id: string; seq: number }) => `${r.app_id}\u0000${r.item_id}\u0000${r.seq}`
-          const inserted = new Set(landed.map(key))
-          for (const { appId, itemId, itemNumber, seq, ...entry } of chunk) {
-            if (inserted.has(key({ app_id: appId, item_id: itemId, seq }))) continue
-            const had = await tx.selectFrom('event').select(['item_number', 'entry']).where('app_id', '=', appId).where('item_id', '=', itemId).where('seq', '=', seq).executeTakeFirst()
-            // Compared as stored: JSON drops undefined keys.
-            if (!had || had.item_number !== itemNumber || !isDeepStrictEqual(had.entry, JSON.parse(JSON.stringify(entry))))
-              throw new Error(`Event log conflict: item ${itemNumber} already has a different entry at position ${seq}.`)
-          }
-        }
-      })
-    },
-    async positions(appId) {
-      const rows = await db.selectFrom('event').select(['item_id', (eb) => eb.fn.max('seq').as('seq')]).where('app_id', '=', appId).groupBy('item_id').execute()
-      return new Map(rows.map((r) => [r.item_id as Id, Number(r.seq)]))
-    },
     async read({ appId, itemId, limit = 200 }) {
       let q = db.selectFrom('event').select(['app_id', 'item_id', 'item_number', 'seq', 'entry'])
       if (appId) q = q.where('app_id', '=', appId)

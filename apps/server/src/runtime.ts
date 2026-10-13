@@ -73,7 +73,7 @@ export class Runtime {
     rt.design = stored ?? seedDesign()
     if (!stored && rt.opts.seedIfEmpty) await storage.designs.save(rt.design)
     for (const app of rt.design.apps) {
-      const s = await storage.state.get(app.id)
+      const s = await storage.state.load(app.id)
       if (!s?.state) continue
       rt.cache.set(app.id, { version: s.version, sim: s.state })
       // Projections arrived after this state was first written: fill them in once.
@@ -272,7 +272,7 @@ export class Runtime {
       const was = this.cached(appId)
       // Checked again in turn: a commit queued ahead (this runtime's own, say) may have brought the cache there.
       if (n && n.version <= was.version) return
-      const s = await this.opts.storage.state.get(appId)
+      const s = await this.opts.storage.state.load(appId)
       if (!s?.state || !this.adopt(appId, s.version, s.state)) return
       // The notice's items cover the state only when it is the one commit between the cache and storage.
       const one = n?.itemIds && s.version === n.version && was.version === n.version - 1
