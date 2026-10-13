@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { seedDesign } from '@modus-bpm/core/model/seed'
 import { describe, expect, it } from 'vitest'
-import { backlogFrom, buildReport, type K6Summary, type ObserverStats, type Settings } from './report'
+import { backlogFrom, buildReport, runLine, type K6Summary, type ObserverStats, type Settings } from './report'
 
 // A real `--summary-export` from a smoke run, trimmed to the metrics the report reads.
 const k6: K6Summary = JSON.parse(readFileSync(new URL('./fixtures/k6-smoke.json', import.meta.url), 'utf8'))
@@ -127,5 +127,24 @@ describe('buildReport', () => {
     const r = buildReport({ k6, observer: one, backlog, settings: { ...settings, servers: 1 } })
     expect(r.markdown).toContain('| Cross-server updates p95 within 2 s | not measured | – one server: nothing to compare |')
     expect(r.markdown).toContain('Cross-server lag: not measured (one server).')
+  })
+
+  it('the races limit is found by name, wherever it sits in the table', () => {
+    const r = buildReport({ k6: { metrics: { ...k6.metrics, races: { count: 9, rate: 0 }, releases: { count: 46, rate: 1 } } }, observer, backlog, settings })
+    const races = r.json.limits.find((l) => l.name.startsWith('Races'))!
+    expect(races.ok).toBe(false)
+    expect(r.markdown).toContain('| races | 9 ⚠ |')
+  })
+})
+
+describe('runLine', () => {
+  it('says how long the run took', () => {
+    expect(runLine(settings)).toBe('2026-10-13 19:22 UTC · 1.5 min wall clock · commit abc1234 · 10 clerks · 10 live screens · TIME_SCALE 60')
+  })
+
+  it('leaves the duration out, with no stray separator, when it cannot be told', () => {
+    const line = runLine({ ...settings, finishedAt: 'not a date' })
+    expect(line).toBe('2026-10-13 19:22 UTC · commit abc1234 · 10 clerks · 10 live screens · TIME_SCALE 60')
+    expect(line).not.toMatch(/·\s*·/)
   })
 })

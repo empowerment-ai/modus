@@ -86,7 +86,7 @@ Commit: `load: k6 scenarios — items, people, workers; smoke, baseline and full
 **Files:** `tools/load/src/run.ts`, `tools/load/src/report.ts`, `tools/load/src/report.test.ts`, `tools/load/src/compare.ts`, `tools/load/src/compare.test.ts`.
 
 `run.ts` (`pnpm load [--profile smoke|baseline|full] [--servers 1|2|3] [--keep]`):
-1. Results dir `tools/load/results/<YYYYMMDD-HHMM>-<profile>-<n>srv/`.
+1. Results dir `tools/load/results/<YYYYMMDD-HHMMSS>-<profile>-<n>srv/` (an interrupted or failed run leaves `INTERRUPTED` / `FAILED` in it).
 2. `docker compose -p modus-load -f tools/load/compose.yml [--profile s2 s3] build` then `up -d postgres`; wait for health.
 3. Run `setup.ts` with the profile's clerks: 10 smoke, 100 baseline, 1,000 full (one per person at the peak; `CLERKS` in `k6/profiles.js`, which `main.js` defaults to).
 4. `up -d` servers, nginx, observer; wait for `/api/ready` on each server.

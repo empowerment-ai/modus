@@ -1,13 +1,14 @@
 // `pnpm load [--profile smoke|baseline|full] [--servers 1|2|3] [--keep]`: build and start the load
 // stack, write the test design, run k6 in Docker, collect what the observer and the servers saw,
 // write the report, tear the stack down. See docs/plans/2026-10-13-load-tests-design.md.
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync, existsSync, createWriteStream } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { seedDesign } from '@modus-bpm/core/model/seed'
 import { CLERKS } from '../k6/profiles.js'
+import { endingNote, folderName, type Ending } from './folder'
 import { backlogFrom, buildReport, type Outbox, type Settings } from './report'
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -47,22 +48,32 @@ function fail(msg: string): never {
   process.exit(2)
 }
 
-const stamp = (d: Date) => {
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`
-}
 const started = new Date()
-const out = join(PKG, 'results', `${stamp(started)}-${profile}-${servers}srv`)
+const out = join(PKG, 'results', folderName(started, profile, servers))
 mkdirSync(out, { recursive: true })
+
+/** Leaves `INTERRUPTED` or `FAILED` in the results folder: its numbers, if any, are partial. */
+function markEnding(kind: Ending, why: string) {
+  try {
+    writeFileSync(join(out, kind), endingNote(kind, why, new Date()))
+  } catch {
+    // The note is a courtesy; never let it stand in the way of the teardown.
+  }
+}
 
 const serverNames = ['modus1', 'modus2', 'modus3'].slice(0, servers)
 const profileFlags = servers === 3 ? ['--profile', 's3'] : servers === 2 ? ['--profile', 's2'] : []
 const compose = (...args: string[]) => ['compose', '-p', PROJECT, '-f', join(PKG, 'compose.yml'), ...profileFlags, ...args]
 
 /** Runs a command with its output on the terminal (into `to`, or kept with `capture`); rejects on a non-zero exit unless `allowFail`. */
+/** Commands still running: an interrupted run stops them before it goes. */
+const children = new Set<ChildProcess>()
+
 function run(cmd: string, args: string[], opts: { to?: string; capture?: boolean; allowFail?: boolean; env?: NodeJS.ProcessEnv } = {}): Promise<{ code: number; stdout: string }> {
   return new Promise((done, reject) => {
     const child = spawn(cmd, args, { cwd: PKG, env: { ...process.env, ...opts.env }, stdio: ['ignore', opts.capture || opts.to ? 'pipe' : 'inherit', opts.capture || opts.to ? 'pipe' : 'inherit'] })
+    children.add(child)
+    child.on('exit', () => children.delete(child))
     let stdout = ''
     if (opts.to) {
       const file = createWriteStream(opts.to)
@@ -112,8 +123,11 @@ async function post(url: string, body?: unknown) {
 
 // ----- Teardown, whatever happens -----
 
+const quote = (a: string) => `'${a.replaceAll("'", `'\\''`)}'`
+const downArgs = () => compose('down', '-v', '--remove-orphans')
+
 let tearing: Promise<void> | undefined
-/** Once, however many paths ask: a signal and main's `finally` can both get here. */
+/** Once, however many paths ask: main's `finally` and a failure can both get here. */
 const teardown = () => (tearing ??= tearDown())
 async function tearDown() {
   await docker(['rm', '-f', K6_CONTAINER], { capture: true, allowFail: true })
@@ -122,19 +136,54 @@ async function tearDown() {
     return
   }
   console.log('\nTearing down the load stack…')
-  await docker(compose('down', '-v', '--remove-orphans'), { allowFail: true })
+  await docker(downArgs(), { allowFail: true })
+}
+
+/**
+ * The teardown for a run that is going away now (a signal, a crash): a process of its own, in its
+ * own process group, that outlives us. `pnpm load` exits on Ctrl-C and its runner goes with it,
+ * long before `compose down` would finish; a detached shell is out of reach of both.
+ * k6 goes first: its container sits on the stack's network, which `down` can't remove under it.
+ */
+let detached = false
+function detachTeardown() {
+  if (detached) return
+  detached = true
+  const script = [
+    `docker rm -f ${quote(K6_CONTAINER)}`,
+    `docker ${downArgs().map(quote).join(' ')}`,
+  ].join(' >/dev/null 2>&1; ') + ' >/dev/null 2>&1'
+  try {
+    spawn('sh', ['-c', script], { cwd: PKG, detached: true, stdio: 'ignore' }).unref()
+    console.error(`Tearing down the load stack in the background (about 10-30 s). Check with: docker compose -p ${PROJECT} ps -a`)
+  } catch (err) {
+    console.error(`! could not start the teardown (${err instanceof Error ? err.message : String(err)}). Run: docker rm -f ${K6_CONTAINER}; docker compose -p ${PROJECT} down -v`)
+  }
+}
+
+/** Interrupted or crashed: note it, hand the teardown to a detached process, stop our commands, go. */
+function abandon(kind: Ending, why: string, code: number): never {
+  markEnding(kind, why)
+  // Always down, even with --keep: an interrupted or crashed run's stack is half-made.
+  detachTeardown()
+  for (const c of children) c.kill('SIGTERM')
+  process.exit(code)
 }
 
 let stopping = false
-for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
   process.on(sig, () => {
     // tsx passes the terminal's Ctrl-C on as a second signal: one teardown is enough.
     if (stopping) return
     stopping = true
-    console.log(`\n${sig}: stopping`)
-    // Always down, even with --keep: an interrupted run's stack is half-made.
-    values.keep = false
-    void teardown().finally(() => process.exit(130))
+    console.error(`\n${sig}: stopping`)
+    abandon('INTERRUPTED', sig, 130)
+  })
+}
+for (const event of ['uncaughtException', 'unhandledRejection'] as const) {
+  process.on(event, (err: unknown) => {
+    console.error(`\nLoad run crashed (${event}): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`)
+    abandon('FAILED', `${event}: ${err instanceof Error ? err.message : String(err)}`, 1)
   })
 }
 
@@ -176,7 +225,7 @@ async function main() {
     ],
     { allowFail: true },
   )
-  // Interrupted: no report from a cut-short run; the signal handler is tearing down.
+  // Interrupted: no report from a cut-short run; the signal handler has handed off the teardown.
   if (stopping) return
   if (k6.code !== 0) console.warn(`! k6 exited ${k6.code}; the report uses what it left`)
 
@@ -234,9 +283,11 @@ let code = 0
 try {
   await main()
 } catch (err) {
-  console.error(`\nLoad run failed: ${err instanceof Error ? err.message : String(err)}`)
+  const why = err instanceof Error ? err.message : String(err)
+  console.error(`\nLoad run failed: ${why}`)
+  markEnding('FAILED', why)
   code = 1
 } finally {
   await teardown()
 }
-process.exit(stopping ? 130 : code)
+process.exit(code)
