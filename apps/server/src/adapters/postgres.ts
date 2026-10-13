@@ -12,7 +12,7 @@ import type { AuditEntry, Design, Id, OutboxMessage, Priority, ProjectedItem, Si
 import { type Generated, Kysely, PostgresDialect, sql } from 'kysely'
 import { type Migration, Migrator } from 'kysely/migration'
 import pg from 'pg'
-import { type ChangeNotice, type DesignStore, type EventLog, type LoggedEvent, type Projections, type StateStore, type Storage, StorageBusy, type Stored, type Work, type Write } from '../ports'
+import { type ChangeNotice, type Deliveries, type DesignStore, type EventLog, type LoggedEvent, type Projections, type StateStore, type Storage, StorageBusy, type Stored, type Work, type Write } from '../ports'
 
 interface Tables {
   design: { id: number; doc: Design; updated_at: Generated<Date> }
@@ -393,6 +393,10 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
     }
   }
 
+  // Replaced by migration 0003 and SKIP LOCKED claims (outbox webhooks plan, Task 3).
+  const notYet = () => Promise.reject(new Error('not yet: Task 3'))
+  const deliveries: Deliveries = { fanOut: notYet, claim: notYet, record: notYet, list: notYet, retry: notYet, prune: notYet }
+
   const projections: Projections = {
     async item(appId, itemId) {
       const r = await db.selectFrom('item').selectAll().where('app_id', '=', appId).where('item_id', '=', itemId).executeTakeFirst()
@@ -555,6 +559,7 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
     state,
     events,
     projections,
+    deliveries,
     transact,
     async listen(onChange, onReconnect) {
       if (shut) throw closedError()
