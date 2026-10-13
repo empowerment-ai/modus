@@ -61,6 +61,7 @@ import {
 } from '@modus-bpm/core'
 import { answer, type ModelAssistant } from './assistant'
 import { canRead, findItem, hitDto, itemDto, workItemDto } from './dto'
+import { liveChanges } from './live'
 import { NotFound, type Runtime, StorageUnavailable } from './runtime'
 import type { Sender } from './sender'
 
@@ -566,24 +567,23 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     // Proxies cut idle connections (often after 60 s); a comment line keeps a quiet stream alive.
     // A slow client's buffer is already full: a ping adds nothing, so skip it rather than queue more.
     const ping = setInterval(() => {
-      if (!reply.raw.writableNeedDrain) reply.raw.write(': ping\n\n')
+      if (reply.raw.writableEnded || reply.raw.destroyed || reply.raw.writableNeedDrain) return
+      reply.raw.write(': ping\n\n')
     }, pingMs)
     ping.unref()
+    const live = liveChanges(reply.raw, () =>
+      rt.read(appId, (sim, ctx) => {
+        const v = computeView(sim, ctx)
+        return { clock: sim.clock, counts: Object.fromEntries(Object.entries(v.nodes).map(([id, m]) => [id, m.total])), active: v.active }
+      }),
+    )
     let last = 0
     const unsubscribe = rt.subscribe((c) => {
       if (c.appId !== appId) return
       const now = Date.now()
       if (!c.itemIds.length && now - last < 1000) return
       last = now
-      void rt.read(appId, (sim, ctx) => {
-        // Still backed up: drop this event rather than grow the buffer without bound (and skip
-        // computing it). The next event carries the current counts anyway, so a slow client
-        // catches up once it drains.
-        if (reply.raw.writableNeedDrain) return
-        const v = computeView(sim, ctx)
-        const counts = Object.fromEntries(Object.entries(v.nodes).map(([id, m]) => [id, m.total]))
-        reply.raw.write(`event: change\ndata: ${JSON.stringify({ clock: c.clock, items: c.itemIds, counts, active: v.active })}\n\n`)
-      })
+      live.change(c.clock, c.itemIds)
     })
     streams.set(reply, { ping, unsubscribe })
     req.raw.on('close', () => {
