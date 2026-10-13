@@ -12,20 +12,16 @@ export interface LiveSnapshot {
  * held (not written, so a slow client can't grow our memory without bound) and sent as one merged
  * event when it drains, with the counts as of then. Past `cap` held ids the event says
  * `items: null`: too much changed, refetch everything. A snapshot that fails is reported to
- * `onError` and its ids kept, to go out with the next event.
+ * `onError` and its ids kept, to go out with the next change (changes come with every write and
+ * with ticks, at most about once a second, so they wait about that long).
  */
-export function liveChanges(
-  out: Writable,
-  snapshot: () => Promise<LiveSnapshot>,
-  { cap = 1000, onError = () => {} }: { cap?: number; onError?: (err: unknown) => void } = {},
-) {
+export function liveChanges(out: Writable, snapshot: () => Promise<LiveSnapshot>, { cap = 1000, onError = () => {} }: { cap?: number; onError?: (err: unknown) => void } = {}) {
   const held = new Set<string>()
   let overflow = false
   let armed = false
   const closed = () => out.writableEnded || out.destroyed
 
-  const write = (s: LiveSnapshot, items: string[] | null) =>
-    out.write(`event: change\ndata: ${JSON.stringify({ clock: s.clock, items, counts: s.counts, active: s.active })}\n\n`)
+  const write = (s: LiveSnapshot, items: string[] | null) => out.write(`event: change\ndata: ${JSON.stringify({ clock: s.clock, items, counts: s.counts, active: s.active })}\n\n`)
 
   function keep(items: string[] | null) {
     if (items === null) overflow = true
@@ -58,16 +54,19 @@ export function liveChanges(
 
   /** Reads the snapshot and sends `items` with it; on failure the ids wait for the next event. */
   function read(items: string[] | null, stamp: (s: LiveSnapshot) => LiveSnapshot) {
-    snapshot().then(
-      (s) => send(stamp(s), items),
-      (err) => {
-        onError(err)
-        if (closed()) return
-        // Still behind: wait for the drain as usual. Caught up: no drain is coming, so the next change takes them.
-        if (out.writableNeedDrain) hold(items)
-        else keep(items)
-      },
-    )
+    // Through a promise, so a snapshot that throws before returning one is caught too.
+    Promise.resolve()
+      .then(snapshot)
+      .then(
+        (s) => send(stamp(s), items),
+        (err) => {
+          onError(err)
+          if (closed()) return
+          // Still behind: wait for the drain as usual. Caught up: no drain is coming, so the next change takes them.
+          if (out.writableNeedDrain) hold(items)
+          else keep(items)
+        },
+      )
   }
 
   function send(s: LiveSnapshot, items: string[] | null) {

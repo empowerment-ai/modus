@@ -106,6 +106,21 @@ describe('live changes', () => {
     expect(c.events().map((e) => e.items)).toEqual([['lost?', 'next']])
   })
 
+  it('catches a snapshot that throws instead of rejecting', async () => {
+    const c = slowClient()
+    const errors: unknown[] = []
+    const live = liveChanges(
+      c.out,
+      () => {
+        throw new Error('sync')
+      },
+      { onError: (e) => errors.push(e) },
+    )
+    expect(() => live.change(1, ['a'])).not.toThrow()
+    await settle()
+    expect(errors).toHaveLength(1)
+  })
+
   it('reports a failed read after a drain and keeps the held ids', async () => {
     const c = slowClient()
     const snap = snapshots()
