@@ -186,6 +186,7 @@ export function createObserver(opts) {
   const now = opts.now ?? Date.now
   const streamPath = opts.streamPath ?? '/api/apps/app_invoice/stream'
   // The stream needs a named user. Live screens stand for Monitors, which administrators watch: a seed administrator.
+  // It must exist in the seed design (packages/core/src/model/seed.ts, published by setup.ts): rename one, rename both.
   const user = opts.user ?? 'u_avery'
   const backoffMs = opts.backoffMs ?? 250
   const maxBackoffMs = opts.maxBackoffMs ?? 5_000

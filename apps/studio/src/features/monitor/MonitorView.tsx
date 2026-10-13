@@ -262,6 +262,7 @@ const BADGE_TONE = {
 function LiveBadge({ appId }: { appId: Id }) {
   const status = useLive((s) => s.status)
   const lastChange = useLive((s) => s.lastChange)
+  const lastHeard = useLive((s) => s.lastHeard)
   const error = useLive((s) => s.error)
   const appOnServer = useLive((s) => !s.design || s.design.apps.some((a) => a.id === appId))
   const [now, setNow] = useState(() => Date.now())
@@ -277,7 +278,13 @@ function LiveBadge({ appId }: { appId: Id }) {
       <span
         aria-hidden
         className={cx('inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium whitespace-nowrap tabular-nums', tone)}
-        title={status === 'reconnecting' ? `${error ?? 'The server stopped answering'}. Showing its last data until it’s back.` : (error ?? undefined)}
+        title={
+          status === 'reconnecting'
+            ? `${error ?? 'The server stopped answering'}. Showing its last data until it’s back.`
+            : status === 'live' && lastHeard !== undefined
+              ? `Heard from the server ${Math.max(0, Math.floor((now - lastHeard) / 1000))}s ago (it pings every 25 s; a minute of silence reconnects).`
+              : (error ?? undefined)
+        }
       >
         <span className={cx('h-1.5 w-1.5 rounded-full', dot, status === 'connecting' && 'animate-pulse')} />
         {badge.text}

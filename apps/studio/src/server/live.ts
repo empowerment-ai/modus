@@ -82,7 +82,7 @@ export interface LiveDeps {
   retryMs?: number
   /** Whether the tab is hidden, and a way to hear when that changes. Default: the document's, or always visible. */
   visibility?: Visibility
-  /** A stream silent this long counts as dropped, and is reopened (default SILENT_AFTER_MS). */
+  /** A stream silent this long counts as dropped and is retried with backoff (openStream's default, 60 s). */
   silentMs?: number
 }
 
@@ -97,12 +97,6 @@ function documentVisibility(): Visibility {
   if (typeof document === 'undefined') return { hidden: () => false, subscribe: () => {} }
   return { hidden: () => document.hidden, subscribe: (cb) => document.addEventListener('visibilitychange', cb) }
 }
-
-/**
- * The server pings a quiet stream every 25 s; hearing nothing for 60 s means the connection is gone even if
- * the socket says otherwise (a proxy or a sleeping laptop can leave one half-open), so "Live" means heard from recently.
- */
-export const SILENT_AFTER_MS = 60_000
 
 const ADMIN_KEY = 'modus-live-admin'
 /** The server keeps the last 3000 points; so does the Studio. */
@@ -135,7 +129,7 @@ export function createLiveStore(deps: LiveDeps = {}) {
   const feedLimit = deps.feedLimit ?? 300
   const retryMs = deps.retryMs ?? 3000
   const visibility = deps.visibility ?? documentVisibility()
-  const silentMs = deps.silentMs ?? SILENT_AFTER_MS
+  const silentMs = deps.silentMs
 
   const remembered = (): Id | undefined => {
     try {
@@ -154,10 +148,6 @@ export function createLiveStore(deps: LiveDeps = {}) {
   let gen = 0
   let closeStream: (() => void) | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
-  /** Watches the open stream for silence. */
-  let watch: ReturnType<typeof setTimeout> | undefined
-  /** When the open stream was last heard from, or opened: what the watch measures silence from. */
-  let heardAt = 0
   let lastFetch = 0
   let pending = false
   let pendingFull = false
@@ -179,21 +169,23 @@ export function createLiveStore(deps: LiveDeps = {}) {
       closeStream = undefined
       clearTimeout(timer)
       timer = undefined
-      clearTimeout(watch)
-      watch = undefined
       pending = pendingFull = inFlight = streamLive = ready = false
     }
 
-    const denied = () => {
+    /** 401: the server doesn't know who we say we are. 403: it does, and that person isn't an administrator. */
+    const denied = (status: number) => {
       stop()
       const { actingAdmin, design } = get()
       const who = design?.users.find((u) => u.id === actingAdmin)?.name ?? actingAdmin ?? 'The acting person'
-      set({ status: 'error', error: `${who} is not an administrator, and only administrators can see the Monitor.` })
+      set({
+        status: 'error',
+        error: status === 401 ? `The server didn’t accept ${who} as a signed-in user.` : `${who} is not an administrator, and only administrators can see the Monitor.`,
+      })
     }
 
     const fail = (g: number, e: unknown) => {
       if (g !== gen) return
-      if (e instanceof ApiError && (e.status === 401 || e.status === 403)) return denied()
+      if (e instanceof ApiError && (e.status === 401 || e.status === 403)) return denied(e.status)
       stale = true
       set({ status: 'reconnecting', error: e instanceof Error ? e.message : String(e) })
     }
@@ -293,29 +285,11 @@ export function createLiveStore(deps: LiveDeps = {}) {
 
     /** Any bytes at all: the connection is alive. The store's copy moves at most once a second. */
     const heard = () => {
-      heardAt = Date.now()
-      if (heardAt - (get().lastHeard ?? 0) >= 1000) set({ lastHeard: heardAt })
-    }
-
-    /** Nothing heard for `silentMs`, not even a ping: drop this connection and open a new one. */
-    const watchSilence = (g: number, appId: Id, delay = silentMs) => {
-      clearTimeout(watch)
-      watch = setTimeout(() => {
-        if (g !== gen) return
-        const quiet = Date.now() - heardAt
-        if (quiet < silentMs) return watchSilence(g, appId, silentMs - quiet)
-        closeStream?.()
-        closeStream = undefined
-        streamLive = false
-        stale = true
-        set({ status: 'reconnecting' })
-        follow(g, appId)
-      }, delay)
+      const now = Date.now()
+      if (now - (get().lastHeard ?? 0) >= 1000) set({ lastHeard: now })
     }
 
     const follow = (g: number, appId: Id) => {
-      heardAt = Date.now()
-      watchSilence(g, appId)
       closeStream = openStream(
         appId,
         (e) => g === gen && onChange(e),
@@ -333,8 +307,9 @@ export function createLiveStore(deps: LiveDeps = {}) {
         {
           user: opts().user,
           fetch: f,
+          silentMs,
           onActivity: () => g === gen && heard(),
-          onDenied: () => g === gen && denied(),
+          onDenied: (status) => g === gen && denied(status),
           // The server doesn't run this app (any more): nothing to follow. If the design we hold still lists
           // it, the server dropped it after we loaded: say so rather than going quietly idle.
           onNotFound: () => {

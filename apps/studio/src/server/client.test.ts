@@ -137,6 +137,54 @@ describe('openStream', () => {
     expect(onActivity).toHaveBeenCalledTimes(3)
   })
 
+  it('a stream silent for silentMs is dropped and retried; pings keep it open', async () => {
+    vi.useFakeTimers()
+    const streams = [fakeStream(), fakeStream()]
+    let n = 0
+    const f = vi.fn(async () => streams[n++]!.response())
+    const states: StreamState[] = []
+    const close = openStream('a', () => {}, (s) => states.push(s), { user: 'u', fetch: f, silentMs: 60_000 })
+    await vi.advanceTimersByTimeAsync(0)
+    for (let i = 0; i < 5; i++) {
+      await vi.advanceTimersByTimeAsync(25_000)
+      streams[0]!.push(': ping\n\n')
+    }
+    await vi.advanceTimersByTimeAsync(0)
+    expect(states).toEqual(['live'])
+    expect(streams[0]!.cancelled()).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(streams[0]!.cancelled()).toBe(true)
+    expect(states).toEqual(['live', 'reconnecting'])
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(f).toHaveBeenCalledTimes(2)
+    expect(states).toEqual(['live', 'reconnecting', 'live'])
+    close()
+  })
+
+  it('aborts a request that hangs before answering, and keeps backing off while the server stays silent', async () => {
+    vi.useFakeTimers()
+    const at: number[] = []
+    // Never answers; only the abort ends it.
+    const f = vi.fn(
+      (_: unknown, init?: RequestInit) =>
+        new Promise<Response>((_, reject) => {
+          at.push(Date.now())
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+        }),
+    )
+    const states: StreamState[] = []
+    const start = Date.now()
+    const close = openStream('a', () => {}, (s) => states.push(s), { user: 'u', fetch: f, silentMs: 10_000, backoffMs: 1000, maxBackoffMs: 8000 })
+    await vi.advanceTimersByTimeAsync(10_000 + 1000 + 10_000 + 2000 + 10_000 + 4000 + 10_000 + 8000 + 10_000 + 8000)
+    expect(states).toEqual(['reconnecting'])
+    // Each attempt waits silentMs, then the delay doubles: 1, 2, 4, 8, 8 s. Never back to 1 s.
+    expect(at.map((t) => t - start)).toEqual([0, 11_000, 23_000, 37_000, 55_000, 73_000])
+    close()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(f).toHaveBeenCalledTimes(6)
+  })
+
   it('decodes a multi-byte character split across chunks', async () => {
     vi.useFakeTimers()
     const stream = fakeStream()

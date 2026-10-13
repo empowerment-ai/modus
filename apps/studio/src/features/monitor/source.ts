@@ -115,8 +115,8 @@ export interface Badge {
 
 /**
  * The Live badge. `lastChange` is the last event that moved an item, so a quiet server reads "idle"
- * instead of an ever-growing age. "Live" also means heard from recently: the store treats a stream silent for
- * SILENT_AFTER_MS (no change, not even a keep-alive ping) as dropped and shows reconnecting until a new one opens.
+ * instead of an ever-growing age. "Live" also means heard from recently: the stream treats SILENT_AFTER_MS
+ * without a byte (no change, not even a keep-alive ping) as a drop, so the badge shows reconnecting until it's back.
  */
 export function liveBadge(s: { status: LiveState['status']; lastChange?: number; appOnServer: boolean }, now: number): Badge {
   switch (s.status) {
