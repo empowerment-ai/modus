@@ -217,7 +217,7 @@ export function memoryStorage(dataDir?: string): Storage {
         }
         for (const endpoint of endpoints) {
           const { id: outboxId, itemId, kind, payload } = m.message
-          sending.set(`${outboxId}:${endpoint}`, { outboxId, endpoint, appId: m.appId, itemId, kind, payload: structuredClone(payload), createdAt: m.createdAt, status: 'pending', attempts: 0, nextAt: now })
+          sending.set(`${outboxId}:${endpoint}`, { outboxId, endpoint, appId: m.appId, itemId, kind, payload: structuredClone(payload), createdAt: m.createdAt, status: 'pending', attempts: 0, since: now, nextAt: now })
         }
       }
       return fresh.length
@@ -230,12 +230,13 @@ export function memoryStorage(dataDir?: string): Storage {
       for (const d of due) d.nextAt = now + leaseMs
       return due.map((d) => structuredClone(d))
     },
-    async record(outboxId, endpoint, result, now) {
+    async record(outboxId, endpoint, claimedUntil, result, now) {
       const d = sending.get(`${outboxId}:${endpoint}`)
-      if (!d) return
+      // A late result: the lease ran out and the delivery was claimed again, settled or retried since.
+      if (!d || d.status !== 'pending' || d.nextAt !== claimedUntil) return false
       d.status = result.status
       d.attempts++
-      if (result.nextAt !== undefined) d.nextAt = result.nextAt
+      if (result.status === 'pending') d.nextAt = result.nextAt
       // As a SQL update would: this attempt's answer replaces the last one's.
       if (result.lastStatus === undefined) delete d.lastStatus
       else d.lastStatus = result.lastStatus
@@ -244,6 +245,7 @@ export function memoryStorage(dataDir?: string): Storage {
       if (result.status === 'delivered') d.deliveredAt = now
       const m = byId(outboxId)
       if (m && !of(outboxId).some((x) => x.status === 'pending')) m.sentAt = now
+      return true
     },
     async list({ status, limit = 100 }) {
       return [...sending.values()]
@@ -255,8 +257,11 @@ export function memoryStorage(dataDir?: string): Storage {
     async retry(outboxId, now) {
       const failed = of(outboxId).filter((d) => d.status === 'failed')
       for (const d of failed) {
+        // A fresh schedule: the first retry is soon again, and giving up counts from now.
         d.status = 'pending'
         d.nextAt = now
+        d.attempts = 0
+        d.since = now
       }
       const m = byId(outboxId)
       if (failed.length && m) delete m.sentAt
