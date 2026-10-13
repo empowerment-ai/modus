@@ -27,7 +27,8 @@ run. Each run starts from an empty database: the sample design plus generated cl
 
 - Docker Desktop (or another Docker engine with Compose v2), Node 22, pnpm.
 - Docker resources (Settings → Resources):
-  - `smoke` and `baseline` with 1-2 servers: 4 CPUs and 6 GB is enough.
+  - `smoke` and `baseline` with 1-2 servers: 4 CPUs and 6 GB should be enough (an estimate; the
+    first runs used 10 CPUs and 8 GB).
   - 3 servers, or `full`: 8 CPUs and 8 GB or more. Three servers alone may take 4.5 CPUs and 3 GB;
     Postgres keeps its data in memory and grows with the run; k6 with 1,000 people needs a
     gigabyte or two of its own.
@@ -84,7 +85,7 @@ failed run leaves `FAILED`) and tears the stack down; a cut-short run writes no 
 - **Script counters.** `busy` is 503s: a command waited 5 s for its application's lock and gave
   up. `races` is a save or release refused because the item moved on meanwhile (two people, or a
   timer, got there first). `jobs_gone` is a job finished, cancelled or re-leased before its worker
-  answered. `next_empty` is a quiet queue. `dropped_iterations` is item arrivals k6 could not start
+  answered. `next_empty` is a queue with nothing to take: quiet, or starved by a backlog upstream. `dropped_iterations` is item arrivals k6 could not start
   because every VU was busy: the offered rate was not reached, so the run measured less load than
   the profile asks for.
 - **Webhooks.** Deliveries the observer received, duplicates, bad signatures, and the lag from

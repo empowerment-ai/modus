@@ -72,19 +72,57 @@ back:
 
 Baseline is already past what one application can take. Both servers' logs show the commands
 answered per second falling as items pile up: on one server from about 30/s in the first minute
-to 4.3/s in the tenth; on two, the two together from about 34/s to 4.4/s. A second server adds
-almost nothing (+8% requests), which is the per-application bottleneck the design expected: each
-command copies the whole application's state, so it gets slower as items accumulate, and
-commands to one application run one at a time across servers.
+to 4.3/s in the tenth; on two, the two together from about 34/s to 4.28/s. A second server adds
+almost nothing (+8% requests), which is the per-application bottleneck the design expected:
+commands to one application run one at a time across servers, and each one costs more as items
+accumulate.
+
+### What a command really costs
+
+Measured at about 3,500 items, when the application's state is 4.7 MB as JSON:
+
+| Per command | Cost |
+| --- | ---: |
+| `computeView` once per open live stream (about 1.1 ms each, 100 streams) | ~32 ms |
+| `structuredClone` of the whole state | ~31 ms |
+| Saving the whole state as JSON under the row lock (stringify; the Postgres write comes on top) | ~14 ms |
+| 2 servers: reloading and parsing the whole state after the other server's commits | ~15 ms, often twice |
+| `advance` scanning every token | ~7 ms |
+| `changesBetween` | ~6 ms |
+
+The live streams are the biggest single cost. Each open stream recomputes the view after every
+change, and each of those is a read queued behind the commands (the stream route in `http.ts`).
+Together it comes to about 90 ms of CPU per command, plus the database: 5 to 10 commands a
+second, which matches the 4.3/s measured.
+
+The servers looked half idle at about 0.7 CPU of their 1.5 CPU limit, but they weren't. Node
+runs the application code on one thread, so 0.7 CPU means that thread is saturated; the rest is
+garbage collection and I/O threads.
+
+### Where the time goes
 
 It shows up as waiting, not as busy answers. Each server runs one application's commands and
 reads one at a time in memory, so only one command per server ever waits on the row lock and
 the 5 s lock timeout never fires; everything else queues inside the process, reads included, up
 to k6's 60 s timeout. Live screens lag the same way: the second server's reload after a change
-waits in the same queue (17.9 s p95). Webhooks stay fast (p95 under 0.5 s) because the sender
-works outside that queue. The service jobs left waiting (3,000 at Capture & match PO) are the
-workers' polls and completions stuck behind item creation, not a lack of workers. People keep
-up: 14 items at the clerk review.
+waits in the same queue (17.9 s p95). Webhooks look fast (p95 under 0.5 s), but their lag is
+measured from the commit, so it leaves out the time each command waited in the queue first.
+
+The service jobs left waiting (about 3,000 at Capture & match PO) are the workers' polls and
+completions stuck behind item creation, not a lack of workers. That starves everyone
+downstream. The 14 items at the clerk review don't mean people kept up: in the 1-server run all
+570 `my/next` calls found nothing, and only 223 releases happened. The clerks had little to do
+because the work never got past Capture & match PO.
+
+### Cheap fixes to try before per-item locking
+
+- Serve reads from the committed cache instead of queuing them behind commands.
+- Compute one stream view per change per application, shared by every open stream.
+- Track the items a command changes instead of cloning the whole state and diffing it.
+- Stringify outside the row lock, and compress `app_state.state` (lz4).
+- Apply the other server's changes instead of reloading the whole state.
+
+### Harness faults found first
 
 An earlier pair of runs found two harness faults, fixed before these: the end-of-run backlog
 read timed out behind the queue, and nginx took both servers out of rotation after a few
