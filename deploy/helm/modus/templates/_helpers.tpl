@@ -70,6 +70,11 @@ database: one command at a time per application, under its row lock.
 {{- if not $serving -}}
 {{- fail "At least one enabled deployment needs the api role." -}}
 {{- end -}}
+{{- range $name, $d := .Values.deployments -}}
+{{- if and $d.enabled $d.strategy (not (has $d.strategy (list "Recreate" "RollingUpdate"))) -}}
+{{- fail (printf "deployments.%s.strategy must be Recreate or RollingUpdate (or empty for the dialect's default)." $name) -}}
+{{- end -}}
+{{- end -}}
 {{- if eq .Values.database.dialect "memory" -}}
 {{- $why := "database.dialect=memory keeps all state in one process" -}}
 {{- if gt (len $enabled) 1 -}}
@@ -78,6 +83,11 @@ database: one command at a time per application, under its row lock.
 {{- range $name, $d := .Values.deployments -}}
 {{- if and $d.enabled (gt (int $d.replicas) 1) -}}
 {{- fail (printf "deployments.%s.replicas must be 1: %s." $name $why) -}}
+{{- end -}}
+{{- end -}}
+{{- range $name, $d := .Values.deployments -}}
+{{- if and $d.enabled (eq ($d.strategy | default "") "RollingUpdate") -}}
+{{- fail (printf "deployments.%s.strategy must be Recreate: %s." $name $why) -}}
 {{- end -}}
 {{- end -}}
 {{- if .Values.autoscaling.enabled -}}

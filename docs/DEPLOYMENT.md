@@ -151,7 +151,9 @@ has a short gap while the old pod stops and the new one loads.
 **With `database.dialect: postgres` you can run several replicas.** Point
 `database.existingSecret` at a Secret holding `DATABASE_URL`; the server migrates the schema at
 startup. Then set `deployments.all.replicas`, or turn on `autoscaling`, and turn on
-`podDisruptionBudget` once you run two or more. The Deployment uses `RollingUpdate`.
+`podDisruptionBudget` once you run two or more. The Deployment uses `RollingUpdate` unless you
+set `deployments.<name>.strategy: Recreate` (needed once when upgrading from a release before M2;
+see [Upgrades](#backups-and-upgrades)).
 
 ```bash
 helm install modus deploy/helm/modus -n modus --set image.tag=main \
@@ -171,12 +173,18 @@ clock (timers, SLAs, escalations, retries). If it stops, another takes over on i
 - **`503` busy.** A command waits up to 5 seconds (`lock_timeout`) for its application's row. If
   another replica still holds it, the command fails with `503`, a `Retry-After: 5` header and
   "Another server is busy with this application. Try again shortly." Nothing changed; retry it.
+- **Stalled transactions.** A command's transaction may not run a statement for more than 30
+  seconds (`statement_timeout`) or sit idle for more than 15 (`idle_in_transaction_session_timeout`).
+  Postgres then ends it and releases the row, so a hung or cut-off replica can't hold an
+  application for the others.
 - **Readiness.** Each replica keeps one extra connection open to `LISTEN` for the others'
   changes. While that connection is down, `/api/ready` answers `503` so traffic goes to replicas
   that are current. When it comes back, the replica reloads every application.
-- **Connections.** Each replica uses a pool of up to 10 connections plus the listening one. Size
-  `max_connections` (or your pooler) for that. The listening connection needs a session, so put
-  it on a direct connection or a session-mode pooler, not a transaction-mode one.
+- **Connections.** Each replica uses a pool of up to 10 connections plus the listening one, all
+  from `DATABASE_URL`. Size `max_connections` (or your pooler) for that. `DATABASE_URL` must
+  point at Postgres directly or at a session-mode pooler (PgBouncer `pool_mode = session`).
+  Transaction pooling breaks `LISTEN` and the session advisory locks that pick each clock's
+  ticker.
 
 To try two replicas with Compose, uncomment `modus-2` in `docker-compose.yml`, run
 `docker compose up -d`, and open http://localhost:8787 and http://localhost:8788 side by side.
@@ -372,6 +380,28 @@ PostgreSQL, the server applies pending schema migrations at startup (recorded in
 `kysely_migration` table); the state inside the JSONB rows follows the same caveat as the
 snapshots. A Helm pre-upgrade migration job is planned, and SQL Server and Oracle installs will
 get migration scripts DBAs can review and run.
+
+**Upgrading Helm from a release before M2** (before one transaction per command): the old pods
+don't know about versions, other replicas or the clock lock. During a rolling update an old pod
+would keep writing its whole state every few seconds, tick its own clock and number its own log
+entries, so changes would be lost, timers would fire twice and log writes would fail. Stop the
+old pods first, once:
+
+```bash
+helm upgrade modus deploy/helm/modus -n modus --reuse-values --set image.tag=… \
+  --set deployments.all.strategy=Recreate
+# afterwards, roll again as usual:
+helm upgrade modus deploy/helm/modus -n modus --reuse-values --set deployments.all.strategy=
+```
+
+(Scaling to zero first, `kubectl -n modus scale deploy/modus-all --replicas=0`, works too.)
+Compose is unaffected: `docker compose up -d` stops the old container before starting the new
+one. Going back to a release before M2 means restoring a backup: once migration `0002` has run,
+the older server refuses to start because it doesn't know that migration.
+
+From now on pods roll while one of them migrates, so the release before a migration keeps
+running against the new schema for a moment. Every migration must work with the previous
+release.
 
 ## The assistant and your data
 

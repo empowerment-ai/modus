@@ -192,9 +192,10 @@ contract test suite runs against each certified database in containers. JSON sto
 2025) and native `JSON` (Oracle 21c+). The full comparison is in
 [backend options](research/backend-options.md#3-multi-database-support-in-practice).
 
-**Connection management.** PgBouncer (transaction pooling) in front of Postgres for SaaS. The
-scheduler and automation roles use `SKIP LOCKED` claims, so several replicas can run without
-leader election.
+**Connection management.** Modus connects to Postgres directly or through a session-mode pooler
+(PgBouncer `pool_mode = session`). Transaction pooling breaks `LISTEN` and the session advisory
+locks that pick one clock ticker per application. The scheduler and automation roles use
+`SKIP LOCKED` claims, so several replicas can run without leader election.
 
 **Caching.** None is required. Designs are cached in-process per version (immutable). If a
 shared cache becomes necessary, Valkey (BSD) — not Redis 8, whose licenses are not

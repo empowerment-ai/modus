@@ -16,8 +16,9 @@ spec:
   revisionHistoryLimit: 5
   strategy:
     # Memory's state lives in one process and a ReadWriteOnce volume, so the old pod stops first.
-    # SQL dialects share the database, so pods roll.
-    type: {{ ternary "Recreate" "RollingUpdate" $memory }}
+    # SQL dialects share the database, so pods roll (set `strategy: Recreate` for an upgrade from
+    # a release before M2; docs/DEPLOYMENT.md).
+    type: {{ $d.strategy | default (ternary "Recreate" "RollingUpdate" $memory) }}
   selector:
     matchLabels:
       {{- include "modus.selectorLabels" $ | nindent 6 }}
