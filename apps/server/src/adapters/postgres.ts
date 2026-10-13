@@ -546,7 +546,7 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
       const id = String(outboxId)
       const at = new Date(now)
       return db.transaction().execute(async (tx) => {
-        // The message's row first, then its deliveries: the order prune's delete (and record) take them in.
+        // The message's row first, then its deliveries: the order prune's delete takes them in. Record holds only a pending delivery, which retry never touches.
         await sql`select 1 from outbox where id = ${id} for update`.execute(tx)
         // A fresh schedule: the first retry is soon again, and giving up counts from now. The last answer stays.
         const r = await tx.updateTable('outbox_delivery').set({ status: 'pending', next_at: at, attempts: 0, since: at }).where('outbox_id', '=', id).where('status', '=', 'failed').executeTakeFirst()
