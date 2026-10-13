@@ -1,6 +1,6 @@
 # M2, second slice: one transaction per command
 
-Status: approved 2026-10-13. Builds on the first M2 slice (PostgreSQL storage, `aca8f4c`).
+Status: implemented 2026-10-13 (approved the same day). Builds on the first M2 slice (PostgreSQL storage, `aca8f4c`). The plan is `2026-10-13-m2-transactions.md`; what changed from this design is listed at the end.
 
 ## Goal
 
@@ -120,3 +120,34 @@ commented second replica.
 
 **Docs**: ROADMAP (projections, outbox, durable clock done; locking "per application;
 per item after M1"), ARCHITECTURE M2, DEPLOYMENT (replicas).
+
+## Refinements made during implementation
+
+- **Storage numbers audit entries.** The runtime sends new entries without `seq`; the adapter
+  numbers each item's entries after the highest `seq` it holds, under the row lock. The runtime
+  has no offsets or positions, and logs left ahead of the state by the old crash recovery keep
+  working.
+- **Commands run on a copy.** Inside the transaction the command runs on the stored state (when
+  another replica moved it) or a `structuredClone` of the cache. The cache takes the result only
+  after the commit, so there is no restore step.
+- **Outbox and touched items come from comparing before and after** (`changesBetween` in core),
+  not only from audit entries. `job.ready` is keyed by step and attempt, so a call that leads
+  straight into another service step still gets a message.
+- **`work_item.state` is the engine's `TokenState`** (`auto`, `queued`, `unassigned`,
+  `assigned`, `working`, `waiting`, `joining`, `stuck`), not the four states above. Times in
+  `item` and `work_item` are simulated minutes, like `event.at`.
+- **Clocks are per owner.** `tryClock(appId, owner)` and `releaseClocks(owner)`; Postgres uses
+  one dedicated connection per storage as the owner. The schema name is part of the `NOTIFY`
+  channel and the advisory-lock key, so installs that share a database in separate schemas
+  don't hear or block each other.
+- **Idle ticks roll back when no item changed** (not "wrote no audit entries") and less than
+  30 s have passed since `ticked_at`. Reads can show a clock up to 30 s old on a quiet
+  application.
+- **Worker polls check before they lock.** `/api/jobs/poll` skips an application whose cached
+  state has no open job for the service, judged against the clock as of now (`clockNow`), so a
+  lagging cached clock doesn't hide a job whose lease has run out.
+- **Readiness reflects the listener.** `/api/ready` answers 503 while the listening connection
+  is down; a heartbeat on that connection notices a half-open one, and a reconnect reloads every
+  application.
+- **Deployment.** The chart's values are `deployments.<name>.replicas` and `autoscaling`, not
+  `replicaCount`. Memory keeps one deployment, one replica, no autoscaling and `Recreate`.

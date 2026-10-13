@@ -24,7 +24,7 @@ const env = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(8787),
   /** Interface to bind. 127.0.0.1 for local development; the container image sets 0.0.0.0. */
   HOST: z.string().default('127.0.0.1'),
-  /** Where the in-memory store snapshots its state (design.json, state-*.json, events.jsonl). Unset: nothing is written. */
+  /** Where the in-memory store snapshots its state (design.json, state-*.json, meta-*.json, events.jsonl). Unset: nothing is written. */
   DATA_DIR: z.string().optional(),
   /** Simulated minutes per real minute for timers and due dates. 1 = real time. */
   TIME_SCALE: z.coerce.number().positive().default(1),

@@ -229,7 +229,7 @@ flowchart TB
   end
   CORE["@modus-bpm/core engine<br/>(same code as the browser simulator)"]
   subgraph Ports
-    P1[DesignStore] --- P2[StateStore / projections] --- P3[EventLog] --- P4[Outbox · Timers · JobClaim]
+    P1[DesignStore] --- P2[transact<br/>state · audit · projections · outbox] --- P3[EventLog · Projections<br/>reads] --- P4[Clock lock · change notices · JobClaim]
   end
   subgraph Adapters
     PG[(PostgreSQL)]:::db
@@ -252,8 +252,43 @@ flowchart TB
 ```
 
 What exists today in `apps/server`: the edge (REST + SSE, zod validation, `x-user-id` stand-in
-for identity), a runtime that serializes commands and writes every audit entry to the event
-log, the worker job protocol, and storage ports with an in-memory/JSON adapter.
+for identity), a runtime that runs every command in one storage transaction, the worker job
+protocol, and storage ports with two adapters: in memory (JSON snapshots) and PostgreSQL.
+
+### One transaction per command (M2)
+
+Every change to an application goes through `Storage.transact`. On PostgreSQL:
+
+1. The runtime queues the command behind the application's other commands in this process.
+2. The transaction locks the application's `app_state` row (`lock_timeout` 5 s; past that the
+   command fails with `503` and "busy"). If another server committed since this one's cached
+   version, the stored state comes back with the lock.
+3. The runtime catches the clock up from the stored clock time, then runs the command on a copy
+   of the state.
+4. A pure core function (`changesBetween`) compares the state before and after: new audit
+   entries, the items that changed, and outbox messages (`job.ready` for a service job that
+   became ready, `notify` for notifications and escalations).
+5. One commit writes the state (version + 1), the audit entries, the `item` and `work_item` rows
+   of the changed items, the outbox rows, the clock time, and a `NOTIFY` with the version and
+   the changed item ids (when they fit).
+6. Only then does the runtime replace its cached state. A failed command or commit leaves the
+   cache as it was.
+
+Storage numbers the audit entries: each item's new entries follow the highest `seq` already
+stored for it, under the row lock. The runtime never tracks log positions.
+
+Other servers `LISTEN` on the same channel and reload an application when a notice carries a
+newer version. A dropped listening connection makes `/api/ready` answer 503 until it is back,
+and a reconnect reloads every application. One server per application moves the clock: the one
+holding that application's advisory lock. A clock tick that changed no item and comes under 30 s
+after the stored clock time rolls back, so a quiet application doesn't write every second.
+Worker polls read the cache first and skip applications with no open job for that service.
+
+Locking is per application: one command at a time per application across all servers. The
+engine still works on a whole application's state, so per-item locking waits for the engine
+split in M1. Outbox rows are written but nothing sends them yet (M4).
+
+The memory adapter implements the same contract for one process, with JSON snapshots on disk.
 
 ### API surface (v0, implemented in the skeleton)
 
@@ -284,17 +319,20 @@ sequenceDiagram
   participant E as Engine (core)
   participant DB as Database
   participant RT as Live stream
-  U->>API: POST /work/{id}/release {outcome, comment, patch, expectedVersion}
+  U->>API: POST /work/{id}/release {outcome, comment, patch}
   API->>API: authenticate · holder/delegate check
-  API->>P: Release command
-  P->>DB: BEGIN · lock item row
-  P->>E: workRelease(…)
+  API->>P: Release command (queued behind the application's other commands)
+  P->>DB: BEGIN · lock the application's row (lock_timeout 5 s)
+  DB-->>P: stored version · state if another server moved it · clock time
+  P->>E: catch the clock up · workRelease(…) on a copy of the state
   E->>E: field security on patch · required fields · comment rule
   E->>E: route: outcome path → decision → next step → allocate
-  E-->>P: new state + audit entries (events)
-  P->>DB: append events · update projections (item, work items, field index) · outbox rows (emails, webhooks) · timers (SLA)
+  E-->>P: new state
+  P->>P: compare before and after: audit entries · changed items · outbox messages
+  P->>DB: state (version + 1) · audit entries · item and work-item rows · outbox rows · clock time · NOTIFY
   P->>DB: COMMIT
-  P-->>API: 200 (new version)  /  409 if stale or refused
+  P->>P: replace the cached state
+  P-->>API: 200  /  409 if the engine refuses  /  503 if another server holds the lock too long
   P--)RT: change notice → assignee's basket, step counts
 ```
 
@@ -416,9 +454,9 @@ Core server tier feasible; see [backend options](research/backend-options.md#3-m
 | Engine | Own deterministic TypeScript engine (`@modus-bpm/core`), shared by simulator and server | **Done** (prototype) |
 | Studio + Workspace | React 19, Vite, Tailwind CSS 4, React Flow 12, Zustand | **Done** (prototype) |
 | API edge | Node.js LTS, Fastify 5, zod 4 → OpenAPI 3.1; SSE for live updates | **Skeleton** |
-| Data access | Kysely behind storage ports; contract test suite | **Skeleton** (design, state, event log; M2) |
+| Data access | Kysely behind storage ports; contract test suite | **Skeleton** (design, state, event log, projections, outbox; M2) |
 | Database | PostgreSQL first; SQL Server, then Oracle | PostgreSQL **skeleton** (M2); SQL Server, Oracle planned (M6, v1.1) |
-| Jobs, timers, outbox | Own tables + SKIP LOCKED / READPAST claims | Planned (M3–M4) |
+| Jobs, timers, outbox | Own tables + SKIP LOCKED / READPAST claims | Outbox table written (M2); claims and dispatch planned (M3–M4) |
 | Automation | REST/OpenAPI connector; MCP client (TypeScript SDK v2, spec 2026-07-28); long-poll worker protocol (gRPC later); JSONata mapping | Protocol **skeleton**; connectors planned (M4) |
 | Event ingest | NATS JetStream (incl. MQTT listener); Kafka connector optional | Planned (M5) |
 | Identity | OIDC (Keycloak, Entra ID, Login.gov), SAML; SCIM 2.0 group sync | Planned (M2–M6) |
@@ -447,8 +485,10 @@ Core server tier feasible; see [backend options](research/backend-options.md#3-m
 
 Packaging is real today: one image (`ghcr.io/empowerment-ai/modus`) serves the API and the
 studio, `docker compose up` runs it on PostgreSQL, and `deploy/helm/modus` deploys it to
-Kubernetes. Storage is PostgreSQL (`DB_DIALECT=postgres`) or in memory with a JSON snapshot; the
-Postgres adapter keeps whole-application state as JSONB until the projection tables of M2 land. See [DEPLOYMENT.md](DEPLOYMENT.md) and
+Kubernetes. Storage is PostgreSQL (`DB_DIALECT=postgres`) or in memory with JSON snapshots.
+Several replicas can share one PostgreSQL database; the memory store runs as one process. The
+Postgres adapter keeps each application's state as JSONB and writes `item`, `work_item` and
+`outbox` rows beside it in the same transaction. See [DEPLOYMENT.md](DEPLOYMENT.md) and
 [TECH-STACK.md › SaaS architecture](TECH-STACK.md#saas-architecture).
 
 | Tier | Shape |
@@ -467,7 +507,7 @@ customers who need hard separation.
 | | Milestone | Exit criteria |
 | --- | --- | --- |
 | **M1** | Kernel hardening | Split the engine's command handlers from the simulation drivers further (`decide/evolve` over typed events); property tests and a "one million simulated items, zero stuck tokens" fuzz run; versioned JSON Schemas for designs. *Partly done: live mode, tokens, split/join, subflows, OCEL export, separation of duties, line items, search, assistant, supervisors, expedite, workflow versions and migration; 112 tests across engine and server.* |
-| **M2** | Server on Postgres | Kysely migrations; events + projections + outbox + timers with per-item locking; object types, objects, lists, attachments; OIDC login; single image + Compose. *First slice done: a PostgreSQL adapter (Kysely, versioned migrations in code, run at startup) stores the design, each application's state (JSONB) and the event log (`UNIQUE (app_id, item_id, seq)`); a shared storage contract suite runs against memory and Postgres; Docker Compose runs Modus on Postgres by default. Next: projection tables written in the command's transaction, the outbox, timers and per-item locking (so more than one server can share a database), then OIDC.* |
+| **M2** | Server on Postgres | Kysely migrations; events + projections + outbox + timers in one transaction per command, so several servers can share a database; object types, objects, lists, attachments; OIDC login; single image + Compose. *Storage done: a PostgreSQL adapter (Kysely, versioned migrations in code, run at startup) stores the design, each application's state (JSONB) and the event log (`UNIQUE (app_id, item_id, seq)`); every command commits state, audit entries, item and work-item projections, outbox rows and the clock in one transaction under the application's row lock; several replicas share one database (LISTEN/NOTIFY, one clock per application by advisory lock); a shared storage contract suite runs against memory and Postgres; Docker Compose runs Modus on Postgres by default. Locking is per application; per item after M1. The outbox is written, not yet sent (M4). Next: object types, objects, lists, attachments, then OIDC.* |
 | **M3** | Work service and Workspace on the server | Worklists and all distribution modes with SKIP LOCKED claims; delegation, out of office, SLA timers with business calendars; the studio's Workspace and Monitor wired to the API and the live stream. |
 | **M4** | Automation | Outbox dispatcher; REST/OpenAPI and MCP connectors; worker SDKs (TypeScript, Python, .NET, Java) from OpenAPI; retries, incidents, tracing. |
 | **M5** | Scale, ingest, analytics | Stream ingest and triage; OCEL/XES export; simulation calibrated from the log; Helm chart; load tests (target 100 signals/s sustained, 1,000 concurrent Workspace users). |
