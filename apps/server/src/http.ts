@@ -72,6 +72,8 @@ export interface ServerOptions {
   assistant?: ModelAssistant
   /** The outbox sender, woken when an administrator retries a message. */
   sender?: Pick<Sender, 'wake'>
+  /** How often a quiet live stream gets a keep-alive comment (default 25 s, under common 60 s proxy idle timeouts). */
+  streamPingMs?: number
 }
 
 // ---------- Request helpers ----------
@@ -538,17 +540,31 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
 
   // ----- Live stream (Server-Sent Events): counts per step and which items changed -----
 
-  const streams = new Set<FastifyReply>()
+  const streams = new Map<FastifyReply, NodeJS.Timeout>()
+  const pingMs = opts.streamPingMs ?? 25_000
   // Open streams would otherwise hold a graceful shutdown until the orchestrator kills the process.
   app.addHook('preClose', async () => {
-    for (const s of streams) s.raw.end()
+    for (const [s, ping] of streams) {
+      clearInterval(ping)
+      s.raw.end()
+    }
   })
 
   app.get('/api/apps/:app/stream', async (req, reply) => {
     const { app: appId } = appParams.parse(req.params)
     rt.ctx(appId)
-    reply.raw.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
-    streams.add(reply)
+    reply.raw.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    })
+    // writeHead only queues the headers; the first write sends them, so the client sees the stream open now.
+    reply.raw.write(': connected\n\n')
+    // Proxies cut idle connections (often after 60 s); a comment line keeps a quiet stream alive.
+    const ping = setInterval(() => reply.raw.write(': ping\n\n'), pingMs)
+    ping.unref()
+    streams.set(reply, ping)
     let last = 0
     const unsubscribe = rt.subscribe((c) => {
       if (c.appId !== appId) return
@@ -563,6 +579,7 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     })
     req.raw.on('close', () => {
       unsubscribe()
+      clearInterval(ping)
       streams.delete(reply)
     })
     return reply
