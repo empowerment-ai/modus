@@ -6,6 +6,8 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p .",
     "load": "tsx src/run.ts",
     "compare": "tsx src/compare.ts"
   },
