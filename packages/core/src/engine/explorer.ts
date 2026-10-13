@@ -37,17 +37,29 @@ export function explorerState(o: SimObject): string {
 
 /** Newest first. Negative when `a` comes before `b`. */
 export function explorerOrder(a: ExplorerKey, b: ExplorerKey): number {
-  return b.createdAt - a.createdAt || b.number.localeCompare(a.number) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
+  // Plain string order for numbers (prefix + sequence, as localeCompare ordered them), without the
+  // locale's cost or its dependence on where it runs.
+  return b.createdAt - a.createdAt || (a.number < b.number ? 1 : a.number > b.number ? -1 : 0) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
 }
 
-// Search text per item, rebuilt only when its history grows (every data change is audited)
-// or the design changes. Keyed by the object itself, so a reset simulation reusing ids starts over.
-const textCache = new WeakMap<SimObject, { len: number; app: App; users: User[]; text: string }>()
+/**
+ * Search text per item, for one application. Keyed by item id, not by object, because the server
+ * copies its state on every commit. An entry holds while the item's history keeps its length (every
+ * data change is audited), it is the same item (a reset simulation reuses ids) and the design is
+ * the same. Hold one per application: the server per app, the Studio per explorer.
+ */
+export interface ExplorerCache {
+  entries: Map<Id, { len: number; createdAt: number; number: string; app: App; users: User[]; text: string }>
+  /** Texts built (not served from the cache); tests watch it. */
+  builds: number
+}
+
+export const explorerCache = (): ExplorerCache => ({ entries: new Map(), builds: 0 })
 
 /** Everything `q` matches against, lower case. */
-export function explorerText(o: SimObject, { app, users }: Design): string {
-  const hit = textCache.get(o)
-  if (hit && hit.len === o.history.length && hit.app === app && hit.users === users) return hit.text
+export function explorerText(o: SimObject, { app, users }: Design, cache?: ExplorerCache): string {
+  const hit = cache?.entries.get(o.id)
+  if (hit && hit.len === o.history.length && hit.createdAt === o.createdAt && hit.number === o.number && hit.app === app && hit.users === users) return hit.text
   const type = app.objectTypes.find((t) => t.id === o.typeId)
   const parts = [o.number]
   for (const f of type?.fields ?? []) {
@@ -57,12 +69,15 @@ export function explorerText(o: SimObject, { app, users }: Design): string {
     if (f.type === 'table') for (const r of rowsOf(o.data[f.id])) parts.push(rowText(f, r, (c, cv) => formatFieldValue(columnAsField(c), cv, app.lists, users)))
   }
   const text = parts.join(' \u0001 ').toLowerCase()
-  textCache.set(o, { len: o.history.length, app, users, text })
+  if (cache) {
+    cache.builds++
+    cache.entries.set(o.id, { len: o.history.length, createdAt: o.createdAt, number: o.number, app, users, text })
+  }
   return text
 }
 
 /** A predicate for one filter (the query is normalized once). */
-export function explorerMatcher(f: ExplorerFilter, design: Design): (o: SimObject) => boolean {
+export function explorerMatcher(f: ExplorerFilter, design: Design, cache?: ExplorerCache): (o: SimObject) => boolean {
   const q = (f.q ?? '').trim().toLowerCase()
   const status = f.status ?? 'all'
   return (o) => {
@@ -70,7 +85,7 @@ export function explorerMatcher(f: ExplorerFilter, design: Design): (o: SimObjec
     if (f.typeId && o.typeId !== f.typeId) return false
     if (f.stepId && !o.tokens.some((t) => t.nodeId === f.stepId || t.calls.some((c) => c.nodeId === f.stepId))) return false
     if (f.assignee && !o.tokens.some((t) => t.userId === f.assignee)) return false
-    if (q && !explorerText(o, design).includes(q)) return false
+    if (q && !explorerText(o, design, cache).includes(q)) return false
     return true
   }
 }
@@ -79,9 +94,17 @@ export function explorerMatcher(f: ExplorerFilter, design: Design): (o: SimObjec
  * The matching items, newest first: `limit` of them after `after` (exclusive), the total
  * matching (ignoring `after`), and whether more follow.
  */
-export function exploreItems(sim: SimState, design: Design, f: ExplorerFilter, opts: { limit: number; after?: ExplorerKey }): { items: SimObject[]; total: number; more: boolean } {
-  const match = explorerMatcher(f, design)
-  const matched = Object.values(sim.objects).filter(match)
+export function exploreItems(
+  sim: SimState,
+  design: Design,
+  f: ExplorerFilter,
+  opts: { limit: number; after?: ExplorerKey; cache?: ExplorerCache },
+): { items: SimObject[]; total: number; more: boolean } {
+  const all = Object.values(sim.objects)
+  const { cache } = opts
+  // Forget items that are gone (a reset simulation, or fewer items on another server's state).
+  if (cache && cache.entries.size > all.length) for (const id of cache.entries.keys()) if (!sim.objects[id]) cache.entries.delete(id)
+  const matched = all.filter(explorerMatcher(f, design, cache))
   const total = matched.length
   const rest = opts.after ? matched.filter((o) => explorerOrder(opts.after!, o) < 0) : matched
   rest.sort(explorerOrder)

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { memoryStorage } from './adapters/memory'
-import { advance } from '@modus-bpm/core'
+import { advance, type ExplorerCache } from '@modus-bpm/core'
 import { buildServer } from './http'
 import { Runtime } from './runtime'
 
@@ -9,11 +9,12 @@ import { Runtime } from './runtime'
 
 let rt: Runtime
 let api: FastifyInstance
+const explorerCaches = new Map<string, ExplorerCache>()
 
 beforeAll(async () => {
   process.env.NODE_ENV = 'test'
   rt = await Runtime.create({ storage: memoryStorage() })
-  api = buildServer(rt)
+  api = buildServer(rt, { explorerCaches })
 })
 
 afterAll(async () => {
@@ -115,7 +116,7 @@ describe('GET /api/apps/:app/monitor/series, /feed, /items', () => {
       expect((await api.inject({ method: 'GET', url: `/api/apps/nope/monitor${path}`, headers: as(ADMIN) })).statusCode).toBe(404)
       expect((await get(path)).statusCode).toBe(200)
     }
-    for (const bad of ['/series?since=soon', '/feed?limit=0', '/feed?limit=301', '/items?limit=201', '/items?status=lost', '/items?cursor=nonsense', `/items?cursor=${Buffer.from('[1,2]').toString('base64url')}`]) expect((await get(bad)).statusCode, bad).toBe(400)
+    for (const bad of ['/series?since=soon', '/series?since=', '/feed?limit=0', '/feed?limit=301', '/items?limit=201', '/items?status=lost', '/items?cursor=nonsense', `/items?cursor=${Buffer.from('[1,2]').toString('base64url')}`]) expect((await get(bad)).statusCode, bad).toBe(400)
   })
 
   it('series: work in flight over time, incrementally', async () => {
@@ -187,5 +188,45 @@ describe('GET /api/apps/:app/monitor/series, /feed, /items', () => {
     expect(seen).toEqual(before)
     expect(seen).not.toContain(late.id)
     expect((await items('?limit=1')).items[0]!.id).toBe(late.id)
+  })
+
+  it('items: a well-formed cursor from elsewhere pages from where it sorts', async () => {
+    const all = await items('?limit=200')
+    const cur = (createdAt: number) => encodeURIComponent(Buffer.from(JSON.stringify([createdAt, 'X', 'x'])).toString('base64url'))
+    // Later than everything: the first page. Earlier than everything: nothing.
+    expect((await items(`?limit=200&cursor=${cur(1e12)}`)).items.map((r) => r.id)).toEqual(all.items.map((r) => r.id))
+    const none = await items(`?cursor=${cur(-1)}`)
+    expect(none.items).toEqual([])
+    expect(none.next).toBeUndefined()
+    expect(none.total).toBe(all.total)
+  })
+
+  it('items: rejected includes cancelled', async () => {
+    const { workItemId, clerk } = await invoiceAtClerk('REJ-1')
+    const released = await api.inject({ method: 'POST', url: `/api/apps/app_invoice/work/${encodeURIComponent(workItemId)}/release`, headers: as(clerk), payload: { outcomeId: 'o_k_no', comment: 'Duplicate' } })
+    expect(released.statusCode, released.body).toBe(200)
+    const { item: cancelled } = await invoiceAtClerk('CAN-1')
+    // No API cancels an item yet; finish it as cancelled the way the engine records it.
+    await rt.run('app_invoice', (sim) => Object.assign(sim.objects[cancelled.id]!, { status: 'cancelled', tokens: [], completedAt: sim.clock }))
+    const rejected = await items('?status=rejected&limit=200')
+    const statuses = await rt.read('app_invoice', (sim) => Object.values(sim.objects).filter((o) => o.status === 'rejected' || o.status === 'cancelled').map((o) => o.id))
+    expect(rejected.items.map((r) => r.id).sort()).toEqual(statuses.sort())
+    expect(rejected.items.find((r) => r.id === cancelled.id)).toMatchObject({ status: 'cancelled', state: 'cancelled' })
+    expect(rejected.items.some((r) => r.status === 'rejected')).toBe(true)
+  })
+
+  it('items: search text is cached across commits, rebuilt only for what changed', async () => {
+    await items('?q=warm-up')
+    const cache = explorerCaches.get('app_invoice')!
+    const n = await rt.read('app_invoice', (sim) => Object.keys(sim.objects).length)
+    expect(cache.entries.size).toBe(n)
+    const built = cache.builds
+    await items('?q=warm-up')
+    expect(cache.builds).toBe(built)
+    // A commit copies the state; only the new item (and the ones its commit touched) are formatted again.
+    await invoiceAtClerk('CACHE-1')
+    expect((await items('?q=cache-1')).items).toHaveLength(1)
+    expect(cache.builds - built).toBeGreaterThan(0)
+    expect(cache.builds - built).toBeLessThan(5)
   })
 })

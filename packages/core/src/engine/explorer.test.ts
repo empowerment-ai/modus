@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { seedDesign } from '../model/seed'
 import { activeTokens, advance, type Ctx, newSim } from './engine'
-import { exploreItems, explorerMatcher, explorerOrder, explorerRow, explorerState, explorerText } from './explorer'
+import { explorerCache, exploreItems, explorerMatcher, explorerOrder, explorerRow, explorerState, explorerText } from './explorer'
 import type { SimObject } from './state'
 
 function seedCtx(): Ctx {
@@ -59,6 +59,39 @@ describe('item explorer', () => {
     }
     expect(seen).toEqual([...all].sort(explorerOrder).map((o) => o.id))
     for (let i = 1; i < seen.length; i++) expect(sim.objects[seen[i - 1]!]!.createdAt).toBeGreaterThanOrEqual(sim.objects[seen[i]!]!.createdAt)
+  })
+
+  it('orders the numbers it issues as localeCompare did', () => {
+    const { all } = day()
+    const byLocale = [...all].sort((a, b) => b.createdAt - a.createdAt || b.number.localeCompare(a.number)).map((o) => o.id)
+    expect([...all].sort(explorerOrder).map((o) => o.id)).toEqual(byLocale)
+    const nums = ['INV-1001', 'INV-1002', 'INV-9999', 'INV-10000', 'INV-10001']
+    const same = (x: string, y: string) => Math.sign(x.localeCompare(y)) === -Math.sign(explorerOrder({ createdAt: 0, number: x, id: '' }, { createdAt: 0, number: y, id: '' }))
+    for (const x of nums) for (const y of nums) expect(same(x, y), `${x} ${y}`).toBe(true)
+  })
+
+  it('caches search text by item id across copies of the state, and only while it is the same item', () => {
+    const { ctx, sim, all } = day()
+    const cache = explorerCache()
+    const search = (s = sim) => exploreItems(s, ctx, { q: 'zzz' }, { limit: 10, cache })
+    search()
+    expect(cache.builds).toBe(all.length)
+    // The server commits a structured clone: nothing changed, nothing rebuilt.
+    const copy = structuredClone(sim)
+    search(copy)
+    expect(cache.builds).toBe(all.length)
+    // A changed item (its history grew) is rebuilt; so is a different item under a reused id.
+    const a = Object.values(copy.objects)[0]!
+    a.history.push({ ...a.history[0]!, at: copy.clock })
+    const b = Object.values(copy.objects)[1]!
+    b.number = `${b.number}-again`
+    search(copy)
+    expect(cache.builds).toBe(all.length + 2)
+    // A new design rebuilds everything; items that are gone are forgotten.
+    search(Object.assign(structuredClone(copy), { objects: { [a.id]: a } }))
+    expect(cache.entries.size).toBe(1)
+    exploreItems(copy, { ...ctx, users: [...ctx.users] }, { q: 'zzz' }, { limit: 10, cache })
+    expect(cache.builds).toBe(2 * all.length + 2)
   })
 
   it('orders ties by number, then id', () => {

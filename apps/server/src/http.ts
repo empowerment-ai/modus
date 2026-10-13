@@ -31,6 +31,8 @@ import {
   type Ctx,
   distributionFor,
   expeditedByStep,
+  explorerCache,
+  type ExplorerCache,
   exploreItems,
   type ExplorerKey,
   explorerRow,
@@ -78,6 +80,8 @@ export interface ServerOptions {
   assistant?: ModelAssistant
   /** The outbox sender, woken when an administrator retries a message. */
   sender?: Pick<Sender, 'wake'>
+  /** The item explorer's search text per application (given here so tests can watch it). */
+  explorerCaches?: Map<Id, ExplorerCache>
 }
 
 // ---------- Request helpers ----------
@@ -226,7 +230,7 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
   })
 
   /** Work in flight over time (a point every 15 sim minutes, the last 3000): only points after `since` when given. */
-  const seriesQuery = z.object({ since: z.coerce.number().optional() })
+  const seriesQuery = z.object({ since: z.string().trim().min(1).pipe(z.coerce.number()).optional() })
   app.get('/api/apps/:app/monitor/series', async (req, reply) => {
     const { app: appId } = appParams.parse(req.params)
     const refused = requireAdmin(req, monitorOnly)
@@ -272,6 +276,10 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     cursor: cursor.optional(),
   })
 
+  // Kept across requests (and commits): without it every search formats every item again.
+  const explorerCaches = opts.explorerCaches ?? new Map<Id, ExplorerCache>()
+  const explorerCacheFor = (appId: Id) => explorerCaches.get(appId) ?? explorerCaches.set(appId, explorerCache()).get(appId)!
+
   /** The item explorer over every item, newest first, with the Studio's filters and text search (core's explorer). */
   app.get('/api/apps/:app/monitor/items', async (req, reply) => {
     const { app: appId } = appParams.parse(req.params)
@@ -279,7 +287,7 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     if (refused) return send(reply, refused)
     const f = itemsQuery.parse(req.query)
     return rt.read(appId, (sim, ctx) => {
-      const r = exploreItems(sim, ctx, { status: f.status, typeId: f.type, stepId: f.step, assignee: f.assignee, q: f.q }, { limit: f.limit, after: f.cursor })
+      const r = exploreItems(sim, ctx, { status: f.status, typeId: f.type, stepId: f.step, assignee: f.assignee, q: f.q }, { limit: f.limit, after: f.cursor, cache: explorerCacheFor(appId) })
       const steps = explorerSteps(ctx.app)
       const last = r.items[r.items.length - 1]
       return { items: r.items.map((o) => explorerRow(o, ctx, sim.clock, steps)), total: r.total, ...(r.more && last ? { next: encodeCursor(last) } : {}) }
