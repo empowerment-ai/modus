@@ -184,10 +184,9 @@ clock (timers, SLAs, escalations, retries). If it stops, another takes over on i
   plus the listening one), all from `DATABASE_URL`. Replicas × (`DB_POOL_MAX` + 1), plus the
   extra pods a rolling update starts, must stay under Postgres `max_connections` minus its
   reserved connections (`superuser_reserved_connections` and any others), or under your pooler's
-  limit. In the chart, set `database.poolMax`. `DATABASE_URL` must
-  point at Postgres directly or at a session-mode pooler (PgBouncer `pool_mode = session`).
-  Transaction pooling breaks `LISTEN` and the session advisory locks that pick each clock's
-  ticker.
+  limit. In the chart, set `database.poolMax`. `DATABASE_URL` must point at Postgres directly or
+  at a session-mode pooler (PgBouncer `pool_mode = session`). Transaction pooling breaks `LISTEN`
+  and the session advisory locks that pick each clock's ticker.
 
 To try two replicas with Compose, uncomment `modus-2` in `docker-compose.yml`, run
 `docker compose up -d`, and open http://localhost:8787 and http://localhost:8788 side by side.
