@@ -229,7 +229,7 @@ describe.skipIf(!url)('postgres', () => {
         await other.query(`select 1 from ${own}.app_state where app_id = 'app_busy' for update`)
         await expect(commit(1)).rejects.toBeInstanceOf(StorageBusy)
       } finally {
-        await other.query('commit')
+        await other.query('commit').catch(() => undefined)
         await other.end()
       }
       expect(await commit(1)).toMatchObject({ version: 2, committed: true })

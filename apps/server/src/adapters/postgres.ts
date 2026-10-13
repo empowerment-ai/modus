@@ -505,6 +505,7 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
 
   async function open(): Promise<pg.Client> {
     // Keepalive and the heartbeat notice a half-open connection, whose clocks Postgres has already released.
+    // The heartbeat is what actually catches it in time: OS keepalive probes take minutes to give up.
     const c = new pg.Client({ connectionString, options: searchPath, keepAlive: true, keepAliveInitialDelayMillis: 10_000, connectionTimeoutMillis: 10_000 })
     c.on('notification', (m) => {
       if (m.channel !== channel || !m.payload) return
