@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { memoryStorage } from './adapters/memory'
+import { advance } from '@modus-bpm/core'
 import { buildServer } from './http'
 import { Runtime } from './runtime'
 
@@ -100,5 +101,91 @@ describe('GET /api/apps/:app/monitor', () => {
     expect(m.view.expedited).toBeGreaterThanOrEqual(1)
     expect(m.expeditedByStep.n_clerk).toBeGreaterThanOrEqual(1)
     expect(m.working[clerk]).toMatchObject({ itemId: item.id, number: item.number, stepId: 'n_clerk', startedAt: expect.any(Number), also: expect.any(Number) })
+  })
+})
+
+describe('GET /api/apps/:app/monitor/series, /feed, /items', () => {
+  const base = '/api/apps/app_invoice/monitor'
+  const get = (path: string, user = ADMIN) => api.inject({ method: 'GET', url: `${base}${path}`, headers: as(user) })
+
+  it('are for administrators only, validate their query, and 404 an unknown app', async () => {
+    for (const path of ['/series', '/feed', '/items']) {
+      expect((await api.inject({ method: 'GET', url: `${base}${path}` })).statusCode).toBe(401)
+      expect((await get(path, 'u_maya')).statusCode).toBe(403)
+      expect((await api.inject({ method: 'GET', url: `/api/apps/nope/monitor${path}`, headers: as(ADMIN) })).statusCode).toBe(404)
+      expect((await get(path)).statusCode).toBe(200)
+    }
+    for (const bad of ['/series?since=soon', '/feed?limit=0', '/feed?limit=301', '/items?limit=201', '/items?status=lost', '/items?cursor=nonsense', `/items?cursor=${Buffer.from('[1,2]').toString('base64url')}`]) expect((await get(bad)).statusCode, bad).toBe(400)
+  })
+
+  it('series: work in flight over time, incrementally', async () => {
+    await invoiceAtClerk('SER-1')
+    await rt.run('app_invoice', (sim, ctx) => advance(sim, ctx, 60))
+    const all = (await get('/series')).json() as { points: Array<{ t: number; wip: number; done: number }> }
+    expect(all.points.length).toBeGreaterThan(1)
+    expect(all.points.at(-1)).toMatchObject({ t: expect.any(Number), wip: expect.any(Number), done: expect.any(Number) })
+    const since = all.points.at(-2)!.t
+    const later = (await get(`/series?since=${since}`)).json() as typeof all
+    expect(later.points).toEqual(all.points.filter((p) => p.t > since))
+    expect(later.points.length).toBeGreaterThan(0)
+    expect(((await get(`/series?since=${all.points.at(-1)!.t}`)).json() as typeof all).points).toEqual([])
+  })
+
+  it('feed: newest first, limited', async () => {
+    await invoiceAtClerk('FEED-1')
+    const { entries } = (await get('/feed')).json() as { entries: Array<{ at: number; number: string; kind: string; text: string }> }
+    expect(entries.length).toBeGreaterThan(2)
+    expect(entries.length).toBeLessThanOrEqual(100)
+    for (let i = 1; i < entries.length; i++) expect(entries[i - 1]!.at).toBeGreaterThanOrEqual(entries[i]!.at)
+    expect(entries[0]).toEqual(await rt.read('app_invoice', (sim) => sim.feed[0]))
+    expect(((await get('/feed?limit=2')).json() as { entries: unknown[] }).entries).toEqual(entries.slice(0, 2))
+  })
+
+  interface Row { id: string; number: string; typeId: string; title: string; summary: Record<string, string>; status: string; state: string; stepId?: string; step?: string; more: number; assignee?: string; createdAt: number; age: number }
+  interface Page { items: Row[]; total: number; next?: string }
+  const items = async (query = '') => {
+    const res = await get(`/items${query}`)
+    expect(res.statusCode).toBe(200)
+    return res.json() as Page
+  }
+
+  it('items: rows the explorer shows, newest first, filtered like the explorer', async () => {
+    const { item, clerk } = await invoiceAtClerk('EXP-NEEDLE-7')
+    const all = await items('?limit=200')
+    expect(all.items[0]).toMatchObject({ id: item.id, number: item.number, typeId: expect.any(String), title: expect.any(String), status: 'active', stepId: 'n_clerk', step: expect.any(String), assignee: clerk, age: expect.any(Number) })
+    expect(all.items[0]).not.toHaveProperty('history')
+    for (let i = 1; i < all.items.length; i++) expect(all.items[i - 1]!.createdAt).toBeGreaterThanOrEqual(all.items[i]!.createdAt)
+    expect(all.total).toBe(await rt.read('app_invoice', (sim) => Object.keys(sim.objects).length))
+
+    expect((await items('?q=exp-needle-7')).items.map((r) => r.id)).toEqual([item.id])
+    expect((await items('?q=no-such-text-anywhere')).items).toEqual([])
+    const atClerk = await items('?step=n_clerk&limit=200')
+    expect(atClerk.items.map((r) => r.id)).toContain(item.id)
+    const clerkIds = await rt.read('app_invoice', (sim) => Object.values(sim.objects).filter((o) => o.tokens.some((t) => t.nodeId === 'n_clerk')).map((o) => o.id))
+    expect(atClerk.items.map((r) => r.id).sort()).toEqual(clerkIds.sort())
+    const theirs = await items(`?assignee=${clerk}&limit=200`)
+    expect(theirs.items.map((r) => r.id)).toContain(item.id)
+    expect(theirs.items.every((r) => r.assignee === clerk)).toBe(true)
+    expect((await items('?status=completed')).items.map((r) => r.id)).not.toContain(item.id)
+    expect((await items('?status=active&limit=200')).items.every((r) => r.status === 'active')).toBe(true)
+    expect((await items('?type=nope')).items).toEqual([])
+    expect((await items(`?type=${all.items[0]!.typeId}`)).total).toBe(all.total)
+  })
+
+  it('items: pages without duplicates or gaps, even while items arrive', async () => {
+    for (let i = 0; i < 5; i++) await invoiceAtClerk(`PAGE-${i}`)
+    const before = (await items('?limit=200')).items.map((r) => r.id)
+    const seen: string[] = []
+    let page = await items('?limit=3')
+    seen.push(...page.items.map((r) => r.id))
+    // A new item between pages comes first in a fresh read, never in a later page.
+    const { item: late } = await invoiceAtClerk('PAGE-LATE')
+    while (page.next) {
+      page = await items(`?limit=3&cursor=${encodeURIComponent(page.next)}`)
+      seen.push(...page.items.map((r) => r.id))
+    }
+    expect(seen).toEqual(before)
+    expect(seen).not.toContain(late.id)
+    expect((await items('?limit=1')).items[0]!.id).toBe(late.id)
   })
 })
