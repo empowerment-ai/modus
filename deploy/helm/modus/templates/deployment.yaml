@@ -15,9 +15,9 @@ spec:
   {{- end }}
   revisionHistoryLimit: 5
   strategy:
-    # The live state is held by one process (and, for memory, a ReadWriteOnce volume), whatever
-    # the dialect in this build: the old pod must stop and write its state before the new one loads it.
-    type: Recreate
+    # Memory's state lives in one process and a ReadWriteOnce volume, so the old pod stops first.
+    # SQL dialects share the database, so pods roll.
+    type: {{ ternary "Recreate" "RollingUpdate" $memory }}
   selector:
     matchLabels:
       {{- include "modus.selectorLabels" $ | nindent 6 }}

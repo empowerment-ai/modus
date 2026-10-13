@@ -39,7 +39,26 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # PostgreSQL 18: Modus's storage (milestone M2, first slice).
+  # A second replica on the same database: uncomment, then `docker compose up` and open both ports.
+  # modus-2:
+  #   image: modus:local
+  #   ports:
+  #     - '${MODUS_2_PORT:-8788}:8787'
+  #   environment:
+  #     TIME_SCALE: ${TIME_SCALE:-1}
+  #     LOG_LEVEL: ${LOG_LEVEL:-info}
+  #     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  #     MODUS_ASSISTANT_MODEL: ${MODUS_ASSISTANT_MODEL:-claude-opus-5-5}
+  #     DB_DIALECT: postgres
+  #     DATABASE_URL: postgres://modus:${POSTGRES_PASSWORD:-modus-dev-only}@postgres:5432/modus
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     modus:
+  #       condition: service_started
+  #   restart: unless-stopped
+
+  # PostgreSQL 18: Modus's storage (milestone M2).
   postgres:
     image: postgres:18-alpine
     environment:
