@@ -58,6 +58,7 @@ describe.skipIf(!url)('postgres', () => {
       return s
     },
     cleanup: () => drop(schema).then(() => undefined),
+    persistsProjections: true,
   })
 
   describe('postgres specifics', () => {
