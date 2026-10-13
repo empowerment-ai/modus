@@ -174,6 +174,7 @@ const sleep = (ms, signal) =>
  *   secret: string,
  *   now?: () => number,
  *   streamPath?: string,
+ *   user?: string,
  *   backoffMs?: number,
  *   maxBackoffMs?: number,
  *   sampleCap?: number,
@@ -184,6 +185,8 @@ const sleep = (ms, signal) =>
 export function createObserver(opts) {
   const now = opts.now ?? Date.now
   const streamPath = opts.streamPath ?? '/api/apps/app_invoice/stream'
+  // The stream needs a named user. Live screens stand for Monitors, which administrators watch: a seed administrator.
+  const user = opts.user ?? 'u_avery'
   const backoffMs = opts.backoffMs ?? 250
   const maxBackoffMs = opts.maxBackoffMs ?? 5_000
   const sampleCap = opts.sampleCap ?? 100_000
@@ -296,7 +299,7 @@ export function createObserver(opts) {
       }
       try {
         quiet()
-        const res = await fetch(url, { signal: AbortSignal.any([signal, conn.signal]), headers: { accept: 'text/event-stream' } })
+        const res = await fetch(url, { signal: AbortSignal.any([signal, conn.signal]), headers: { accept: 'text/event-stream', 'x-user-id': user } })
         if (!res.ok || !res.body) {
           // An unread body holds the connection open.
           await res.body?.cancel()

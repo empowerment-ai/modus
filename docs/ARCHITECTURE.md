@@ -309,7 +309,7 @@ The memory adapter implements the same contract for one process, with JSON snaps
 | Supervision | `GET …/my/supervision`, `POST …/supervise/:id/assign · return · release · retry`, `POST …/supervise/steps/:step/redistribute` |
 | Expedite | `POST …/items/:id/expedite {on, reason}` (checked against the process's policy) |
 | Workers | `POST /api/jobs/poll`, `POST /api/jobs/:id/complete`, `POST /api/jobs/:id/fail` |
-| Live | `GET /api/apps/:app/stream` (Server-Sent Events, below) |
+| Live | `GET /api/apps/:app/stream` (Server-Sent Events, below; any named user) |
 | Design | `GET /api/design` (the published design; services without connection details) |
 | Monitor | `GET …/monitor`, `…/monitor/series`, `…/monitor/feed`, `…/monitor/items` (administrators) |
 
@@ -317,7 +317,8 @@ The live stream sends `event: change` with `{clock, items, counts, active}`, whe
 changed item ids. While a client is behind (its buffer is full) the server holds the changed ids
 and sends them as one merged event, with the counts as of then, when it catches up. `items: null`
 means too much changed meanwhile (over 1,000 items): refetch everything. `: ping` comments keep a
-quiet stream open through proxies.
+quiet stream open through proxies. Like the design, the stream is for any named user (`x-user-id`,
+401 without one): it carries ids and counts, never item data.
 
 ### The Studio on a server: the Monitor (M3, first slice)
 

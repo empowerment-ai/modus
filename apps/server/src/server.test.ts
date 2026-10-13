@@ -134,7 +134,7 @@ describe('the live stream', () => {
     const abort = new AbortController()
     try {
       const started = Date.now()
-      const res = await fetch(`${base}/api/apps/app_invoice/stream`, { signal: abort.signal })
+      const res = await fetch(`${base}/api/apps/app_invoice/stream`, { signal: abort.signal, headers: as('u_maya') })
       expect(res.status).toBe(200)
       expect(res.headers.get('content-type')).toBe('text/event-stream')
       expect(res.headers.get('x-accel-buffering')).toBe('no')
@@ -149,6 +149,23 @@ describe('the live stream', () => {
       expect(text.startsWith(': connected\n\n')).toBe(true)
       expect(text).toContain(': ping\n\n')
       expect(Date.now() - started).toBeLessThan(2000)
+    } finally {
+      abort.abort()
+      await live.close()
+    }
+  })
+
+  it('needs a named user, but any will do', async () => {
+    const none = await api.inject({ method: 'GET', url: '/api/apps/app_invoice/stream' })
+    expect(none.statusCode).toBe(401)
+    expect(none.json().ok).toBe(false)
+    const live = buildServer(rt, { streamPingMs: 50 })
+    const base = await live.listen({ port: 0, host: '127.0.0.1' })
+    const abort = new AbortController()
+    try {
+      // A clerk, not an administrator: the stream carries ids and counts only.
+      const res = await fetch(`${base}/api/apps/app_invoice/stream`, { signal: abort.signal, headers: as('u_jordan') })
+      expect(res.status).toBe(200)
     } finally {
       abort.abort()
       await live.close()
@@ -173,7 +190,7 @@ describe('the live stream', () => {
   }
 
   async function openStream(base: string, signal: AbortSignal) {
-    const res = await fetch(`${base}/api/apps/app_invoice/stream`, { signal })
+    const res = await fetch(`${base}/api/apps/app_invoice/stream`, { signal, headers: as('u_maya') })
     const reader = res.body!.getReader()
     await reader.read()
     return reader
