@@ -229,10 +229,13 @@ function writeData(sim: SimState, idx: Index, obj: SimObject, patch: Record<stri
     if (JSON.stringify(obj.data[k]) === JSON.stringify(v)) continue
     obj.data[k] = v
     const f = type?.fields.find((x) => x.id === k)
-    const redacted = `${f?.label} changed by ${actor}`
-    if (f && f.type === 'table') audit(sim, obj, { kind: 'field', nodeId, actor, fieldIds: [k], redacted, text: `${f.label} updated by ${actor} (${Array.isArray(v) ? v.length : 0} rows)` })
-    else if (f && f.type !== 'attachment') audit(sim, obj, { kind: 'field', nodeId, actor, fieldIds: [k], redacted, text: `${f.label} changed to ${displayValue(idx, type, k, v) || '(blank)'} by ${actor}` })
-    else if (f) audit(sim, obj, { kind: 'field', nodeId, actor, fieldIds: [k], redacted, text: `${f.label} updated by ${actor}` })
+    const redacted = `${f?.label ?? k} changed by ${actor}`
+    // A key that is no field (deleted from the design, or sent by an admin) is kept, and still
+    // audited so the change is seen; its value stays out of the text as nothing marks it safe to show.
+    if (!f) audit(sim, obj, { kind: 'field', nodeId, actor, fieldIds: [k], redacted, text: `${k} updated by ${actor}` })
+    else if (f.type === 'table') audit(sim, obj, { kind: 'field', nodeId, actor, fieldIds: [k], redacted, text: `${f.label} updated by ${actor} (${Array.isArray(v) ? v.length : 0} rows)` })
+    else if (f.type !== 'attachment') audit(sim, obj, { kind: 'field', nodeId, actor, fieldIds: [k], redacted, text: `${f.label} changed to ${displayValue(idx, type, k, v) || '(blank)'} by ${actor}` })
+    else audit(sim, obj, { kind: 'field', nodeId, actor, fieldIds: [k], redacted, text: `${f.label} updated by ${actor}` })
   }
   if (!type) return
   obj.data = normalizeData(type, obj.data)
