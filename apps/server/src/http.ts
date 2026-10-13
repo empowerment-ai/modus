@@ -61,6 +61,7 @@ import {
 import { answer, type ModelAssistant } from './assistant'
 import { canRead, findItem, hitDto, itemDto, workItemDto } from './dto'
 import { NotFound, type Runtime, StorageUnavailable } from './runtime'
+import type { Sender } from './sender'
 
 export interface ServerOptions {
   logger?: FastifyServerOptions['logger']
@@ -68,6 +69,8 @@ export interface ServerOptions {
   staticDir?: string
   /** The language model behind the assistant; without it the built-in assistant answers. */
   assistant?: ModelAssistant
+  /** The outbox sender, woken when an administrator retries a message. */
+  sender?: Pick<Sender, 'wake'>
 }
 
 // ---------- Request helpers ----------
@@ -466,6 +469,33 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     const { app: appId, workItemId } = workParams.parse(req.params)
     const actor = who(req)
     return send(reply, await rt.run(appId, (sim, ctx) => supervisedBy(sim, ctx, workItemId, actor) ?? adminRetry(sim, ctx, workItemId, nameOf(ctx, actor))))
+  })
+
+  // ----- The outbox: administrators only -----
+  // Deliveries carry the endpoint's name only, never its URL or secret.
+
+  const requireAdmin = (req: FastifyRequest): Refusal | undefined => {
+    const user = who(req)
+    // Roles are organization-wide (hasRole reads the user's roles), so this needs no application: a design may have none.
+    const admin = rt.design.users.find((u) => u.id === user)?.roles?.includes('admin')
+    return admin ? undefined : refuse(403, 'Only an administrator can see or retry outbox deliveries.')
+  }
+
+  const outboxQuery = z.object({ status: z.enum(['pending', 'delivered', 'failed']).optional(), limit: z.coerce.number().int().min(1).max(500).default(100) })
+  app.get('/api/admin/outbox', async (req, reply) => {
+    const refused = requireAdmin(req)
+    if (refused) return send(reply, refused)
+    const filter = outboxQuery.parse(req.query)
+    return { deliveries: await rt.deliveries.list(filter) }
+  })
+
+  app.post('/api/admin/outbox/:id/retry', async (req, reply) => {
+    const refused = requireAdmin(req)
+    if (refused) return send(reply, refused)
+    const { id } = z.object({ id: z.coerce.number().int().positive() }).parse(req.params)
+    if (!(await rt.deliveries.retry(id, Date.now()))) return send(reply, refuse(404, 'That message has no failed deliveries.'))
+    void opts.sender?.wake()
+    return { ok: true }
   })
 
   // ----- Workers: the job protocol for registered services ("devices") -----

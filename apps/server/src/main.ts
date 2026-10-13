@@ -13,6 +13,7 @@ import { ConfigError, describeConfig, loadConfig } from './config'
 import { buildServer } from './http'
 import type { Storage } from './ports'
 import { Runtime } from './runtime'
+import { Sender } from './sender'
 
 let loaded: ReturnType<typeof loadConfig>
 try {
@@ -47,7 +48,19 @@ const runtime = await Runtime.create({
 })
 runtime.start()
 
-const server = buildServer(runtime, { logger: { level: config.logLevel }, staticDir: config.staticDir, assistant: anthropicModel(config.assistant) })
+const DAY = 24 * 60 * 60_000
+const sender = new Sender({
+  storage,
+  endpoints: config.webhooks,
+  keepMs: config.webhooksKeepDays * DAY,
+  keepFailedMs: config.webhooksKeepFailedDays * DAY,
+  log: (level, msg, extra) => server.log[level](extra ?? {}, msg),
+})
+const server = buildServer(runtime, { logger: { level: config.logLevel }, staticDir: config.staticDir, assistant: anthropicModel(config.assistant), sender })
+// Only now: a round logs through the server. Commits here and change notices from other servers both wake it; its timer catches the rest.
+runtime.subscribe(() => void sender.wake())
+sender.start()
+
 for (const w of warnings) server.log.warn(w)
 server.log.info(describeConfig(config))
 await server.listen({ port: config.port, host: config.host })
@@ -56,6 +69,8 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, async () => {
     server.log.info(`${signal}: shutting down`)
     await server.close()
+    // Let a send in flight record its result while storage is still open.
+    await sender.stop()
     await runtime.stop()
     await storage.close?.()
     process.exit(0)
