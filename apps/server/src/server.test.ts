@@ -97,6 +97,36 @@ describe('the API runs the same engine live', () => {
   })
 })
 
+describe('commands answer only after they commit', () => {
+  it('reports 503, not 201, when creating an item fails to commit', async () => {
+    const storage = memoryStorage()
+    const rt2 = await Runtime.create({ storage })
+    const api2 = buildServer(rt2)
+    const payload = { workflowId: 'w_invoice', data: { f_invno: 'INV-LOST' } }
+    const transact = storage.transact.bind(storage)
+    // The command runs (the item is made in memory), then the commit fails.
+    storage.transact = (appId, known, work) =>
+      transact(appId, known, async (stored) => {
+        await work(stored)
+        throw new Error('commit failed')
+      })
+    const lost = await api2.inject({ method: 'POST', url: '/api/apps/app_invoice/items', headers: as('u_maya'), payload })
+    expect(lost.statusCode).toBe(503)
+    expect(lost.json()).toMatchObject({ ok: false })
+
+    storage.transact = transact
+    const made = await api2.inject({ method: 'POST', url: '/api/apps/app_invoice/items', headers: as('u_maya'), payload: { ...payload, data: { f_invno: 'INV-KEPT' } } })
+    expect(made.statusCode).toBe(201)
+    // Refusals still come back after the command, with their own codes.
+    const refused = await api2.inject({ method: 'POST', url: '/api/apps/app_invoice/items', headers: as('u_carmen'), payload })
+    expect(refused.statusCode).toBe(403)
+    const unknown = await api2.inject({ method: 'POST', url: '/api/apps/app_invoice/items', headers: as('u_maya'), payload: { workflowId: 'w_nope', data: {} } })
+    expect([403, 404]).toContain(unknown.statusCode)
+    await api2.close()
+    await rt2.stop()
+  })
+})
+
 describe('the live stream', () => {
   it('opens at once on an idle app and pings while quiet', async () => {
     const live = buildServer(rt, { streamPingMs: 50 })
