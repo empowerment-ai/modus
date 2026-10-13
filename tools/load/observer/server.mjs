@@ -396,11 +396,15 @@ export function createObserver(opts) {
       s.badSignatures++
       return 401
     }
-    /** @type {{ id?: unknown, createdAt?: unknown }} */
+    /** @type {{ id?: unknown, createdAt?: unknown } | null | undefined} */
     let msg
     try {
       msg = JSON.parse(body)
     } catch {
+      msg = undefined
+    }
+    // null, a number or an array is valid JSON but no delivery.
+    if (typeof msg !== 'object' || msg === null || Array.isArray(msg)) {
       s.badBodies++
       return 400
     }

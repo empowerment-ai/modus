@@ -576,6 +576,7 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
         const v = computeView(sim, ctx)
         return { clock: sim.clock, counts: Object.fromEntries(Object.entries(v.nodes).map(([id, m]) => [id, m.total])), active: v.active }
       }),
+      { onError: (err) => reply.log.error({ err }, 'live stream: reading the view failed') },
     )
     let last = 0
     const unsubscribe = rt.subscribe((c) => {

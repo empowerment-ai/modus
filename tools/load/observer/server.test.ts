@@ -84,7 +84,12 @@ describe('webhooks', () => {
     // Signed but not JSON.
     const junk = await fetch(`${base}/hook`, { method: 'POST', body: 'nope', headers: { 'modus-signature': signFor(secret, Math.floor(clock.t / 1000), 'nope') } })
     expect(junk.status).toBe(400)
-    expect(obs.stats().webhooks).toMatchObject({ received: 1, duplicates: 0, badSignatures: 3, badBodies: 1 })
+    // Signed JSON that isn't an object.
+    for (const text of ['null', '42', '[1]']) {
+      const res = await fetch(`${base}/hook`, { method: 'POST', body: text, headers: { 'modus-signature': signFor(secret, Math.floor(clock.t / 1000), text) } })
+      expect(res.status).toBe(400)
+    }
+    expect(obs.stats().webhooks).toMatchObject({ received: 1, duplicates: 0, badSignatures: 3, badBodies: 4 })
   })
 
   it('records lag from createdAt and counts a redelivery as a duplicate, not a second sample', async () => {
