@@ -310,6 +310,22 @@ The memory adapter implements the same contract for one process, with JSON snaps
 | Expedite | `POST …/items/:id/expedite {on, reason}` (checked against the process's policy) |
 | Workers | `POST /api/jobs/poll`, `POST /api/jobs/:id/complete`, `POST /api/jobs/:id/fail` |
 | Live | `GET /api/apps/:app/stream` (Server-Sent Events) |
+| Design | `GET /api/design` (the published design; services without connection details) |
+| Monitor | `GET …/monitor`, `…/monitor/series`, `…/monitor/feed`, `…/monitor/items` (administrators) |
+
+### The Studio on a server: the Monitor (M3, first slice)
+
+Served by a Modus server, the Studio's Monitor reads the server instead of simulating. At startup
+the Studio asks `GET /api/health`; an answer means a server serves it, and the Monitor header shows
+**Live / Simulation**, opening on Live. Live draws the server's published design (`GET /api/design`)
+and fills every panel from the administrator-only reads: `/monitor` (KPIs, steps, services,
+workload with what each person is working on), `/monitor/series` (work in flight over time,
+incremental), `/monitor/feed` (activity) and `/monitor/items` (the item explorer, paged, sharing the
+core's search cache per app). The `stream` keeps step counts current from each `change` event;
+the other panels refetch at most once a second. Simulation is the in-browser simulation as before,
+including what-if. Until OIDC, the Studio sends `x-user-id` as an administrator (the sample's, or
+one picked from the design). The Monitor is read-only on the server for now. The standalone build
+(Pages, `pnpm dev`) has no server and is unchanged.
 
 ## Request sequences
 
@@ -513,7 +529,7 @@ customers who need hard separation.
 | --- | --- | --- |
 | **M1** | Kernel hardening | Split the engine's command handlers from the simulation drivers further (`decide/evolve` over typed events); property tests and a "one million simulated items, zero stuck tokens" fuzz run; versioned JSON Schemas for designs. *Partly done: live mode, tokens, split/join, subflows, OCEL export, separation of duties, line items, search, assistant, supervisors, expedite, workflow versions and migration.* |
 | **M2** | Server on Postgres | Kysely migrations; events + projections + outbox + timers in one transaction per command, so several servers can share a database; object types, objects, lists, attachments; OIDC login; single image + Compose. *Storage done: a PostgreSQL adapter (Kysely, versioned migrations in code, run at startup) stores the design, each application's state (JSONB) and the event log (`UNIQUE (app_id, item_id, seq)`); every command commits state, audit entries, item and work-item projections, outbox rows and the clock in one transaction under the application's row lock; several replicas share one database (LISTEN/NOTIFY, one clock per application by advisory lock); a shared storage contract suite runs against memory and Postgres; Docker Compose runs Modus on Postgres by default. Locking is per application; per item after M1. The outbox is written, and sent to signed webhooks with retries by every server. Next: object types, objects, lists, attachments, then OIDC.* |
-| **M3** | Work service and Workspace on the server | Worklists and all distribution modes with SKIP LOCKED claims; delegation, out of office, SLA timers with business calendars; the studio's Workspace and Monitor wired to the API and the live stream. |
+| **M3** | Work service and Workspace on the server | Worklists and all distribution modes with SKIP LOCKED claims; delegation, out of office, SLA timers with business calendars; the studio's Workspace and Monitor wired to the API and the live stream. *Monitor done: Live / Simulation on a served Studio, administrator reads over the API and the stream. Next: the Workspace.* |
 | **M4** | Automation | Email from Modus; REST/OpenAPI and MCP connectors; worker SDKs (TypeScript, Python, .NET, Java) from OpenAPI; retries, incidents, tracing. *Done ahead of it: the outbox sender (signed webhooks with retries).* |
 | **M5** | Scale, ingest, analytics | Stream ingest and triage; OCEL/XES export; simulation calibrated from the log; Helm chart; load tests (target 100 signals/s sustained, 1,000 concurrent Workspace users). |
 | **M6** | Hardening, second database, v1.0 | SQL Server adapter certified by the contract suite; SCIM/SAML; multi-tenancy; backup/upgrade runbooks; SBOM, signing, air-gap bundle; external security review. Oracle in v1.1. |
