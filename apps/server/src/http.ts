@@ -645,6 +645,10 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     const { app: appId } = appParams.parse(req.params)
     rt.ctx(appId)
     reply.raw.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
+    // Something now, not at the first change: Node holds the headers until the first write, and proxies
+    // (Vite's dev proxy among them) hold theirs until the first byte, so a quiet server looked unconnected.
+    // A comment line, which SSE clients skip.
+    reply.raw.write(': connected\n\n')
     streams.add(reply)
     let last = 0
     const unsubscribe = rt.subscribe((c) => {
