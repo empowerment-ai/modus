@@ -11,6 +11,8 @@
     "build": "pnpm -r build",
     "build:standalone": "pnpm --filter @modus-bpm/studio build:standalone",
     "test": "pnpm -r test",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "load": "pnpm --filter @modus-bpm/load load",
+    "load:compare": "pnpm --filter @modus-bpm/load compare"
   }
 }
