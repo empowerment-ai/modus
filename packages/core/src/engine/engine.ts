@@ -1777,9 +1777,9 @@ function resolveInputs(obj: SimObject, inputs: Record<string, string> | undefine
   return out
 }
 
-/** A job a worker for this service may claim now: a service step not taken over by a person, and not leased (or its lease ran out). */
-export function openJob(sim: SimState, t: Token, serviceId: Id): boolean {
-  return t.state === 'auto' && !t.manual && t.serviceId === serviceId && (t.leaseUntil === undefined || t.leaseUntil <= sim.clock)
+/** A job a worker for this service may claim at clock time `at`: a service step not taken over by a person, and not leased (or its lease ran out). */
+export function openJob(sim: SimState, t: Token, serviceId: Id, at = sim.clock): boolean {
+  return t.state === 'auto' && !t.manual && t.serviceId === serviceId && (t.leaseUntil === undefined || t.leaseUntil <= at)
 }
 
 /** Claim up to `max` jobs for a service. A claimed job is leased to the worker until it completes, fails or the lease runs out. */

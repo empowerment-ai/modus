@@ -274,4 +274,25 @@ describe('worker polls', () => {
     await server.close()
     await own.stop()
   })
+
+  it('offer a job again once its lease runs out, though the quiet application’s clock hasn’t moved', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const own = await Runtime.create({ storage: memoryStorage() })
+      const server = buildServer(own)
+      const poll = async () => (await server.inject({ method: 'POST', url: '/api/jobs/poll', payload: { serviceId: 'svc_erp', workerId: 'erp-slow', max: 10, leaseSeconds: 5 } })).json() as { jobs: Array<{ id: string }> }
+      const created = await server.inject({ method: 'POST', url: '/api/apps/app_invoice/items', headers: as('u_maya'), payload: { workflowId: 'w_invoice', data: { f_invno: 'LEASE-1' } } })
+      expect(created.statusCode).toBe(201)
+      const [job] = (await poll()).jobs
+      expect(job).toBeDefined()
+      expect((await poll()).jobs).toEqual([])
+      // Nothing ticks (the runtime isn't started): only wall time passes.
+      vi.setSystemTime(Date.now() + 10_000)
+      expect((await poll()).jobs.map((j) => j.id)).toEqual([job!.id])
+      await server.close()
+      await own.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

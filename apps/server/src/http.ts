@@ -478,7 +478,9 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     for (const a of rt.design.apps) {
       if (jobs.length >= b.max) break
       // Checked on the cache first, so idle workers polling every second don't lock and write every application.
-      if (!(await rt.read(a.id, (sim) => activeTokens(sim).some((t) => openJob(sim, t, b.serviceId))))) continue
+      // Leases are compared with the clock as of now (the cached one lags on a quiet application). A stale
+      // cache can still lead to a commit that claims nothing (another replica took the job): harmless.
+      if (!(await rt.read(a.id, (sim) => activeTokens(sim).some((t) => openJob(sim, t, b.serviceId, rt.clockNow(a.id)))))) continue
       const got = await rt.run(a.id, (sim, ctx) => pollJobs(sim, ctx, b.serviceId, b.workerId, b.max - jobs.length, b.leaseSeconds / 60))
       jobs.push(...got.map((j) => ({ ...j, id: `${a.id}:${j.id}`, appId: a.id })))
     }
