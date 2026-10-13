@@ -165,12 +165,14 @@ export interface StreamOptions extends Omit<ApiOptions, 'signal'> {
   /** First retry delay; doubles per failed attempt up to `maxBackoffMs`. */
   backoffMs?: number
   maxBackoffMs?: number
+  /** The server refused who we are (401/403): retrying won't help, so the stream stops for good. */
+  onDenied?: (status: number) => void
 }
 
 /**
  * Follows `/api/apps/:app/stream` and reconnects with backoff when it drops. Uses fetch and a reader rather
  * than EventSource, which can't send the `x-user-id` header. `onState` reports 'live' on each (re)connect
- * and 'reconnecting' once per outage. Returns a function that closes the stream for good.
+ * and 'reconnecting' once per outage; a 401 or 403 ends it through `onDenied` instead. Returns a function that closes the stream for good.
  */
 export function openStream(appId: Id, onEvent: (e: ChangeEvent) => void, onState: (s: StreamState) => void, o: StreamOptions): () => void {
   const f = o.fetch ?? fetch
@@ -193,7 +195,17 @@ export function openStream(appId: Id, onEvent: (e: ChangeEvent) => void, onState
     ctl = new AbortController()
     try {
       const res = await f(`${appPath(appId)}/stream`, { signal: ctl.signal, headers: { accept: 'text/event-stream', 'x-user-id': o.user } })
-      if (!res.ok || !res.body) throw new ApiError(res.status, `stream: ${res.status}`)
+      if (!res.ok || !res.body) {
+        res.body?.cancel().catch(() => {})
+        if (res.status === 401 || res.status === 403) {
+          if (!closed) {
+            closed = true
+            o.onDenied?.(res.status)
+          }
+          return
+        }
+        throw new ApiError(res.status, `stream: ${res.status}`)
+      }
       if (closed) return void res.body.cancel().catch(() => {})
       reader = res.body.getReader()
       delay = first
@@ -207,7 +219,12 @@ export function openStream(appId: Id, onEvent: (e: ChangeEvent) => void, onState
         } catch {
           return // a malformed event: the next one or the throttled refetch catches up
         }
-        onEvent(parsed)
+        try {
+          onEvent(parsed)
+        } catch (err) {
+          // The consumer's bug, not the stream's: keep reading.
+          console.error(err)
+        }
       })
       for (;;) {
         const { done, value } = await reader.read()

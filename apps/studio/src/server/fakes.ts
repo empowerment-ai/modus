@@ -17,6 +17,7 @@ export function fakeStream() {
   return {
     response: () => new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
     push: (text: string) => ctrl.enqueue(enc.encode(text)),
+    bytes: (b: Uint8Array) => ctrl.enqueue(b),
     change: (data: unknown) => ctrl.enqueue(enc.encode(`event: change\ndata: ${JSON.stringify(data)}\n\n`)),
     close: () => ctrl.close(),
     fail: () => ctrl.error(new TypeError('network')),

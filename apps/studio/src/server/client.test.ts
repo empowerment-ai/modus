@@ -105,6 +105,73 @@ describe('openStream', () => {
     expect(f).toHaveBeenCalledTimes(2)
   })
 
+  it('decodes a multi-byte character split across chunks', async () => {
+    vi.useFakeTimers()
+    const stream = fakeStream()
+    const events: Array<{ items: string[] | null }> = []
+    const close = openStream('a', (e) => events.push(e), () => {}, { user: 'u', fetch: async () => stream.response() })
+    await vi.advanceTimersByTimeAsync(0)
+    const bytes = new TextEncoder().encode('event: change\ndata: {"clock":1,"items":["café"],"counts":{},"active":0}\n\n')
+    const cut = bytes.indexOf(0xc3) + 1 // inside the two bytes of é
+    stream.bytes(bytes.slice(0, cut))
+    await vi.advanceTimersByTimeAsync(0)
+    stream.bytes(bytes.slice(cut))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(events.map((e) => e.items)).toEqual([['café']])
+    close()
+  })
+
+  it('keeps reading when the consumer throws', async () => {
+    vi.useFakeTimers()
+    const stream = fakeStream()
+    const seen: number[] = []
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const close = openStream(
+      'a',
+      (e) => {
+        seen.push(e.clock)
+        if (e.clock === 1) throw new Error('consumer bug')
+      },
+      () => {},
+      { user: 'u', fetch: async () => stream.response() },
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    stream.change({ clock: 1, items: [], counts: {}, active: 0 })
+    stream.change({ clock: 2, items: [], counts: {}, active: 0 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(seen).toEqual([1, 2])
+    expect(error).toHaveBeenCalledTimes(1)
+    expect(stream.cancelled()).toBe(false)
+    error.mockRestore()
+    close()
+  })
+
+  it('stops for good on 403, cancelling the body, and reports it', async () => {
+    vi.useFakeTimers()
+    let cancelled = false
+    const body = new ReadableStream({ cancel: () => void (cancelled = true) })
+    const f = vi.fn(async () => new Response(body, { status: 403 }))
+    const states: StreamState[] = []
+    const denied: number[] = []
+    openStream('a', () => {}, (s) => states.push(s), { user: 'u', fetch: f, onDenied: (s) => denied.push(s) })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(f).toHaveBeenCalledTimes(1)
+    expect(denied).toEqual([403])
+    expect(states).toEqual([])
+    expect(cancelled).toBe(true)
+  })
+
+  it('cancels the body of a failed response before retrying', async () => {
+    vi.useFakeTimers()
+    let cancelled = false
+    const body = new ReadableStream({ cancel: () => void (cancelled = true) })
+    const f = vi.fn(async () => new Response(body, { status: 502 }))
+    const close = openStream('a', () => {}, () => {}, { user: 'u', fetch: f })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(cancelled).toBe(true)
+    close()
+  })
+
   it('backs off further while the server stays down', async () => {
     vi.useFakeTimers()
     const f = vi.fn(async () => Promise.reject(new TypeError('offline')))

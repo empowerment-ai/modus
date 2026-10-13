@@ -34,20 +34,26 @@ function fakeServer() {
     streams,
     clock: 10,
     admins: new Set(['u_boss', 'u_root']),
+    /** Return a promise to hold a request until the test resolves it. */
+    hold: undefined as ((path: string) => Promise<void> | undefined) | undefined,
+    /** Answer the stream with this status instead. */
+    streamStatus: undefined as number | undefined,
     paths: (prefix: string) => calls.filter((c) => c.path.startsWith(prefix)).map((c) => c.path),
     stream: () => streams[streams.length - 1]!,
     fetch: vi.fn(async (path: string, init?: RequestInit) => {
       const user = new Headers(init?.headers).get('x-user-id')
       calls.push({ path, user })
+      await s.hold?.(path)
       const url = new URL(path, 'http://x')
       if (path === '/api/health') return json({ ok: true, apps: 1 })
       if (path === '/api/design') return json(design)
       if (url.pathname.endsWith('/stream')) {
+        if (s.streamStatus) return json({ ok: false, error: 'no' }, s.streamStatus)
         streams.push(fakeStream())
         return s.stream().response()
       }
       if (!s.admins.has(user ?? '')) return json({ ok: false, error: 'Only an administrator can see the Monitor.' }, 403)
-      if (url.pathname.endsWith('/monitor')) return json(snapshot(s.clock))
+      if (url.pathname.endsWith('/monitor')) return json(snapshot(path.includes('app_other') ? 99 : s.clock))
       if (url.pathname.endsWith('/monitor/series')) {
         const since = url.searchParams.get('since')
         const all = [0, 5, 10].concat(s.clock > 10 ? [s.clock] : []).map((t) => ({ t, wip: t, done: 0 }))
@@ -56,6 +62,8 @@ function fakeServer() {
       if (url.pathname.endsWith('/monitor/feed')) return json({ entries: [{ at: s.clock, objectId: 'o1', number: 'INV-1', kind: 'created', text: 'Created' }] })
       if (url.pathname.endsWith('/monitor/items')) {
         const cursor = url.searchParams.get('cursor')
+        const q = url.searchParams.get('q')
+        if (q === 'slow' || q === 'fast') return json({ items: [row(q)], total: 1 })
         return json(cursor ? { items: [row('o3')], total: 3 } : { items: [row('o1'), row('o2')], total: 3, next: 'c1' })
       }
       return json({ ok: false, error: 'not found' }, 404)
@@ -70,6 +78,13 @@ const memory = () => {
 }
 
 const flush = () => vi.advanceTimersByTimeAsync(0)
+
+/** A promise the test resolves by hand. */
+function gate() {
+  let open!: () => void
+  const promise = new Promise<void>((r) => (open = r))
+  return { promise, open }
+}
 
 describe('live store', () => {
   beforeEach(() => vi.useFakeTimers())
@@ -198,6 +213,91 @@ describe('live store', () => {
     await vi.advanceTimersByTimeAsync(3000)
     expect(store.getState()).toMatchObject({ status: 'live', actingAdmin: 'u_boss' })
     expect(server.paths('/api/apps/app_invoice/stream')).toHaveLength(1)
+  })
+
+  it('waits for the design before calling admin endpoints', async () => {
+    const { server, store } = await setup()
+    const g = gate()
+    server.hold = (p) => (p === '/api/design' ? g.promise : undefined)
+    const connecting = store.getState().connect('app_invoice')
+    await flush()
+    expect(store.getState().status).toBe('connecting')
+    store.getState().setFilters({ q: 'acme' })
+    store.getState().refresh()
+    await store.getState().loadMore()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(server.calls.filter((c) => c.path.startsWith('/api/apps'))).toHaveLength(0)
+    expect(server.calls.find((c) => c.path === '/api/design')?.user).toBe('studio')
+
+    g.open()
+    await connecting
+    await flush()
+    expect(store.getState()).toMatchObject({ status: 'live', actingAdmin: 'u_boss', explorer: { filters: { q: 'acme' }, loading: false } })
+    expect(server.calls.filter((c) => c.path.startsWith('/api/apps')).every((c) => c.user === 'u_boss')).toBe(true)
+    expect(server.paths('/api/apps/app_invoice/monitor/items').at(-1)).toContain('q=acme')
+  })
+
+  it('retries a failed refetch while the stream is live', async () => {
+    const { server, store } = await setup()
+    await store.getState().connect('app_invoice')
+    await flush()
+    const real = server.fetch.getMockImplementation()!
+    server.fetch.mockImplementationOnce(async () => json({ ok: false, error: 'boom' }, 500))
+    server.stream().change({ clock: 20, items: ['o1'], counts: {}, active: 1 })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(store.getState().status).toBe('reconnecting')
+    server.fetch.mockImplementation(real)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(store.getState()).toMatchObject({ status: 'live', error: undefined })
+    expect(store.getState().monitor!.clock).toBe(10)
+  })
+
+  it('a stream refused with 403 stops and says not an administrator', async () => {
+    const { server, store } = await setup()
+    await store.getState().connect('app_invoice')
+    await flush()
+    server.streamStatus = 403
+    server.stream().fail()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(store.getState().status).toBe('error')
+    expect(store.getState().error).toMatch(/u_boss is not an administrator/)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(server.paths('/api/apps/app_invoice/stream')).toHaveLength(2)
+  })
+
+  it('ignores an old app’s refetch that answers after a switch', async () => {
+    const { server, store } = await setup()
+    await store.getState().connect('app_invoice')
+    await flush()
+    const g = gate()
+    server.hold = (p) => (p === '/api/apps/app_invoice/monitor' ? g.promise : undefined)
+    server.clock = 20
+    server.stream().change({ clock: 20, items: ['o1'], counts: {}, active: 1 })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(server.calls.filter((c) => c.path === '/api/apps/app_invoice/monitor')).toHaveLength(2) // the refetch is in flight
+
+    await store.getState().connect('app_other')
+    await flush()
+    expect(store.getState().monitor!.clock).toBe(99)
+    g.open()
+    await flush()
+    expect(store.getState()).toMatchObject({ appId: 'app_other', status: 'live', monitor: { clock: 99 } })
+  })
+
+  it('discards an older explorer page that answers after a filter change', async () => {
+    const { server, store } = await setup()
+    await store.getState().connect('app_invoice')
+    await flush()
+    const g = gate()
+    server.hold = (p) => (p.includes('q=slow') ? g.promise : undefined)
+    store.getState().setFilters({ q: 'slow' })
+    await flush()
+    store.getState().setFilters({ q: 'fast' })
+    await flush()
+    expect(store.getState().explorer).toMatchObject({ rows: [row('fast')], loading: false })
+    g.open()
+    await flush()
+    expect(store.getState().explorer).toMatchObject({ filters: { q: 'fast' }, rows: [row('fast')], loading: false })
   })
 
   it('a 403 sets the error and stops', async () => {
