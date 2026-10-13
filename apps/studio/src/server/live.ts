@@ -78,6 +78,20 @@ export interface LiveDeps {
   feedLimit?: number
   /** Before connecting again when the design couldn't be loaded. */
   retryMs?: number
+  /** Whether the tab is hidden, and a way to hear when that changes. Default: the document's, or always visible. */
+  visibility?: Visibility
+}
+
+export interface Visibility {
+  hidden: () => boolean
+  /** Calls back when the tab is shown or hidden. */
+  subscribe: (onChange: () => void) => void
+}
+
+/** The page's visibility; outside a browser (tests, server rendering) the tab counts as always visible. */
+function documentVisibility(): Visibility {
+  if (typeof document === 'undefined') return { hidden: () => false, subscribe: () => {} }
+  return { hidden: () => document.hidden, subscribe: (cb) => document.addEventListener('visibilitychange', cb) }
 }
 
 const ADMIN_KEY = 'modus-live-admin'
@@ -110,6 +124,7 @@ export function createLiveStore(deps: LiveDeps = {}) {
   const pageSize = deps.pageSize ?? 50
   const feedLimit = deps.feedLimit ?? 300
   const retryMs = deps.retryMs ?? 3000
+  const visibility = deps.visibility ?? documentVisibility()
 
   const remembered = (): Id | undefined => {
     try {
@@ -213,6 +228,8 @@ export function createLiveStore(deps: LiveDeps = {}) {
       timer = undefined
       const g = gen
       if (!pending || !connected(g)) return
+      // Hidden since this was scheduled: wait for the tab to come back, then reload it all once.
+      if (visibility.hidden()) return void (pendingFull = true)
       const full = pendingFull || stale
       pending = pendingFull = stale = false
       inFlight = true
@@ -239,6 +256,8 @@ export function createLiveStore(deps: LiveDeps = {}) {
       if (!connected(gen)) return
       pending = true
       pendingFull ||= full
+      // A hidden tab refetches nothing (the stream still keeps the counts); it reloads once when shown.
+      if (visibility.hidden()) return void (pendingFull = true)
       if (timer || inFlight) return
       timer = setTimeout(flush, Math.max(0, lastFetch + throttleMs - Date.now()))
     }
@@ -285,6 +304,11 @@ export function createLiveStore(deps: LiveDeps = {}) {
         },
       )
     }
+
+    // Back in view: one full reload, whatever was missed while hidden.
+    visibility.subscribe(() => {
+      if (!visibility.hidden()) schedule(true)
+    })
 
     return {
       available: false,

@@ -322,9 +322,10 @@ and fills every panel from the administrator-only reads: `/monitor` (KPIs, steps
 workload with what each person is working on), `/monitor/series` (work in flight over time,
 incremental), `/monitor/feed` (activity) and `/monitor/items` (the item explorer, paged, sharing the
 core's search cache per app). The `stream` keeps step counts current from each `change` event;
-the other panels refetch at most once a second. Simulation is the in-browser simulation as before,
+the other panels refetch at most once a second, and not at all while the tab is hidden. Simulation is the in-browser simulation as before,
 including what-if. Until OIDC, the Studio sends `x-user-id` as an administrator (the sample's, or
-one picked from the design). The Monitor is read-only on the server for now. The standalone build
+one picked from the design). Like every route, this trusts the self-asserted `x-user-id`; don't
+expose a server publicly before OIDC. The Monitor is read-only on the server for now. The standalone build
 (Pages, `pnpm dev`) has no server and is unchanged.
 
 ## Request sequences

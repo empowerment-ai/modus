@@ -104,11 +104,33 @@ export function exploreItems(
   const { cache } = opts
   // Forget items that are gone (a reset simulation, or fewer items on another server's state).
   if (cache && cache.entries.size > all.length) for (const id of cache.entries.keys()) if (!sim.objects[id]) cache.entries.delete(id)
-  const matched = all.filter(explorerMatcher(f, design, cache))
-  const total = matched.length
-  const rest = opts.after ? matched.filter((o) => explorerOrder(opts.after!, o) < 0) : matched
-  rest.sort(explorerOrder)
-  return { items: rest.slice(0, opts.limit), total, more: rest.length > opts.limit }
+  const matches = explorerMatcher(f, design, cache)
+  const { after, limit } = opts
+  // Keep only the first `limit + 1` after the cursor, in order (the extra one says whether more follow),
+  // instead of sorting every match: a page of 50 out of 100,000 items is n·log(51), not n·log(n).
+  const top: SimObject[] = []
+  let total = 0
+  for (const o of all) {
+    if (!matches(o)) continue
+    total++
+    if (after && explorerOrder(after, o) >= 0) continue
+    if (top.length > limit && explorerOrder(o, top[top.length - 1]!) >= 0) continue
+    insertSorted(top, o)
+    if (top.length > limit + 1) top.pop()
+  }
+  return { items: top.slice(0, limit), total, more: top.length > limit }
+}
+
+/** Insert `o` into `list`, kept in explorer order, by binary search. */
+function insertSorted(list: SimObject[], o: SimObject) {
+  let lo = 0
+  let hi = list.length
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (explorerOrder(list[mid]!, o) < 0) lo = mid + 1
+    else hi = mid
+  }
+  list.splice(lo, 0, o)
 }
 
 /** Every step by id, including steps the map no longer has where items on older versions can still be. */

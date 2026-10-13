@@ -268,9 +268,9 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     })
   const itemsQuery = z.object({
     status: z.enum(['all', 'active', 'completed', 'rejected']).default('all'),
-    type: z.string().optional(),
-    step: z.string().optional(),
-    assignee: z.string().optional(),
+    type: z.string().max(200).optional(),
+    step: z.string().max(200).optional(),
+    assignee: z.string().max(200).optional(),
     q: z.string().max(500).default(''),
     limit: z.coerce.number().int().min(1).max(200).default(50),
     cursor: cursor.optional(),

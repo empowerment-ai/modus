@@ -83,6 +83,12 @@ async function stopServer() {
   await Promise.race([gone, timeout])
   if (!exited) child.kill('SIGKILL')
 }
+// Anything that escapes the checks below still stops the server.
+for (const event of ['unhandledRejection', 'uncaughtException'] as const)
+  process.on(event, (e) => {
+    console.error(`\nFAIL  ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`)
+    void stopServer().then(() => process.exit(1))
+  })
 // Ctrl-C on the smoke check still stops the server.
 for (const sig of ['SIGINT', 'SIGTERM'] as const)
   process.on(sig, () => {
@@ -110,18 +116,21 @@ async function getJson<T>(path: string, user?: string): Promise<T> {
   return (await res.json()) as T
 }
 
+/** Set when the stream fails or ends on its own; every wait checks it, so it fails the run instead of escaping. */
+let streamError: Error | undefined
+
 /** Reads the event stream in the background, keeping each `change` event's item ids. */
 function openStream(abort: AbortController) {
   const changes: Array<{ items: string[] | null; active: number }> = []
   let connected = false
-  const done = (async () => {
+  void (async () => {
     const res = await fetch(`${base}/api/apps/${APP}/stream`, { headers: as(ADMIN), signal: abort.signal })
     check(res.ok && res.body, `GET /api/apps/${APP}/stream answered ${res.status}`)
     const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader()
     let buf = ''
     for (;;) {
       const { value, done } = await reader.read()
-      if (done) return
+      if (done) throw new SmokeError('the server closed the stream')
       buf += value
       let at: number
       while ((at = buf.indexOf('\n\n')) >= 0) {
@@ -134,14 +143,15 @@ function openStream(abort: AbortController) {
       }
     }
   })().catch((e) => {
-    if (!abort.signal.aborted) throw e
+    if (!abort.signal.aborted) streamError = e instanceof Error ? e : new Error(String(e))
   })
-  return { changes, isConnected: () => connected, done }
+  return { changes, isConnected: () => connected }
 }
 
 async function waitFor(what: string, ok: () => boolean, ms = 5000) {
   const until = Date.now() + ms
   while (!ok()) {
+    if (streamError) throw streamError instanceof SmokeError ? streamError : new SmokeError(`the stream failed: ${streamError.message}`)
     check(Date.now() < until, `${what} within ${ms / 1000} s`)
     await new Promise((r) => setTimeout(r, 50))
   }
