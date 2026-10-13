@@ -15,3 +15,4 @@ docs
 docker-compose.yml
 Dockerfile
 .dockerignore
+tools/load/results

@@ -24,6 +24,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/studio/package.json apps/studio/
 COPY apps/server/package.json apps/server/
 COPY packages/core/package.json packages/core/
+COPY tools/load/package.json tools/load/
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile
 
