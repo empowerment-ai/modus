@@ -101,6 +101,22 @@ describe('loadEndpoints', () => {
     expect(msg).not.toContain('abc123def456')
   })
 
+  it('rejects credentials in a URL without echoing them', () => {
+    const env = problems({ WEBHOOK_URL: 'https://hookuser:pa55word-xyz@hooks.example.com/in', WEBHOOK_SECRET: SECRET })
+    expect(env).toMatch(/WEBHOOK_URL: url must not contain a username or password/)
+    expect(env).not.toMatch(/pa55word-xyz|hookuser/)
+    const msg = problems(FILE, file([{ name: 'a', url: 'https://hookuser@hooks.example.com/in', secret: SECRET }]))
+    expect(msg).toMatch(/\(a\).*username or password/)
+    expect(msg).not.toContain('hookuser')
+  })
+
+  it('echoes an entry name only when it is well formed', () => {
+    const msg = problems(FILE, file([{ name: 'https://x.example.com/?k=leaky-value', url: 'https://a.example.com', secret: 'short' }]))
+    expect(msg).toMatch(/WEBHOOKS_FILE\[0\]: name must match/)
+    expect(msg).toMatch(/WEBHOOKS_FILE\[0\]: secret must be/)
+    expect(msg).not.toContain('leaky-value')
+  })
+
   it('requires a secret of at least 16 characters, from secret or secretEnv, without leaking it', () => {
     const short = 'tooshort-123'
     const msg = problems({ ...FILE, SHORT_ENV: short, WEBHOOK_URL: 'https://a.example.com', WEBHOOK_SECRET: short }, file([
@@ -194,13 +210,18 @@ describe('sign and verify', () => {
     expect(verify(SECRET, body, header.slice(0, -2), now)).toBe(false)
     expect(verify(SECRET, body, 'garbage', now)).toBe(false)
     expect(verify(SECRET, body, '', now)).toBe(false)
+    expect(verify(SECRET, body, undefined as unknown as string, now)).toBe(false)
+    expect(verify(SECRET, body, [header] as unknown as string, now)).toBe(false)
+    expect(verify(SECRET, body, header.replace(/t=(\d+)/, 't=0$1'), now)).toBe(false)
+    const zero = sign(SECRET, body, 0) // t=0 is never a real send time
+    expect(verify(SECRET, body, zero, 0)).toBe(false)
   })
 })
 
 describe('retryDelay', () => {
-  it('backs off 10 s, 30 s, 2 min, 10 min, 1 h, then hourly', () => {
+  it('backs off 10 s, 30 s, 2 min, 10 min, 1 h, then hourly, by attempts made before the failure', () => {
     expect([0, 1, 2, 3, 4, 5, 6, 7].map(retryDelay)).toEqual([
-      0, 10_000, 30_000, 120_000, 600_000, 3_600_000, 3_600_000, 3_600_000,
+      10_000, 30_000, 120_000, 600_000, 3_600_000, 3_600_000, 3_600_000, 3_600_000,
     ])
     expect(GIVE_UP_AFTER_MS).toBe(86_400_000)
   })
@@ -229,20 +250,40 @@ describe('classify', () => {
     expect(res(503, { 'retry-after': new Date(now + 90_000).toUTCString() })).toMatchObject({ retry: true, retryAfterMs: 90_000, status: 503 })
     expect(res(503, { 'retry-after': new Date(now - 90_000).toUTCString() })).toMatchObject({ retry: true, retryAfterMs: 0 })
     expect(res(503, { 'retry-after': 'soon' })).not.toHaveProperty('retryAfterMs')
+    // Bare numbers that aren't whole seconds are not dates (Date.parse would read them as years).
+    expect(res(503, { 'retry-after': '1.5' })).not.toHaveProperty('retryAfterMs')
+    expect(res(503, { 'retry-after': '-5' })).not.toHaveProperty('retryAfterMs')
   })
 
-  it('trims errors to 500 characters', () => {
+  it('caps Retry-After at GIVE_UP_AFTER_MS', () => {
+    expect(res(429, { 'retry-after': '999999999999' })).toMatchObject({ retryAfterMs: GIVE_UP_AFTER_MS })
+    expect(res(503, { 'retry-after': new Date(now + 400 * 86_400_000).toUTCString() })).toMatchObject({ retryAfterMs: GIVE_UP_AFTER_MS })
+  })
+
+  it('trims errors to 500 code points, on one line', () => {
     const out = res(500, {}, 'x'.repeat(2000))
     expect(out.ok).toBe(false)
     if (!out.ok) expect(out.error).toHaveLength(500)
+    const emoji = res(500, {}, '\u{1F600}'.repeat(600))
+    if (!emoji.ok) {
+      expect(Array.from(emoji.error)).toHaveLength(500)
+      expect(emoji.error).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
+    }
+    expect(res(500, {}, 'line one\nline\ttwo\u0000')).toMatchObject({ error: 'HTTP 500: line one line two' })
   })
 
   it('retries thrown network errors and timeouts', () => {
-    const net = classify({ error: new TypeError('fetch failed', { cause: new Error('connect ECONNREFUSED 127.0.0.1:9') }) })
+    const net = classify({ error: new TypeError('fetch failed', { cause: new Error('connect ECONNREFUSED 127.0.0.1:9') }) }, now)
     expect(net).toEqual({ ok: false, retry: true, error: 'TypeError: fetch failed (connect ECONNREFUSED 127.0.0.1:9)' })
-    const abort = classify({ error: new DOMException('This operation was aborted', 'AbortError') })
+    const abort = classify({ error: new DOMException('This operation was aborted', 'AbortError') }, now)
     expect(abort).toMatchObject({ ok: false, retry: true, error: expect.stringMatching(/AbortError/) })
     expect(abort).not.toHaveProperty('status')
-    expect(classify({ error: 'weird' })).toEqual({ ok: false, retry: true, error: 'weird' })
+    expect(classify({ error: 'weird' }, now)).toEqual({ ok: false, retry: true, error: 'weird' })
+  })
+
+  it('strips URLs from thrown errors, which may carry credentials', () => {
+    const out = classify({ error: new TypeError('Request cannot be constructed from a URL that includes credentials: https://u:s3cr3t-pw@hooks.example.com/in') }, now)
+    expect(out).toEqual({ ok: false, retry: true, error: 'TypeError: Request cannot be constructed from a URL that includes credentials: <url>' })
+    expect(classify({ error: 'failed on http://u:s3cr3t-pw@x.example.com' }, now)).toEqual({ ok: false, retry: true, error: 'failed on <url>' })
   })
 })

@@ -36,6 +36,8 @@ export function loadEndpoints(env: Record<string, string | undefined>, readFile:
     } catch {
       return problems.push(`${where}: url is not a valid URL`)
     }
+    // fetch refuses credentials in a URL, and its error would then carry them into stored errors.
+    if (parsed.username || parsed.password) problems.push(`${where}: url must not contain a username or password`)
     if (parsed.protocol === 'https:' || (allowHttp && parsed.protocol === 'http:')) return
     problems.push(`${where}: url must be https://${allowHttp ? ' or http://' : ' (WEBHOOKS_ALLOW_HTTP=true allows http://)'}`)
   }
@@ -79,7 +81,8 @@ export function loadEndpoints(env: Record<string, string | undefined>, readFile:
         if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return problems.push(`WEBHOOKS_FILE[${i}]: must be an object`)
         const o = raw as Record<string, unknown>
         const name = typeof o.name === 'string' ? o.name : undefined
-        const where = `WEBHOOKS_FILE[${i}]${name !== undefined ? ` (${name})` : ''}`
+        // Echo the name only when it is well formed: anything else could be a pasted secret or URL.
+        const where = `WEBHOOKS_FILE[${i}]${name !== undefined && NAME.test(name) ? ` (${name})` : ''}`
 
         for (const k of Object.keys(o)) if (!FILE_KEYS.has(k)) problems.push(`${where}: unknown key "${k}"`)
         if (o.name === undefined) problems.push(`${where}: name is required`)
@@ -142,9 +145,11 @@ export function sign(secret: string, body: string, now: number): string {
 
 /** For receivers and tests: true when the header is valid and at most `toleranceMs` old. */
 export function verify(secret: string, body: string, header: string, now: number, toleranceMs = 5 * 60_000): boolean {
+  // Receivers pass whatever arrived, which may be a missing header or an array of them.
+  if (typeof header !== 'string') return false
   const parts = header.split(',').map(p => p.trim().split('='))
   const ts = parts.find(([k]) => k === 't')?.[1]
-  if (!ts || !/^\d+$/.test(ts)) return false
+  if (!ts || !/^[1-9]\d*$/.test(ts)) return false
   const t = Number(ts)
   // Either direction: a receiver's clock may run ahead of or behind ours.
   if (Math.abs(now - t * 1000) > toleranceMs) return false
@@ -158,39 +163,45 @@ export function verify(secret: string, body: string, header: string, now: number
 
 const SCHEDULE = [10_000, 30_000, 2 * 60_000, 10 * 60_000, 60 * 60_000]
 
-/** Delay before attempt n+1 after n failed attempts: 10 s, 30 s, 2 min, 10 min, 1 h, then 1 h. Zero failures: no wait. */
+/** Delay before the next attempt after a failure, given the attempts made before that failure: 0 → 10 s, 1 → 30 s, 2 → 2 min, 3 → 10 min, 4+ → 1 h. */
 export function retryDelay(attempts: number): number {
-  if (attempts <= 0) return 0
-  return SCHEDULE[Math.min(attempts, SCHEDULE.length) - 1]!
+  return SCHEDULE[Math.min(Math.max(0, attempts), SCHEDULE.length - 1)]!
 }
 export const GIVE_UP_AFTER_MS = 24 * 60 * 60_000
 
 export type Outcome = { ok: true } | { ok: false; retry: boolean; retryAfterMs?: number; status?: number; error: string }
 
 const MAX_ERROR = 500
-const trim = (s: string) => s.length > MAX_ERROR ? s.slice(0, MAX_ERROR) : s
+/** Errors are stored and shown in admin screens: one line, at most MAX_ERROR code points (never a split surrogate pair). */
+// eslint-disable-next-line no-control-regex
+const trim = (s: string) => Array.from(s.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim()).slice(0, MAX_ERROR).join('')
 
-/** Retry-After is seconds or an HTTP date; anything else is ignored. */
+/** Retry-After: whole seconds, or an HTTP date (which always contains letters); anything else is ignored. Capped at GIVE_UP_AFTER_MS, beyond which we stop anyway. */
 function retryAfter(value: string | null, now: number): number | undefined {
   if (!value) return undefined
   const v = value.trim()
-  if (/^\d+$/.test(v)) return Number(v) * 1000
+  if (/^\d+$/.test(v)) return Math.min(Number(v) * 1000, GIVE_UP_AFTER_MS)
+  // Date.parse reads bare numbers like '1.5' or '-5' as years; only text with letters can be a date.
+  if (!/[a-z]/i.test(v)) return undefined
   const at = Date.parse(v)
-  return Number.isNaN(at) ? undefined : Math.max(0, at - now)
+  return Number.isNaN(at) ? undefined : Math.min(Math.max(0, at - now), GIVE_UP_AFTER_MS)
 }
 
 function describe(err: unknown): string {
-  if (!(err instanceof Error)) return String(err)
+  if (!(err instanceof Error)) return stripUrls(String(err))
   // undici hides the useful part (ECONNREFUSED, ENOTFOUND, …) in `cause` behind "fetch failed".
   const cause = err.cause instanceof Error ? ` (${err.cause.message})` : ''
-  return `${err.name}: ${err.message}${cause}`
+  return stripUrls(`${err.name}: ${err.message}${cause}`)
 }
+
+/** Defense in depth: a URL in an error may carry credentials or a token, so it never reaches storage. */
+const stripUrls = (s: string) => s.replace(/[a-z][a-z0-9+.-]*:\/\/\S*/gi, '<url>')
 
 /**
  * Classify a response (or a thrown network/timeout error): 2xx ok; 408/429/5xx and errors retry; other 4xx (and 3xx: redirects aren't followed) fail.
  * `now` only turns a Retry-After date into a delay.
  */
-export function classify(res: { status: number; headers: Headers; text?: string } | { error: unknown }, now = Date.now()): Outcome {
+export function classify(res: { status: number; headers: Headers; text?: string } | { error: unknown }, now: number): Outcome {
   if ('error' in res) return { ok: false, retry: true, error: trim(describe(res.error)) }
   const { status } = res
   if (status >= 200 && status < 300) return { ok: true }
