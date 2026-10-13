@@ -312,14 +312,14 @@ describe('live store', () => {
     expect(server.calls.map((c) => c.path)).toEqual(['/api/health', '/api/design'])
   })
 
-  it('a stream answered 404 stops for good and goes idle', async () => {
+  it('a stream answered 404 for an app the design lists stops for good and says the server dropped it', async () => {
     const { server, store } = await setup()
     await store.getState().connect('app_invoice')
     await flush()
     server.streamStatus = 404
     server.stream().fail()
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(store.getState().status).toBe('idle')
+    expect(store.getState()).toMatchObject({ status: 'error', error: expect.stringContaining('no longer runs this app') })
     expect(server.paths('/api/apps/app_invoice/stream')).toHaveLength(2)
   })
 
