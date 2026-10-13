@@ -230,8 +230,8 @@ function writeData(sim: SimState, idx: Index, obj: SimObject, patch: Record<stri
     obj.data[k] = v
     const f = type?.fields.find((x) => x.id === k)
     const redacted = `${f?.label ?? k} changed by ${actor}`
-    // A key that is no field (deleted from the design, or sent by an admin) is kept, and still
-    // audited so the change is seen; its value stays out of the text as nothing marks it safe to show.
+    // A key that is no field can only come from adminUpdateData (work saves drop them). It is kept,
+    // and audited so the change is seen; its value stays out of the text as nothing marks it safe to show.
     if (!f) audit(sim, obj, { kind: 'field', nodeId, actor, fieldIds: [k], redacted, text: `${k} updated by ${actor}` })
     else if (f.type === 'table') audit(sim, obj, { kind: 'field', nodeId, actor, fieldIds: [k], redacted, text: `${f.label} updated by ${actor} (${Array.isArray(v) ? v.length : 0} rows)` })
     else if (f.type !== 'attachment') audit(sim, obj, { kind: 'field', nodeId, actor, fieldIds: [k], redacted, text: `${f.label} changed to ${displayValue(idx, type, k, v) || '(blank)'} by ${actor}` })
@@ -371,10 +371,11 @@ export function workSave(sim: SimState, ctx: Ctx, tokenId: Id, userId: Id, patch
   return ok(true)
 }
 
+/** The patch keys a person may write: fields of the item's type (not computed ones) whose value differs. Other keys are dropped. */
 function changedOnly(obj: SimObject, patch: Record<string, unknown>, type?: { fields: Array<{ id: Id; total?: unknown }> }): Record<string, unknown> {
-  const computed = new Set(type?.fields.filter((f) => f.total).map((f) => f.id))
+  const writable = new Set(type?.fields.filter((f) => !f.total).map((f) => f.id))
   const out: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(patch)) if (!computed.has(k) && JSON.stringify(obj.data[k]) !== JSON.stringify(v)) out[k] = v
+  for (const [k, v] of Object.entries(patch)) if (writable.has(k) && JSON.stringify(obj.data[k]) !== JSON.stringify(v)) out[k] = v
   return out
 }
 
