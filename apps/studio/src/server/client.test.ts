@@ -115,6 +115,28 @@ describe('openStream', () => {
     expect(f).toHaveBeenCalledTimes(2)
   })
 
+  it('reports every chunk to onActivity, keep-alive comments included', async () => {
+    vi.useFakeTimers()
+    const stream = fakeStream()
+    const events: unknown[] = []
+    const onActivity = vi.fn()
+    const close = openStream('a', (e) => events.push(e), () => {}, { user: 'u', fetch: async () => stream.response(), onActivity })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(onActivity).not.toHaveBeenCalled()
+    stream.push(': connected\n\n')
+    await vi.advanceTimersByTimeAsync(0)
+    stream.push(': ping\n\n')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(onActivity).toHaveBeenCalledTimes(2)
+    expect(events).toEqual([])
+    stream.change({ clock: 1, items: [], counts: {}, active: 0 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(onActivity).toHaveBeenCalledTimes(3)
+    close()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(onActivity).toHaveBeenCalledTimes(3)
+  })
+
   it('decodes a multi-byte character split across chunks', async () => {
     vi.useFakeTimers()
     const stream = fakeStream()

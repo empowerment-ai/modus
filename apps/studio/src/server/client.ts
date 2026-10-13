@@ -177,12 +177,16 @@ export interface StreamOptions extends Omit<ApiOptions, 'signal'> {
   onDenied?: (status: number) => void
   /** The server doesn't run this app (404): the stream stops for good too. */
   onNotFound?: () => void
+  /** Any bytes arrived, keep-alive comments included: the connection is alive even when nothing changes. */
+  onActivity?: () => void
 }
 
 /**
  * Follows `/api/apps/:app/stream` and reconnects with backoff when it drops. Uses fetch and a reader rather
  * than EventSource, which can't send the `x-user-id` header. `onState` reports 'live' on each (re)connect
- * and 'reconnecting' once per outage; a 401 or 403 ends it through `onDenied`, a 404 through `onNotFound`. Returns a function that closes the stream for good.
+ * and 'reconnecting' once per outage; a 401 or 403 ends it through `onDenied`, a 404 through `onNotFound`.
+ * `onActivity` hears every chunk, so a caller can tell a quiet stream (the server pings every 25 s) from a dead one.
+ * Returns a function that closes the stream for good.
  */
 export function openStream(appId: Id, onEvent: (e: ChangeEvent) => void, onState: (s: StreamState) => void, o: StreamOptions): () => void {
   const f = o.fetch ?? fetch
@@ -240,6 +244,7 @@ export function openStream(appId: Id, onEvent: (e: ChangeEvent) => void, onState
       for (;;) {
         const { done, value } = await reader.read()
         if (done || closed) break
+        o.onActivity?.()
         push(decoder.decode(value, { stream: true }))
       }
     } catch {
