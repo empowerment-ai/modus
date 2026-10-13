@@ -15,6 +15,7 @@ import fastifyStatic from '@fastify/static'
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from 'fastify'
 import { z } from 'zod'
 import {
+  activeTokens,
   adminAssign,
   adminMove,
   adminRetry,
@@ -34,6 +35,7 @@ import {
   findToken,
   hasRole,
   type Id,
+  openJob,
   pollJobs,
   queuesFor,
   requestsBy,
@@ -475,6 +477,8 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     const jobs = []
     for (const a of rt.design.apps) {
       if (jobs.length >= b.max) break
+      // Checked on the cache first, so idle workers polling every second don't lock and write every application.
+      if (!(await rt.read(a.id, (sim) => activeTokens(sim).some((t) => openJob(sim, t, b.serviceId))))) continue
       const got = await rt.run(a.id, (sim, ctx) => pollJobs(sim, ctx, b.serviceId, b.workerId, b.max - jobs.length, b.leaseSeconds / 60))
       jobs.push(...got.map((j) => ({ ...j, id: `${a.id}:${j.id}`, appId: a.id })))
     }

@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { memoryStorage } from './adapters/memory'
 import { buildServer } from './http'
@@ -248,5 +248,30 @@ describe('health, readiness and the studio', () => {
   it('refuses a STATIC_DIR without a build, and serves no studio without one', async () => {
     expect(() => buildServer(rt, { staticDir: join(dir, 'assets') })).toThrow(/no index.html/)
     expect((await api.inject({ method: 'GET', url: '/' })).statusCode).toBe(404)
+  })
+})
+
+describe('worker polls', () => {
+  it('lock only the applications with an open job for the service', async () => {
+    const storage = memoryStorage()
+    const own = await Runtime.create({ storage })
+    const server = buildServer(own)
+    const transact = vi.spyOn(storage, 'transact')
+    const poll = async () => (await server.inject({ method: 'POST', url: '/api/jobs/poll', payload: { serviceId: 'svc_erp', workerId: 'erp-idle', max: 10 } })).json() as { jobs: Array<{ appId: string }> }
+
+    expect((await poll()).jobs).toEqual([])
+    expect(transact).not.toHaveBeenCalled()
+
+    const created = await server.inject({ method: 'POST', url: '/api/apps/app_invoice/items', headers: as('u_maya'), payload: { workflowId: 'w_invoice', data: { f_invno: 'POLL-1' } } })
+    expect(created.statusCode).toBe(201)
+    transact.mockClear()
+    expect((await poll()).jobs.map((j) => j.appId)).toEqual(['app_invoice'])
+    expect(transact.mock.calls.map((c) => c[0])).toEqual(['app_invoice'])
+    // Leased now: the next poll finds nothing open and locks nothing.
+    transact.mockClear()
+    expect((await poll()).jobs).toEqual([])
+    expect(transact).not.toHaveBeenCalled()
+    await server.close()
+    await own.stop()
   })
 })
