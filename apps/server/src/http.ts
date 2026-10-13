@@ -35,6 +35,7 @@ import {
   findToken,
   hasRole,
   type Id,
+  isAdmin,
   openJob,
   pollJobs,
   queuesFor,
@@ -475,10 +476,7 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
   // Deliveries carry the endpoint's name only, never its URL or secret.
 
   const requireAdmin = (req: FastifyRequest): Refusal | undefined => {
-    const user = who(req)
-    // Roles are organization-wide (hasRole reads the user's roles), so this needs no application: a design may have none.
-    const admin = rt.design.users.find((u) => u.id === user)?.roles?.includes('admin')
-    return admin ? undefined : refuse(403, 'Only an administrator can see or retry outbox deliveries.')
+    return isAdmin(rt.design.users, who(req)) ? undefined : refuse(403, 'Only an administrator can see or retry outbox deliveries.')
   }
 
   const outboxQuery = z.object({ status: z.enum(['pending', 'delivered', 'failed']).optional(), limit: z.coerce.number().int().min(1).max(500).default(100) })
