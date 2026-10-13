@@ -165,6 +165,21 @@ const NM = 'not measured'
 
 // ----- The report -----
 
+/** The line under the title: when, how long (left out when it can't be told), what and how much. */
+export function runLine(st: Settings): string {
+  const minutes = (Date.parse(st.finishedAt) - Date.parse(st.startedAt)) / 60_000
+  return [
+    `${st.startedAt.slice(0, 16).replace('T', ' ')} UTC`,
+    Number.isFinite(minutes) ? `${minutes.toFixed(1)} min wall clock` : undefined,
+    `commit ${st.commit ?? 'unknown'}`,
+    `${st.clerks.toLocaleString('en-US')} clerks`,
+    `${st.streams} live screens`,
+    `TIME_SCALE ${st.timeScale}`,
+  ]
+    .filter((part) => part !== undefined)
+    .join(' · ')
+}
+
 export function buildReport(input: ReportInput) {
   const { settings: st, observer: ob, backlog: bl } = input
   const k = new K6(input.k6)
@@ -178,18 +193,21 @@ export function buildReport(input: ReportInput) {
   const hookP95 = ob ? ob.webhooks.lag.p95 : null
   const crossP95 = ob?.streams.crossServerLag ? ob.streams.crossServerLag.p95 : null
 
+  const readsLimit = limit('Reads p95 < 300 ms', k.trend('http_req_duration{op:read}', 'p(95)'), 300, ms)
+  const changesLimit = limit('Changes p95 < 500 ms', k.trend('http_req_duration{op:change}', 'p(95)'), 500, ms)
+  const errorsLimit = limit('Errors < 1%', k.ratio('http_req_failed'), 0.01, (v) => pct(v))
+  const racesLimit = limit('Races < 2% of releases', raceRate, 0.02, (v) => pct(v), { warn: "check the script's save/release data" })
+  // A race or two in a short run is chance, not a pattern.
+  if (racesLimit.ok === false && races !== null && races < MIN_RACES) Object.assign(racesLimit, { ok: true, note: `only ${races}: too few to judge` })
   const limits: Limit[] = [
-    limit('Reads p95 < 300 ms', k.trend('http_req_duration{op:read}', 'p(95)'), 300, ms),
-    limit('Changes p95 < 500 ms', k.trend('http_req_duration{op:change}', 'p(95)'), 500, ms),
-    limit('Errors < 1%', k.ratio('http_req_failed'), 0.01, (v) => pct(v)),
+    readsLimit,
+    changesLimit,
+    errorsLimit,
     limit('Busy (503) < 2%', busyRate, 0.02, (v) => pct(v)),
     limit('Webhooks p95 within 5 s', hookP95, 5000, ms),
     limit('Cross-server updates p95 within 2 s', crossP95, 2000, ms, { missing: ob && !ob.streams.crossServerLag ? 'one server: nothing to compare' : undefined }),
-    limit('Races < 2% of releases', raceRate, 0.02, (v) => pct(v), { warn: "check the script's save/release data" }),
+    racesLimit,
   ]
-  // A race or two in a short run is chance, not a pattern.
-  const raceLimit = limits[6]
-  if (raceLimit.ok === false && races !== null && races < MIN_RACES) Object.assign(raceLimit, { ok: true, note: `only ${races}: too few to judge` })
 
   const kinds = Object.fromEntries(
     KINDS.map((kind) => [
@@ -214,9 +232,9 @@ export function buildReport(input: ReportInput) {
   const numbers = {
     requests,
     requests_per_s: k.rate('http_reqs'),
-    reads_p95_ms: limits[0].value,
-    changes_p95_ms: limits[1].value,
-    error_rate: limits[2].value,
+    reads_p95_ms: readsLimit.value,
+    changes_p95_ms: changesLimit.value,
+    error_rate: errorsLimit.value,
     busy_rate: busyRate,
     ...counters,
     race_rate: raceRate,
@@ -235,12 +253,8 @@ export function buildReport(input: ReportInput) {
 
   // ----- Markdown -----
   const L: string[] = []
-  const minutes = (Date.parse(st.finishedAt) - Date.parse(st.startedAt)) / 60_000
   L.push(`# Load test: ${st.profile}, ${st.servers} server${st.servers === 1 ? '' : 's'}`, '')
-  L.push(
-    `${st.startedAt.slice(0, 16).replace('T', ' ')} UTC · ${Number.isFinite(minutes) ? `${minutes.toFixed(1)} min wall clock` : ''} · commit ${st.commit ?? 'unknown'} · ${st.clerks.toLocaleString('en-US')} clerks · ${st.streams} live screens · TIME_SCALE ${st.timeScale}`,
-    '',
-  )
+  L.push(runLine(st), '')
 
   L.push('## Soft limits', '', 'Never fail a run; ⚠ marks what to look at.', '', '| Limit | Value | |', '| --- | --- | --- |')
   for (const l of limits) L.push(`| ${l.name} | ${l.shown} | ${mark(l.ok)}${l.note ? ` ${l.note}` : ''} |`)
@@ -264,7 +278,7 @@ export function buildReport(input: ReportInput) {
     L.push('| Counter | Count | Meaning |', '| --- | ---: | --- |')
     for (const [c, meaning] of Object.entries(COUNTERS)) {
       const v = counters[c as keyof typeof COUNTERS]
-      const flag = c === 'dropped_iterations' && v ? ' ⚠' : c === 'races' && limits[6].ok === false ? ' ⚠' : ''
+      const flag = c === 'dropped_iterations' && v ? ' ⚠' : c === 'races' && racesLimit.ok === false ? ' ⚠' : ''
       L.push(`| ${c} | ${int(v)}${flag} | ${meaning} |`)
     }
     L.push('')
