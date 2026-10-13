@@ -1,0 +1,125 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ApiError, api, detectServer, openStream, sseParser, type StreamState } from './client'
+import { fakeStream, json } from './fakes'
+
+describe('sseParser', () => {
+  const parse = (...chunks: string[]) => {
+    const out: Array<{ event: string; data: string }> = []
+    const push = sseParser((e) => out.push(e))
+    for (const c of chunks) push(c)
+    return out
+  }
+
+  it('ignores comments and ends events on a blank line', () => {
+    expect(parse(': connected\n\n: ping\n\nevent: change\ndata: {"a":1}\n\n')).toEqual([{ event: 'change', data: '{"a":1}' }])
+  })
+
+  it('joins multi-line data and defaults the event name', () => {
+    expect(parse('data: one\ndata: two\n\n')).toEqual([{ event: 'message', data: 'one\ntwo' }])
+  })
+
+  it('handles CRLF and lone CR, even split across chunks', () => {
+    expect(parse('event: change\r', '\ndata: x\r\n\r', '\n', 'data: y\r\r', ': next')).toEqual([
+      { event: 'change', data: 'x' },
+      { event: 'message', data: 'y' },
+    ])
+  })
+
+  it('waits for the rest of a line split across chunks', () => {
+    expect(parse('event: cha', 'nge\nda', 'ta: {"b"', ':2}\n', '\n')).toEqual([{ event: 'change', data: '{"b":2}' }])
+  })
+
+  it('skips a blank line with no data and keeps a value without a space', () => {
+    expect(parse('\n\nevent: x\n\ndata:raw\n\n')).toEqual([{ event: 'message', data: 'raw' }])
+  })
+})
+
+describe('detectServer', () => {
+  it('is true when /api/health answers ok', async () => {
+    const f = vi.fn(async (_path: string, _init?: RequestInit) => json({ ok: true, apps: 1 }))
+    expect(await detectServer(f)).toBe(true)
+    expect(f.mock.calls[0]![0]).toBe('/api/health')
+  })
+
+  it('is false for HTML (a static host), an error status, a network failure or a timeout', async () => {
+    expect(await detectServer(async () => new Response('<!doctype html>', { headers: { 'content-type': 'text/html' } }))).toBe(false)
+    expect(await detectServer(async () => json({ ok: false }, 503))).toBe(false)
+    expect(await detectServer(async () => Promise.reject(new TypeError('offline')))).toBe(false)
+    const hang = (_: unknown, init?: RequestInit) =>
+      new Promise<Response>((_, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))))
+    expect(await detectServer(hang, 20)).toBe(false)
+  })
+})
+
+describe('api', () => {
+  it('sends x-user-id and parses JSON', async () => {
+    const f = vi.fn(async () => json({ points: [] }))
+    expect(await api('/api/apps/a/monitor/series?since=5', { user: 'u_admin', fetch: f })).toEqual({ points: [] })
+    const [path, init] = f.mock.calls[0] as unknown as [string, RequestInit]
+    expect(path).toBe('/api/apps/a/monitor/series?since=5')
+    expect(new Headers(init.headers).get('x-user-id')).toBe('u_admin')
+  })
+
+  it('throws ApiError with the status and the server message', async () => {
+    const err = (await api('/api/apps/a/monitor', { user: 'u', fetch: async () => json({ ok: false, error: 'Only an administrator can see the Monitor.' }, 403) }).catch((e: unknown) => e)) as ApiError
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err.status).toBe(403)
+    expect(err.message).toBe('Only an administrator can see the Monitor.')
+  })
+})
+
+describe('openStream', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it('delivers change events, then reconnects with backoff after a drop', async () => {
+    vi.useFakeTimers()
+    const streams = [fakeStream(), fakeStream()]
+    let n = 0
+    const f = vi.fn(async (_: unknown, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('x-user-id')).toBe('u_admin')
+      return streams[n++]!.response()
+    })
+    const events: unknown[] = []
+    const states: StreamState[] = []
+    const close = openStream('app_invoice', (e) => events.push(e), (s) => states.push(s), { user: 'u_admin', fetch: f })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(f.mock.calls[0]![0]).toBe('/api/apps/app_invoice/stream')
+    expect(states).toEqual(['live'])
+
+    streams[0]!.push(': connected\n\nevent: change\ndata: {"clock":3,"items":["o1"],"counts":{"s1":2},"active":2}\n\n')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(events).toEqual([{ clock: 3, items: ['o1'], counts: { s1: 2 }, active: 2 }])
+
+    streams[0]!.close()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(states).toEqual(['live', 'reconnecting'])
+    expect(f).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(f).toHaveBeenCalledTimes(2)
+    expect(states).toEqual(['live', 'reconnecting', 'live'])
+
+    close()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(streams[1]!.cancelled()).toBe(true)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(f).toHaveBeenCalledTimes(2)
+  })
+
+  it('backs off further while the server stays down', async () => {
+    vi.useFakeTimers()
+    const f = vi.fn(async () => Promise.reject(new TypeError('offline')))
+    const states: StreamState[] = []
+    const close = openStream('a', () => {}, (s) => states.push(s), { user: 'u', fetch: f })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(states).toEqual(['reconnecting'])
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(f).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(f).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(f).toHaveBeenCalledTimes(3)
+    // Reported once, not on every failed attempt.
+    expect(states).toEqual(['reconnecting'])
+    close()
+  })
+})
