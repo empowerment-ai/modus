@@ -263,16 +263,20 @@ Every change to an application goes through `Storage.transact`. On PostgreSQL:
 2. The transaction locks the application's `app_state` row (`lock_timeout` 5 s; past that the
    command fails with `503` and "busy"). `statement_timeout` 30 s and
    `idle_in_transaction_session_timeout` 15 s keep a stalled server from holding the row. If
-   another server committed since this one's cached version, the stored state comes back with
-   the lock.
+   another server committed since this one's cached version, what it changed comes back with
+   the lock: the rest of the state and the items written since, applied to the cached state.
 3. The runtime catches the clock up from the stored clock time, then runs the command on a copy
    of the state.
-4. A pure core function (`changesBetween`) compares the state before and after: new audit
-   entries, the items that changed, and outbox messages (`job.ready` for a service job that
-   became ready, `notify` for notifications and escalations).
-5. One commit writes the state (version + 1), the audit entries, the `item` and `work_item` rows
-   of the changed items, the outbox rows, the clock time, and a `NOTIFY` with the version and
-   the changed item ids (when they fit).
+4. Pure core functions compare the state before and after: `changesBetween` finds the new audit
+   entries and outbox messages (`job.ready` for a service job that became ready, `notify` for
+   notifications and escalations), and `changedItems` the items that changed in any way. The
+   command ran on `copyState`'s copy, which shares only what the engine never changes in place,
+   so comparing the copied levels by `===` is enough.
+5. One commit writes the rest of the state (`app_state`, version + 1), each changed item's
+   `item` row (its state beside its projection, at the new version) and `work_item` rows, the
+   audit entries, the outbox rows, the clock time, and a `NOTIFY` with the version and the
+   changed item ids (when they fit). Items are never removed, so an item's position in the
+   state (`item.ord`) is fixed and loading in that order rebuilds the same state.
 6. Only then does the runtime replace its cached state. A failed command or commit leaves the
    cache as it was.
 
@@ -284,8 +288,8 @@ committed state and shared.
 Storage numbers the audit entries: each item's new entries follow the highest `seq` already
 stored for it, under the row lock. The runtime never tracks log positions.
 
-Other servers `LISTEN` on the same channel and reload an application when a notice carries a
-newer version. A dropped listening connection makes `/api/ready` answer 503 until it is back,
+Other servers `LISTEN` on the same channel and, when a notice carries a newer version, load
+what changed since their cached one: the rest of the state and the items written since. A dropped listening connection makes `/api/ready` answer 503 until it is back,
 and a reconnect reloads every application. One server per application moves the clock: the one
 holding that application's advisory lock. A clock tick that changed no item and comes under 30 s
 after the stored clock time rolls back, so a quiet application doesn't write every second.
@@ -298,7 +302,9 @@ webhook endpoints, claims due deliveries with `FOR UPDATE SKIP LOCKED` and a 60-
 them signed outside any transaction and records the result, with retries for 24 hours
 ([DEPLOYMENT.md](DEPLOYMENT.md#webhooks)). Email from Modus and the REST and MCP connectors come in M4.
 
-The memory adapter implements the same contract for one process, with JSON snapshots on disk.
+The memory adapter implements the same contract for one process. On disk each application's
+state is a log, one line per commit with the rest of the state and the items it changed,
+rewritten as one full line now and then.
 
 ### API surface (v0, implemented in the skeleton)
 
@@ -521,9 +527,9 @@ Packaging is real today: one image (`ghcr.io/empowerment-ai/modus`) serves the A
 studio, `docker compose up` runs it on PostgreSQL, and `deploy/helm/modus` deploys it to
 Kubernetes. Storage is PostgreSQL (`DB_DIALECT=postgres`) or in memory with JSON snapshots.
 Several replicas can share one PostgreSQL database; the memory store runs as one process. The
-Postgres adapter keeps each application's state as JSON (`json`, lz4-compressed: it is only ever
-written and read whole) and writes `item`, `work_item` and `outbox` rows beside it in the same
-transaction. See [DEPLOYMENT.md](DEPLOYMENT.md) and
+Postgres adapter keeps each item's state in its `item` row and the rest of the application's
+state in `app_state` (both `json`, lz4-compressed), and writes only the items a command changed,
+with their `work_item` rows and the `outbox` rows, in the same transaction. See [DEPLOYMENT.md](DEPLOYMENT.md) and
 [TECH-STACK.md › SaaS architecture](TECH-STACK.md#saas-architecture).
 
 | Tier | Shape |

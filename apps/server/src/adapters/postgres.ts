@@ -4,15 +4,18 @@
 // with the server) and run at startup.
 //
 // Each command commits in one transaction under its application's row lock: state,
-// audit entries, projection rows and outbox together (docs/ARCHITECTURE.md). Several
+// audit entries, projection rows and outbox together (docs/ARCHITECTURE.md). An
+// item's state lives in its projection row (`item.state`), so a command writes the
+// items it changed and a small `app_state` row, not the whole state. Several
 // servers can share one database: a dedicated connection LISTENs for their commits
 // and holds the session advisory locks that pick one clock ticker per application.
 
-import type { AuditEntry, Design, Id, OutboxMessage, Priority, ProjectedItem, SimState, TokenState } from '@modus-bpm/core'
+import { type App, type AuditEntry, buildIndex, type Ctx, type Design, type Id, type OutboxMessage, type Priority, type ProjectedItem, projectItem, type SimObject, type SimState, type TokenState, withChanges, withoutItems } from '@modus-bpm/core'
+import { seedDesign } from '@modus-bpm/core/model/seed'
 import { type Generated, Kysely, PostgresDialect, sql } from 'kysely'
 import { type Migration, Migrator } from 'kysely/migration'
 import pg from 'pg'
-import { type ChangeNotice, type Deliveries, type Delivery, type DesignStore, type EventLog, type LoggedEvent, type Projections, type StateStore, type Storage, StorageBusy, type Stored, type Work, type Write } from '../ports'
+import { type ChangeNotice, type Deliveries, type Delivery, type DesignStore, type EventLog, type Loaded, type LoggedEvent, type Projections, type StateStore, type Storage, StorageBusy, type Stored, type Work, type Write } from '../ports'
 
 interface Tables {
   design: { id: number; doc: Design; updated_at: Generated<Date> }
@@ -41,6 +44,10 @@ interface Tables {
     ended_at: number | null
     version: string
     data: Record<string, unknown>
+    /** The item as the engine keeps it. */
+    state: SimObject
+    /** Its position in the state's `objects`: items are never removed, so it never changes. */
+    ord: string
   }
   work_item: {
     app_id: string
@@ -239,6 +246,89 @@ export const migrations: Record<string, Migration> = {
       await sql`alter table app_state alter column state type jsonb using state::jsonb`.execute(db)
     },
   },
+  '0005_item_state': {
+    async up(db) {
+      // Each item's state moves into its projection row, so a command writes only the items it changed.
+      await sql`alter table item add column state json, add column ord bigint`.execute(db)
+      await sql`do $$ begin
+        alter table item alter column state set compression lz4;
+      exception when feature_not_supported then null;
+      end $$`.execute(db)
+      // Every item gets its whole row here, not only its state: projections were written only for items whose
+      // projected fields moved, and a database from before 0002 has none until the runtime backfills them,
+      // which runs after migrations. Projected with the stored design, or the sample when none is stored, as
+      // the runtime does. Self-contained (its own SQL, not the adapter's) so later changes can't alter it.
+      const { rows: designs } = await sql<{ doc: Design }>`select doc from design where id = 1`.execute(db)
+      const design = designs[0]?.doc ?? seedDesign()
+      const { rows: apps } = await sql<{ app_id: string; version: string; state: SimState }>`select app_id, version, state from app_state where state is not null`.execute(db)
+      for (const { app_id: appId, version, state } of apps) {
+        // An application no longer in the design keeps its items, projected without one.
+        const app = design.apps.find((a) => a.id === appId) ?? ({ id: appId, name: appId, description: '', color: '', lists: [], objectTypes: [], workflows: [] } as unknown as App)
+        const ctx: Ctx = { app, users: design.users, groups: design.groups, services: design.services, live: true }
+        const idx = buildIndex(ctx)
+        const ids = Object.keys(state.objects)
+        for (let i = 0; i < ids.length; i += CHUNK) {
+          const chunk = ids.slice(i, i + CHUNK).map((id, j) => ({ id, ord: i + j, p: projectItem(state, ctx, id, idx)! }))
+          await sql`delete from item where app_id = ${appId} and item_id = any(${chunk.map((c) => c.id)})`.execute(db)
+          await sql`delete from work_item where app_id = ${appId} and item_id = any(${chunk.map((c) => c.id)})`.execute(db)
+          await db
+            .insertInto('item')
+            .values(
+              chunk.map(({ id, ord, p: { item: r } }) => ({
+                app_id: appId,
+                item_id: id,
+                number: r.number,
+                title: r.title,
+                status: r.status,
+                priority: r.priority,
+                expedited: r.expedited,
+                due_at: r.dueAt ?? null,
+                created_at: r.createdAt,
+                ended_at: r.endedAt ?? null,
+                version,
+                data: JSON.stringify(r.data),
+                state: JSON.stringify(state.objects[id]),
+                ord,
+              })),
+            )
+            .execute()
+          const work = chunk.flatMap(({ p }) =>
+            p.workItems.map((w) => ({
+              app_id: appId,
+              token_id: w.tokenId,
+              item_id: w.itemId,
+              step_id: w.stepId,
+              state: w.state,
+              assignee: w.assignee ?? null,
+              group_id: w.groupId ?? null,
+              service_id: w.serviceId ?? null,
+              entered_at: w.enteredAt,
+              due_at: w.dueAt ?? null,
+              priority: w.priority,
+            })),
+          )
+          for (let k = 0; k < work.length; k += CHUNK) await db.insertInto('work_item').values(work.slice(k, k + CHUNK)).execute()
+        }
+        await sql`update app_state set state = ${JSON.stringify(withoutItems(state))} where app_id = ${appId}`.execute(db)
+      }
+      // Rows for items no state holds project nothing that exists.
+      await sql`delete from work_item w where not exists (select 1 from item i where i.app_id = w.app_id and i.item_id = w.item_id and i.state is not null)`.execute(db)
+      await sql`delete from item where state is null`.execute(db)
+      await sql`alter table item alter column state set not null, alter column ord set not null`.execute(db)
+      await sql`create index item_version on item (app_id, version)`.execute(db)
+    },
+    async down(db) {
+      // Fold the items back into each state, in their order.
+      const { rows: apps } = await sql<{ app_id: string; state: SimState }>`select app_id, state from app_state where state is not null`.execute(db)
+      for (const { app_id: appId, state } of apps) {
+        const { rows } = await sql<{ item_id: string; state: SimObject }>`select item_id, state from item where app_id = ${appId} order by ord`.execute(db)
+        const whole = { ...state, objects: Object.fromEntries(rows.map((r) => [r.item_id, r.state])) }
+        await sql`update app_state set state = ${JSON.stringify(whole)} where app_id = ${appId}`.execute(db)
+      }
+      await sql`drop index item_version`.execute(db)
+      await sql`alter table item drop column state, drop column ord`.execute(db)
+    },
+  },
 }
 
 /** Thrown inside a Kysely transaction to roll it back while still returning a value. */
@@ -307,14 +397,33 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
     },
   }
 
+  /** The items written after `version`, in item order. */
+  const itemsSince = async (q: Kysely<Tables>, appId: Id, version: number) =>
+    (await q.selectFrom('item').select('state').where('app_id', '=', appId).where('version', '>', String(version)).orderBy('ord').execute()).map((r) => r.state)
+
+  /** The application as stored since `known`; `undefined` when nothing was ever committed. */
+  async function storedSince(q: Kysely<Tables>, appId: Id, known: number): Promise<Stored | undefined> {
+    const row = await q.selectFrom('app_state').select(['version', 'ticked_at', 'state']).where('app_id', '=', appId).executeTakeFirst()
+    if (!row || Number(row.version) === 0) return undefined
+    const out: Stored = { version: Number(row.version) }
+    if (row.ticked_at) out.tickedAt = row.ticked_at.getTime()
+    if (row.state && out.version !== known) out.changes = { state: row.state, objects: await itemsSince(q, appId, known) }
+    return out
+  }
+
   const state: StateStore = {
     async load(appId) {
-      const row = await db.selectFrom('app_state').select(['version', 'ticked_at', 'state']).where('app_id', '=', appId).executeTakeFirst()
-      if (!row || Number(row.version) === 0) return undefined
-      const out: Stored = { version: Number(row.version) }
-      if (row.ticked_at) out.tickedAt = row.ticked_at.getTime()
-      if (row.state) out.state = row.state
-      return out
+      // Both reads see one commit: a commit in between would show items newer than the rest.
+      return db.transaction().setIsolationLevel('repeatable read').execute(async (tx) => {
+        const s = await storedSince(tx, appId, 0)
+        if (!s?.changes) return undefined
+        const out: Loaded = { version: s.version, state: withChanges(undefined, s.changes) }
+        if (s.tickedAt !== undefined) out.tickedAt = s.tickedAt
+        return out
+      })
+    },
+    async since(appId, version) {
+      return db.transaction().setIsolationLevel('repeatable read').execute((tx) => storedSince(tx, appId, version))
     },
   }
 
@@ -354,8 +463,13 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
     }
   }
 
-  /** Replace these items' projection rows and all their work-item rows. */
-  async function writeItems(tx: Tx, appId: Id, version: number, items: ProjectedItem[]) {
+  /** Replace these items' rows (projection and state) and all their work-item rows. `state` holds the items. */
+  async function writeItems(tx: Tx, appId: Id, version: number, items: ProjectedItem[], state: SimState) {
+    if (!items.length) return
+    for (const p of items) if (!state.objects[p.item.itemId]) throw new Error(`The write lists item ${p.item.itemId}, which its state doesn't hold.`)
+    const ord = new Map<Id, number>()
+    let at = 0
+    for (const id in state.objects) ord.set(id, at++)
     for (let i = 0; i < items.length; i += CHUNK) {
       const chunk = items.slice(i, i + CHUNK)
       await tx
@@ -374,6 +488,8 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
             ended_at: r.endedAt ?? null,
             version: String(version),
             data: json(r.data),
+            state: json(state.objects[r.itemId]!),
+            ord: String(ord.get(r.itemId)!),
           })),
         )
         .onConflict((oc) =>
@@ -388,6 +504,7 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
             ended_at: eb.ref('excluded.ended_at'),
             version: eb.ref('excluded.version'),
             data: eb.ref('excluded.data'),
+            state: eb.ref('excluded.state'),
           })),
         )
         .execute()
@@ -428,18 +545,19 @@ export function postgresStorage(connectionString: string, options: PostgresOptio
         const version = Number(row.version)
         const stored: Stored = { version }
         if (row.ticked_at) stored.tickedAt = row.ticked_at.getTime()
-        if (row.state && version > 0) stored.state = row.state
+        // Another server committed since `known`: the rest of the state and the items written since.
+        if (row.state && version > 0) stored.changes = { state: row.state, objects: await itemsSince(tx, appId, known) }
         const out = await work(stored)
         if (!out.write) throw new Rollback(out.value, version)
         const w = out.write
         const next = version + 1
         await tx
           .updateTable('app_state')
-          .set({ state: json(w.state), version: String(next), ticked_at: new Date(w.tickedAt), updated_at: sql`now()` })
+          .set({ state: json(withoutItems(w.state)), version: String(next), ticked_at: new Date(w.tickedAt), updated_at: sql`now()` })
           .where('app_id', '=', appId)
           .execute()
         await appendEntries(tx, appId, w.entries)
-        await writeItems(tx, appId, next, w.items)
+        await writeItems(tx, appId, next, w.items, w.state)
         for (let i = 0; i < w.outbox.length; i += CHUNK)
           await tx
             .insertInto('outbox')

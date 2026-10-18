@@ -32,7 +32,7 @@ import {
   workStart,
 } from './ops'
 import { changesBetween } from './project'
-import { copyState } from './state'
+import { changedItems, copyState, withChanges, withoutItems } from './state'
 
 // copyState shares what the engine never changes in place. These runs freeze every state before the
 // next command works on its copy, so a write into anything shared throws (modules are strict), and
@@ -46,10 +46,13 @@ function freeze<T>(v: T): T {
   return v
 }
 
+
 /** The same commands twice: on copies of frozen states, and on deep clones. */
 function twice(start: SimState, steps: number, command: (sim: SimState, step: number) => void) {
   let copied = start
   let cloned = structuredClone(start)
+  // Each item as serialized after the last step: the slow, sure way to tell what a command changed.
+  let serialized = new Map(Object.entries(start.objects).map(([id, o]) => [id, JSON.stringify(o)]))
   for (let i = 0; i < steps; i++) {
     freeze(copied)
     const before = copied
@@ -60,6 +63,14 @@ function twice(start: SimState, steps: number, command: (sim: SimState, step: nu
     cloned = structuredClone(cloned)
     command(cloned, i)
     expect(changesBetween(before, copied)).toEqual(changesBetween(clonedBefore, cloned))
+    // changedItems names exactly the items that serialize differently (an extra one would only cost a
+    // write; a missing one, a change), and they rebuild the state, item order included.
+    const now = new Map(Object.entries(copied.objects).map(([id, o]) => [id, JSON.stringify(o)]))
+    const ids = changedItems(before, copied)
+    expect(ids).toEqual([...now].filter(([id, text]) => serialized.get(id) !== text).map(([id]) => id))
+    serialized = now
+    const rebuilt = withChanges(before, { state: withoutItems(copied), objects: ids.map((id) => copied.objects[id]!) })
+    expect(JSON.stringify(rebuilt)).toBe(JSON.stringify(copied))
   }
   return { copied, cloned }
 }
@@ -194,4 +205,63 @@ describe('copyState', () => {
     if (versioned) expect(Object.values(copied.objects).some((o) => Object.keys(o.versions ?? {}).length > 1)).toBe(true)
     expect(JSON.stringify(copied)).toBe(JSON.stringify(cloned))
   }, 60_000)
+})
+
+describe('changedItems', () => {
+  const app = design.apps.find((a) => a.id === 'app_invoice')!
+  const ctx: Ctx = { app, users: design.users, groups: design.groups, services: design.services, live: true }
+  /** Two items, the first with scope ends, version pins and a fork frame to change, frozen like a committed state. */
+  function committed() {
+    const sim = newSim(app.id, 5)
+    sim.arrivals = false
+    burst(sim, ctx, 'w_invoice', 2)
+    const first = Object.values(sim.objects)[0]!
+    first.scopeEnds = { root: { result: 'completed', label: 'Done' } }
+    first.versions = { w_invoice: 1 }
+    first.tokens[0]!.forks = [{ forkId: 'f0', splitId: 'n_split' }]
+    return freeze(sim)
+  }
+  type Obj = SimState['objects'][string]
+  // Each changes one level only, so each of changedItems' comparisons has to catch it on its own.
+  it.each<[string, (o: Obj) => void]>([
+    ['a field', (o) => void (o.status = 'completed')],
+    ['a field added', (o) => void (o.completedAt = 5)],
+    ['a field removed', (o) => void delete (o as Partial<Obj>).dueBy],
+    ['a data value', (o) => void (o.data.f_invno = 'CHANGED')],
+    ['a data key removed', (o) => void delete o.data.f_invno],
+    ['a passed step', (o) => void o.passed.push('n_clerk')],
+    ['an audit entry', (o) => void o.history.push({ at: 1, kind: 'notify', text: 'hi' })],
+    ['an audit entry replaced', (o) => void (o.history[0] = { ...o.history[0]!, text: 'other' })],
+    ['a scope end', (o) => void (o.scopeEnds!.call_1 = { result: 'rejected', label: 'No' })],
+    ['a version pin', (o) => void (o.versions!.w_exception = 2)],
+    ['a token added', (o) => void o.tokens.push({ ...o.tokens[0]!, id: `${o.id}~99` })],
+    ['a token removed', (o) => void o.tokens.pop()],
+    ['a token field', (o) => void (o.tokens[0]!.state = 'stuck')],
+    ['a token field added', (o) => void (o.tokens[0]!.workerId = 'w1')],
+    ['a fork frame', (o) => void o.tokens[0]!.forks.push({ forkId: 'f1', splitId: 'n_split' })],
+    ['a fork frame left', (o) => void o.tokens[0]!.forks.pop()],
+    ['a call frame', (o) => void o.tokens[0]!.calls.push({ callId: 'c1', nodeId: 'n_exc', workflowId: 'w_invoice', forkDepth: 0, at: 0 })],
+  ])('counts %s', (_, change) => {
+    const before = committed()
+    const after = copyState(before)
+    const [first, second] = Object.keys(after.objects)
+    change(after.objects[first!]!)
+    expect(changedItems(before, after)).toEqual([first])
+    expect(changedItems(before, copyState(before))).toEqual([])
+    expect(second).toBeDefined()
+  })
+
+  it('names new items, in the order they were created', () => {
+    const before = committed()
+    const after = copyState(before)
+    burst(after, ctx, 'w_invoice', 3)
+    expect(changedItems(before, after)).toEqual(Object.keys(after.objects).slice(2))
+  })
+
+  it('refuses a command that removed an item', () => {
+    const before = committed()
+    const after = copyState(before)
+    delete after.objects[Object.keys(after.objects)[0]!]
+    expect(() => changedItems(before, after)).toThrow(/removed an item/)
+  })
 })

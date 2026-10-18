@@ -1,14 +1,17 @@
-// In-memory storage, optionally snapshotted to JSON files in a data directory so
-// a restart picks up where it left off. Good for development, demos and tests;
-// not for production: one process only, and a crash between the files of one
-// commit can leave the state ahead of the log. Projections and the outbox live in
-// memory only; the runtime rebuilds projections at startup. `transact` waits its
-// turn behind the application's queue instead of raising StorageBusy.
+// In-memory storage, optionally kept in a data directory so a restart picks up
+// where it left off. Good for development, demos and tests; not for production:
+// one process only, and a crash between the state and event files of one commit
+// can leave the state ahead of the log. Each application's state is a log,
+// `state-<app>.jsonl`: one line per commit with the rest of the state and only
+// the items it changed, rewritten as one full line now and then. Projections and
+// the outbox live in memory only; the runtime rebuilds projections at startup.
+// `transact` waits its turn behind the application's queue instead of raising
+// StorageBusy.
 
-import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { Design, Id, OutboxMessage, ProjectedItem, SimState } from '@modus-bpm/core'
-import type { ChangeNotice, Deliveries, Delivery, DesignStore, EventLog, LoggedEvent, Projections, StateStore, Storage, Stored, Work } from '../ports'
+import { type Design, type Id, type OutboxMessage, type ProjectedItem, type SimObject, type SimState, withoutItems } from '@modus-bpm/core'
+import type { ChangeNotice, Deliveries, Delivery, DesignStore, EventLog, Loaded, LoggedEvent, Projections, StateStore, Storage, Stored, Work } from '../ports'
 
 async function readJson<T>(path: string): Promise<T | undefined> {
   try {
@@ -30,12 +33,35 @@ async function writeAtomic(path: string, text: string) {
   await rename(tmp, path)
 }
 
-/** An application as stored: the state with its version and clock time (`meta-<app>.json` on disk). */
+/** An application as stored. */
 interface Held {
   version: number
   tickedAt?: number
+  /** Never changed in place: each commit builds the next state, sharing the items it didn't write. */
   state: SimState
+  /** The version that last wrote each item (shared by successive Helds; set once a commit is in). */
+  written: Map<Id, number>
 }
+
+/** One line of `state-<app>.jsonl`: a commit's rest of the state and the items it wrote, or every item (`full`). */
+interface LogLine {
+  version: number
+  tickedAt?: number
+  full?: true
+  state: SimState
+  items: SimObject[]
+}
+
+/** How much an application's log holds: its last full line, and what was appended since. */
+interface LogSize {
+  full: number
+  since: number
+  /** Loaded from the files before the log (`state-<app>.json`, `meta-<app>.json`): the first commit converts them. */
+  legacy?: boolean
+}
+
+/** A log is rewritten as one full line once what was appended since outgrows the full line (and this). */
+const COMPACT_BYTES = 1_000_000
 
 /** An outbox message as held: sent once delivered, failed or skipped everywhere. */
 interface Queued {
@@ -47,7 +73,8 @@ interface Queued {
   skipped?: boolean
 }
 
-export function memoryStorage(dataDir?: string): Storage {
+export function memoryStorage(dataDir?: string, opts: { compactBytes?: number } = {}): Storage {
+  const compactBytes = opts.compactBytes ?? COMPACT_BYTES
   let design: Design | undefined
   const held = new Map<Id, Held>()
   const projected = new Map<Id, Map<Id, ProjectedItem>>()
@@ -60,6 +87,8 @@ export function memoryStorage(dataDir?: string): Storage {
   /** Per application, the end of the queue of transactions: one at a time, like a row lock. */
   const locks = new Map<Id, Promise<unknown>>()
   const listeners = new Set<(n: ChangeNotice) => void>()
+  /** Each application's log in the data directory (absent: no log yet). */
+  const logs = new Map<Id, LogSize>()
   /** Clock owner per application. */
   const clocks = new Map<Id, string>()
   const events: LoggedEvent[] = []
@@ -114,27 +143,110 @@ export function memoryStorage(dataDir?: string): Storage {
     const hit = held.get(appId)
     if (hit || !dataDir) return hit
     await ready
-    const loaded = await readJson<SimState>(join(dataDir, `state-${appId}.json`))
+    const loaded = (await replay(appId)) ?? (await legacy(appId))
+    if (!loaded) return undefined
+    // A commit that landed while the files were read wins.
+    if (!held.has(appId)) {
+      held.set(appId, loaded.held)
+      logs.set(appId, loaded.size)
+    }
+    return held.get(appId)
+  }
+
+  /** Replay an application's log: the last line's rest and version, each item as last written. */
+  async function replay(appId: Id): Promise<{ held: Held; size: LogSize } | undefined> {
+    let text: string
+    try {
+      text = await readFile(join(dataDir!, `state-${appId}.jsonl`), 'utf8')
+    } catch {
+      return undefined
+    }
+    let objects: Record<Id, SimObject> = {}
+    let written = new Map<Id, number>()
+    let last: LogLine | undefined
+    const size: LogSize = { full: 0, since: 0 }
+    for (const line of text.split('\n')) {
+      if (!line) continue
+      let r: LogLine
+      try {
+        r = JSON.parse(line) as LogLine
+      } catch {
+        // A crash mid-append leaves a torn line: that commit never happened.
+        continue
+      }
+      if (r.full) {
+        objects = {}
+        written = new Map()
+        size.full = line.length
+        size.since = 0
+      } else size.since += line.length + 2
+      for (const o of r.items) {
+        objects[o.id] = o
+        written.set(o.id, r.version)
+      }
+      last = r
+    }
+    if (!last) return undefined
+    return { held: { version: last.version, tickedAt: last.tickedAt, state: { ...last.state, objects }, written }, size }
+  }
+
+  /** A data directory from before the log: the whole state, and its version and clock time beside it. */
+  async function legacy(appId: Id): Promise<{ held: Held; size: LogSize } | undefined> {
+    const loaded = await readJson<SimState>(join(dataDir!, `state-${appId}.json`))
     if (!loaded) return undefined
     // No meta file: a data directory from before versions, whose state counts as one commit.
-    const meta = await readJson<{ version: number; tickedAt?: number }>(join(dataDir, `meta-${appId}.json`))
-    // A commit that landed while the files were read wins.
-    if (!held.has(appId)) held.set(appId, { version: meta?.version ?? 1, tickedAt: meta?.tickedAt, state: loaded })
-    return held.get(appId)
+    const meta = await readJson<{ version: number; tickedAt?: number }>(join(dataDir!, `meta-${appId}.json`))
+    const version = meta?.version ?? 1
+    const written = new Map(Object.keys(loaded.objects).map((id) => [id, version]))
+    return { held: { version, tickedAt: meta?.tickedAt, state: loaded, written }, size: { full: 0, since: 0, legacy: true } }
+  }
+
+  /**
+   * Add a commit to the application's log: one appended line with the rest and the items written, or the
+   * whole file afresh as one full line when there is no log yet, it holds the old files' state, or what was
+   * appended since the last full line has outgrown it.
+   */
+  async function record(appId: Id, version: number, tickedAt: number, rest: string, items: string[], state: SimState) {
+    const path = join(dataDir!, `state-${appId}.jsonl`)
+    const head = JSON.stringify({ version, tickedAt }).slice(0, -1)
+    const line = `${head},"state":${rest},"items":[${items.join(',')}]}`
+    const size = logs.get(appId)
+    if (size && !size.legacy && size.since + line.length + 2 <= Math.max(size.full, compactBytes)) {
+      // A leading newline: a torn line from a failed append can't swallow this one.
+      await appendFile(path, `\n${line}\n`)
+      size.since += line.length + 2
+      return
+    }
+    const all = Object.values(state.objects).map((o) => JSON.stringify(o))
+    const full = `${head},"full":true,"state":${rest},"items":[${all.join(',')}]}`
+    await writeAtomic(path, `${full}\n`)
+    logs.set(appId, { full: full.length, since: 0 })
+    if (size?.legacy) for (const old of [`state-${appId}.json`, `meta-${appId}.json`]) await rm(join(dataDir!, old), { force: true })
   }
 
   const state: StateStore = {
     async load(appId) {
       const h = await current(appId)
-      return h && stored(h, true)
+      if (!h) return undefined
+      const out: Loaded = { version: h.version, state: structuredClone(h.state) }
+      if (h.tickedAt !== undefined) out.tickedAt = h.tickedAt
+      return out
+    },
+    async since(appId, version) {
+      const h = await current(appId)
+      return h && stored(h, version)
     },
   }
 
-  /** A copy for the caller: storage's own state must not change under it. */
-  function stored(h: Held | undefined, withState: boolean): Stored {
+  /** What changed after `since`, as copies: storage's own state must not change under the caller. */
+  function stored(h: Held | undefined, since: number): Stored {
     const out: Stored = { version: h?.version ?? 0 }
     if (h?.tickedAt !== undefined) out.tickedAt = h.tickedAt
-    if (h && withState) out.state = structuredClone(h.state)
+    if (h && h.version !== since) {
+      const objects: SimObject[] = []
+      for (const id in h.state.objects) if ((h.written.get(id) ?? 0) > since) objects.push(structuredClone(h.state.objects[id]!))
+      out.changes = { state: structuredClone(withoutItems(h.state)), objects }
+    }
     return out
   }
 
@@ -142,12 +254,25 @@ export function memoryStorage(dataDir?: string): Storage {
     await history
     const h = await current(appId)
     const version = h?.version ?? 0
-    const { value, write } = await work(stored(h, version !== known))
+    const { value, write } = await work(stored(h, known))
     if (!write) return { value, version, committed: false, notice: undefined }
 
-    // Copy and number everything before touching memory, so a failed file write changes nothing here.
-    const text = JSON.stringify(write.state)
-    const next: Held = { version: version + 1, tickedAt: write.tickedAt, state: JSON.parse(text) as SimState }
+    // Copy and number everything before touching memory, so a failed file write changes nothing here. Of the
+    // items, only those written are copied (in item order); the next state shares the others.
+    const listed = new Set(write.items.map((p) => p.item.itemId))
+    for (const id of listed) if (!write.state.objects[id]) throw new Error(`The write lists item ${id}, which its state doesn't hold.`)
+    const ids: Id[] = []
+    const texts: string[] = []
+    for (const id in write.state.objects)
+      if (listed.has(id)) {
+        ids.push(id)
+        texts.push(JSON.stringify(write.state.objects[id]))
+      }
+    const rest = JSON.stringify(withoutItems(write.state))
+    const objects = { ...h?.state.objects }
+    ids.forEach((id, i) => (objects[id] = JSON.parse(texts[i]!) as SimObject))
+    const written = h?.written ?? new Map<Id, number>()
+    const next: Held = { version: version + 1, tickedAt: write.tickedAt, state: { ...(JSON.parse(rest) as SimState), objects }, written }
     const logged: LoggedEvent[] = []
     // Local positions, so two groups for one item in the same write don't reuse a number.
     const numbered = new Map<Id, number>()
@@ -160,12 +285,12 @@ export function memoryStorage(dataDir?: string): Storage {
     const messages: Queued[] = write.outbox.map((m) => ({ appId, message: { ...structuredClone(m), id: 0 }, createdAt: 0 }))
     if (dataDir) {
       await ready
-      await writeAtomic(join(dataDir, `state-${appId}.json`), text)
-      await writeAtomic(join(dataDir, `meta-${appId}.json`), JSON.stringify({ version: next.version, tickedAt: next.tickedAt }))
+      await record(appId, next.version, write.tickedAt, rest, texts, next.state)
       if (logged.length) await appendFile(join(dataDir, 'events.jsonl'), '\n' + logged.map((e) => JSON.stringify(e)).join('\n') + '\n') // leading newline: a torn line from a failed append can't swallow this one
     }
 
     held.set(appId, next)
+    for (const id of ids) written.set(id, next.version)
     for (const e of logged) lastSeq.set(`${appId}:${e.itemId}`, e.seq)
     events.push(...logged)
     if (events.length > MAX_EVENTS) events.splice(0, events.length - MAX_EVENTS)

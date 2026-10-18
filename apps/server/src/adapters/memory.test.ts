@@ -1,7 +1,8 @@
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createObject, newSim } from '@modus-bpm/core'
+import { changedItems, copyState, createObject, type Ctx, newSim, projectItem, type SimState } from '@modus-bpm/core'
+import { seedDesign } from '@modus-bpm/core/model/seed'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { Runtime } from '../runtime'
 import { memoryStorage } from './memory'
@@ -42,13 +43,96 @@ describe('memory storage with a data directory', () => {
     await first.stop()
 
     const files = await readdir(dir)
-    expect(files).toEqual(expect.arrayContaining(['design.json', 'state-app_invoice.json', 'events.jsonl']))
+    expect(files).toEqual(expect.arrayContaining(['design.json', 'state-app_invoice.jsonl', 'events.jsonl']))
     expect(files.some((f) => f.endsWith('.tmp'))).toBe(false)
 
     const second = await Runtime.create({ storage: memoryStorage(dir) })
     const found = await second.read('app_invoice', (sim) => Object.values(sim.objects).find((o) => o.number === number))
     expect(found?.data.f_invno).toBe('KEEP-1')
     await second.stop()
+  })
+
+  const design = seedDesign()
+  const ctx: Ctx = { app: design.apps.find((a) => a.id === 'app_invoice')!, users: design.users, groups: design.groups, services: design.services, live: true }
+  /** Commit what `change` does to a copy of `before`, writing only the items it changed, as the runtime does. */
+  async function commit(s: ReturnType<typeof memoryStorage>, version: number, before: SimState, change: (sim: SimState) => void) {
+    const after = copyState(before)
+    change(after)
+    const items = changedItems(before, after).map((id) => projectItem(after, ctx, id)!)
+    await s.transact('app_invoice', version, () => ({ value: 0, write: { state: after, entries: [], items, outbox: [], tickedAt: version } }))
+    return after
+  }
+  const make = (n: string) => (sim: SimState) => void createObject(sim, ctx, 'w_invoice', { f_invno: n }, 'u_maya')
+  const lines = async (dir: string) => (await readFile(join(dir, 'state-app_invoice.jsonl'), 'utf8')).split('\n').filter(Boolean).map((l) => JSON.parse(l) as { version: number; full?: true; items: Array<{ id: string }> })
+
+  it('logs each commit as the rest of the state and only the items it changed, and replays the log', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'modus-data-'))
+    dirs.push(dir)
+    const s = memoryStorage(dir)
+    let sim = await commit(s, 0, newSim('app_invoice', 1), (x) => ['A', 'B', 'C'].forEach((n) => make(n)(x)))
+    const [, second] = Object.keys(sim.objects)
+    sim = await commit(s, 1, sim, (x) => void (x.objects[second!]!.priority = 'urgent'))
+    sim = await commit(s, 2, sim, make('D'))
+    const logged = await lines(dir)
+    expect(logged.map((l) => [l.version, !!l.full, l.items.length])).toEqual([
+      [1, true, 3],
+      [2, false, 1],
+      [3, false, 1],
+    ])
+    expect(logged[1]!.items[0]!.id).toBe(second)
+    const again = await memoryStorage(dir).state.load('app_invoice')
+    expect(again?.version).toBe(3)
+    expect(JSON.stringify(again?.state)).toBe(JSON.stringify(sim))
+  })
+
+  it('skips a torn last line in the state log: that commit never happened', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'modus-data-'))
+    dirs.push(dir)
+    const s = memoryStorage(dir)
+    const sim = await commit(s, 0, newSim('app_invoice', 1), make('A'))
+    await commit(s, 1, sim, make('B'))
+    const path = join(dir, 'state-app_invoice.jsonl')
+    const text = await readFile(path, 'utf8')
+    await writeFile(path, text.slice(0, text.length - 20))
+    const again = memoryStorage(dir)
+    expect(JSON.stringify((await again.state.load('app_invoice'))?.state)).toBe(JSON.stringify(sim))
+    // The next commit takes the torn one's place.
+    await commit(again, 1, sim, make('C'))
+    const after = (await memoryStorage(dir).state.load('app_invoice'))!
+    expect(after.version).toBe(2)
+    expect(Object.values(after.state.objects).map((o) => o.data.f_invno)).toEqual(['A', 'C'])
+  })
+
+  it('rewrites the log as one full line once what was appended outgrows it', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'modus-data-'))
+    dirs.push(dir)
+    const s = memoryStorage(dir, { compactBytes: 1 })
+    let sim = await commit(s, 0, newSim('app_invoice', 1), make('A'))
+    for (let v = 1; v < 30; v++) sim = await commit(s, v, sim, make(`N-${v}`))
+    const logged = await lines(dir)
+    // The full line is as big as everything since it, give or take a line.
+    expect(logged[0]!.full).toBe(true)
+    expect(logged.length).toBeLessThan(30)
+    expect(logged.filter((l) => l.full)).toHaveLength(1)
+    const again = await memoryStorage(dir).state.load('app_invoice')
+    expect(again?.version).toBe(30)
+    expect(JSON.stringify(again?.state)).toBe(JSON.stringify(sim))
+  })
+
+  it('loads a data directory from before the log, and converts it on the first commit', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'modus-data-'))
+    dirs.push(dir)
+    const old = copyState(newSim('app_invoice', 1))
+    make('OLD')(old)
+    await writeFile(join(dir, 'state-app_invoice.json'), JSON.stringify(old))
+    await writeFile(join(dir, 'meta-app_invoice.json'), JSON.stringify({ version: 4, tickedAt: 7 }))
+    const s = memoryStorage(dir)
+    expect(await s.state.load('app_invoice')).toEqual({ version: 4, tickedAt: 7, state: JSON.parse(JSON.stringify(old)) })
+    const sim = await commit(s, 4, JSON.parse(JSON.stringify(old)) as SimState, make('NEW'))
+    expect((await readdir(dir)).filter((f) => f.startsWith('state-') || f.startsWith('meta-'))).toEqual(['state-app_invoice.jsonl'])
+    expect((await lines(dir)).map((l) => [l.version, !!l.full, l.items.length])).toEqual([[5, true, 2]])
+    const again = await memoryStorage(dir).state.load('app_invoice')
+    expect(JSON.stringify(again?.state)).toBe(JSON.stringify(sim))
   })
 
   it('survives a torn last line in the event log, keeping the first entry at each position', async () => {

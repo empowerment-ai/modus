@@ -7,7 +7,7 @@
 // entries, projections and outbox commit together under the application's lock.
 // The other ports are read-only, except the design, which is saved on publish.
 
-import type { AuditEntry, Design, Id, OutboxMessage, ProjectedItem, SimState } from '@modus-bpm/core'
+import type { AuditEntry, Design, Id, OutboxMessage, ProjectedItem, SimState, StateChanges } from '@modus-bpm/core'
 
 /** The published design: applications, object types, workflows, people, services, templates. */
 export interface DesignStore {
@@ -17,31 +17,45 @@ export interface DesignStore {
 
 /**
  * Live state of one application: items, their tokens (where each branch is),
- * work items and counters, stored whole and written only by `Storage.transact`.
- * The queryable side (items, work items, outbox) is `Projections`, written in
- * the same transaction.
+ * work items and counters, written only by `Storage.transact`. Each item is
+ * stored on its own beside the rest, and a commit writes only the items it
+ * changed. The queryable side (items, work items, outbox) is `Projections`,
+ * written in the same transaction.
  */
 export interface StateStore {
-  /** Version, clock time and state as stored (undefined: never written). */
-  load(appId: Id): Promise<Stored | undefined>
+  /** Version, clock time and the whole state as stored (undefined: never written). */
+  load(appId: Id): Promise<Loaded | undefined>
+  /** What storage holds since `version`, as a transaction hands it over (undefined: never written). */
+  since(appId: Id, version: number): Promise<Stored | undefined>
 }
 
-/** What storage holds for an application when a transaction starts. */
+/** An application's whole state as stored. */
+export interface Loaded {
+  version: number
+  tickedAt?: number
+  state: SimState
+}
+
+/** What storage holds for an application when a transaction starts, or since a version the caller holds. */
 export interface Stored {
   /** 0: nothing stored yet. Bumped by every commit. */
   version: number
-  /** Present only when `version` differs from the caller's `known` version (always on `StateStore.load`). */
-  state?: SimState
+  /**
+   * Present only when `version` differs from the caller's: the state without its items, and the items
+   * written after the caller's version, in item order (`withChanges` applies them to the caller's state).
+   */
+  changes?: StateChanges
   /** Wall time (epoch ms) the stored clock corresponds to. Absent: never ticked. */
   tickedAt?: number
 }
 
 /** Everything one command changed, written together or not at all. */
 export interface Write {
+  /** The whole state after the command. Of its items, storage writes only those in `items`. */
   state: SimState
   /** New audit entries per item; storage numbers them after the item's last logged position. */
   entries: Array<{ itemId: Id; itemNumber: string; entries: AuditEntry[] }>
-  /** Replace these items' projection rows (and all their work-item rows). */
+  /** Every item the command changed (new ones included): replace its stored state, projection rows and work-item rows. */
   items: ProjectedItem[]
   outbox: OutboxMessage[]
   tickedAt: number
@@ -57,7 +71,7 @@ export interface Work<T> {
 export interface ChangeNotice {
   appId: Id
   version: number
-  /** Touched items; absent when there were too many to send. */
+  /** The items written; absent when there were too many to send. */
   itemIds?: Id[]
 }
 
