@@ -109,19 +109,21 @@ describe('runtime', () => {
     }
   })
 
-  it('backfills projections for state stored before they existed', async () => {
-    const storage = memoryStorage()
-    const first = await Runtime.create({ storage })
-    const o = await make(first, 'OLD')
-    await first.stop()
-    // Simulate a store from before projections: same state, no rows.
-    const bare = memoryStorage()
-    const state = (await storage.state.load('app_invoice'))!.state!
-    await bare.transact('app_invoice', 0, () => ({ value: 0, write: { state, entries: [], items: [], outbox: [], tickedAt: Date.now() } }))
-    await bare.designs.save(first.design)
-    const second = await Runtime.create({ storage: bare })
-    expect(await bare.projections.item('app_invoice', o!.id)).toMatchObject({ number: o!.number })
-    await second.stop()
+  it('backfills projections for a stored state that has none (memory, after a restart)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'modus-backfill-'))
+    try {
+      const first = await Runtime.create({ storage: memoryStorage(dir) })
+      const o = await make(first, 'OLD')
+      await first.stop()
+      // A restart: the state comes back from the data directory, the projections (memory only) don't.
+      const bare = memoryStorage(dir)
+      expect(await bare.projections.any('app_invoice')).toBe(false)
+      const second = await Runtime.create({ storage: bare })
+      expect(await bare.projections.item('app_invoice', o!.id)).toMatchObject({ number: o!.number })
+      await second.stop()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 
   it('hears another runtime’s commit on the same store, and tells its own subscribers', async () => {
@@ -225,7 +227,7 @@ describe('runtime', () => {
     const errors: string[] = []
     const a = await Runtime.create({ storage })
     const b = await Runtime.create({ storage, onError: (_e, during) => errors.push(during) })
-    storage.state.load = () => Promise.reject(new Error('database unreachable'))
+    storage.state.since = () => Promise.reject(new Error('database unreachable'))
     await make(a, 'UNHEARD')
     await vi.waitFor(() => expect(errors).toContain('listen'))
     await a.stop()
@@ -286,6 +288,7 @@ describe('runtime', () => {
           }
           return s
         },
+        since: storage.state.since,
       },
     }
     const b = await Runtime.create({ storage: slow })
@@ -309,6 +312,9 @@ describe('runtime', () => {
       },
       state: {
         load: async () => {
+          throw new Error('disk on fire')
+        },
+        since: async () => {
           throw new Error('disk on fire')
         },
       },

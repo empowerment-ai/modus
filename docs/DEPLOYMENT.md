@@ -447,7 +447,7 @@ a message that names the variable.
 | --- | --- | --- |
 | `PORT` | `8787` | Port the HTTP server listens on. |
 | `HOST` | `127.0.0.1` (image: `0.0.0.0`) | Interface to bind. |
-| `DATA_DIR` | unset (image: `/data`) | Where the in-memory store writes its snapshots: `design.json`, `state-<app>.json`, `meta-<app>.json`, `events.jsonl`. Unset: nothing is written and a restart starts from the sample design. Ignored, with a warning, for `postgres`. |
+| `DATA_DIR` | unset (image: `/data`) | Where the in-memory store writes its files: `design.json`, `state-<app>.jsonl`, `events.jsonl`. Unset: nothing is written and a restart starts from the sample design. Ignored, with a warning, for `postgres`. |
 | `TIME_SCALE` | `1` | Simulated minutes per real minute for timers, due dates and escalations. Demos may run faster. |
 | `STATIC_DIR` | unset (image: `/app/public`) | A built studio to serve at `/`, with single-page-app fallback. `/api/*` stays the API. Unset: API only. The directory must contain `index.html`. |
 | `LOG_LEVEL` | `info` | `fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent`. |
@@ -507,12 +507,15 @@ Each command commits the state, its events, the projections and the outbox in on
 so a dump of a running database is consistent.
 
 **In memory:** back up the `/data` volume, which holds `design.json` (applications, workflows,
-people), `state-<app>.json` (every live item, work item and counter) and `events.jsonl` (the
-append-only audit trail), plus `meta-<app>.json` (the state's version and clock time). Each
-change rewrites the application's state and meta files, each through a temporary file and an
-atomic rename, then appends its events, so copying a running volume never yields half a
-snapshot, but the files can be a change apart. For an exact point in time, stop the container
-first or take a volume snapshot.
+people), `state-<app>.jsonl` (every live item, work item and counter) and `events.jsonl` (the
+append-only audit trail). Each change appends one line to the application's state log: its
+version, clock time, counters and the items it changed. Once the log has grown past a full
+snapshot of the state, a change rewrites it as one full line instead, through a temporary file
+and an atomic rename. A torn last line (a crash or a copy mid-append) is skipped on load, so
+copying a running volume never yields half a change, but the state and event files can be a
+change apart. For an exact point in time, stop the container first or take a volume snapshot.
+Data directories from before the log (`state-<app>.json` and `meta-<app>.json`) load as they
+are, and their first change converts them.
 
 ```bash
 # Compose: archive the volume
@@ -556,7 +559,13 @@ the older server refuses to start because it doesn't know that migration.
 
 From now on pods roll while one of them migrates, so the release before a migration keeps
 running against the new schema for a moment. Every migration must work with the previous
-release.
+release, with one exception so far:
+
+**Upgrading Helm to migration `0005_item_state`** (each item's state in its own row): an older
+pod reads the whole state from `app_state`, which no longer holds the items, so for the moment
+both run it would show empty worklists and could write wrong counters. Stop the old pods first,
+once, with `deployments.all.strategy=Recreate` as above. The migration itself runs at startup,
+like every other, and rewrites every item's row (about half a second for 3,500 items on a laptop).
 
 **Upgrading to the release with webhooks** (migration `0003`): messages written before it were
 never sent, and the migration marks them sent, so the first sender doesn't post that backlog as

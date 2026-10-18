@@ -1,7 +1,9 @@
 // The runtime: the same engine the studio simulates with, run live. Every command
 // runs in one storage transaction: under the application's row lock it catches the
-// clock up, runs on a copy of the state, and commits the state with the audit
-// entries, projections and outbox messages that changed. The cached state is
+// clock up, runs on a copy of the state, and commits the items that changed and
+// the rest of the state, with the audit entries, projections and outbox messages
+// the command produced. Other servers' commits arrive the same way: only the
+// items they changed, applied to the cached state. The cached state is
 // replaced only after a commit, so a failed command or commit leaves it as it was.
 // Commands run one at a time per application within a process (a queue per
 // application) and under the row lock across processes. Replicas hear each
@@ -9,7 +11,7 @@
 // application, the holder of its clock lock, moves the clock.
 
 import { randomUUID } from 'node:crypto'
-import { advance, buildIndex, changesBetween, copyState, type Ctx, type Design, type Id, newSim, projectItem, type ProjectedItem, type SimState } from '@modus-bpm/core'
+import { advance, buildIndex, changedItems, changesBetween, copyState, type Ctx, type Design, type Id, newSim, projectItem, type ProjectedItem, type SimState, withChanges } from '@modus-bpm/core'
 import { seedDesign } from '@modus-bpm/core/model/seed'
 import { type ChangeNotice, type Deliveries, type Storage, StorageBusy } from './ports'
 
@@ -84,7 +86,7 @@ export class Runtime {
         // In the application's queue, so a reload heard meanwhile runs before or after, not during.
         await rt.serial(app.id, async () => {
           const s = await storage.state.load(app.id)
-          if (!s?.state) return
+          if (!s) return
           rt.adopt(app.id, { version: s.version, sim: s.state, tickedAt: s.tickedAt })
           // Projections arrived after this state was first written: fill them in once.
           if (Object.keys(s.state.objects).length && !(await storage.projections.any(app.id))) await rt.backfill(app.id)
@@ -245,8 +247,9 @@ export class Runtime {
       try {
         r = await this.opts.storage.transact(appId, cached.version, (stored) => {
           try {
-            if (stored.state) fresh = { version: stored.version, sim: stored.state, tickedAt: stored.tickedAt }
-            const before = stored.state ?? cached.sim
+            // Another server committed since our version: what it changed, applied to the cached state.
+            if (stored.changes) fresh = { version: stored.version, sim: withChanges(cached.sim, stored.changes), tickedAt: stored.tickedAt }
+            const before = fresh?.sim ?? cached.sim
             sim = copyState(before)
             // Taken under the lock: waiting for it doesn't count as clock time already spent.
             const now = Date.now()
@@ -258,8 +261,11 @@ export class Runtime {
             const c = changesBetween(before, sim)
             itemIds = c.itemIds
             if (tick && !c.itemIds.length && last !== undefined && now - last < IDLE_TICK_MS) return { value }
+            // Every item that changed is written (its state and its rows), not only those whose rows moved.
             const idx = buildIndex(ctx)
-            const items = c.itemIds.map((id) => projectItem(sim, ctx, id, idx)).filter((p): p is ProjectedItem => !!p)
+            const items = changedItems(before, sim)
+              .map((id) => projectItem(sim, ctx, id, idx))
+              .filter((p): p is ProjectedItem => !!p)
             // Never write a clock time earlier than the stored one (another server's clock may run ahead).
             tickedAt = Math.max(now, last ?? now)
             return { value, write: { state: sim, entries: c.entries, items, outbox: c.outbox, tickedAt } }
@@ -308,11 +314,14 @@ export class Runtime {
       const was = this.cached(appId)
       // Checked again in turn: a commit queued ahead (this runtime's own, say) may have brought the cache there.
       if (n && n.version <= was.version) return
-      const s = await this.opts.storage.state.load(appId)
-      if (!s?.state || !this.adopt(appId, { version: s.version, sim: s.state, tickedAt: s.tickedAt })) return
+      // Only what changed since the cached version: the rest of the state and the items written since.
+      const s = await this.opts.storage.state.since(appId, was.version)
+      if (!s?.changes) return
+      const sim = withChanges(was.sim, s.changes)
+      if (!this.adopt(appId, { version: s.version, sim, tickedAt: s.tickedAt })) return
       // The notice's items cover the state only when it is the one commit between the cache and storage.
       const one = n?.itemIds && s.version === n.version && was.version === n.version - 1
-      this.emit({ appId, clock: s.state.clock, itemIds: one ? n.itemIds! : moved(was.sim, s.state) })
+      this.emit({ appId, clock: sim.clock, itemIds: one ? n.itemIds! : moved(was.sim, sim) })
     }).catch((err) => this.opts.onError(err, 'listen'))
   }
 
@@ -323,7 +332,7 @@ export class Runtime {
     let sim = cached.sim
     let tickedAt: number | undefined
     const r = await this.opts.storage.transact(appId, cached.version, (stored) => {
-      sim = stored.state ?? cached.sim
+      sim = stored.changes ? withChanges(cached.sim, stored.changes) : cached.sim
       tickedAt = stored.tickedAt ?? Date.now()
       const idx = buildIndex(ctx)
       const items = Object.keys(sim.objects)

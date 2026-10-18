@@ -3,7 +3,7 @@
 
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { type AuditEntry, changesBetween, createObject, type Ctx, type Design, newSim, type OutboxMessage, projectItem, type SimState } from '@modus-bpm/core'
+import { type AuditEntry, changedItems, changesBetween, completeJob, copyState, createObject, type Ctx, type Design, newSim, type OutboxMessage, pollJobs, projectItem, type SimState, withChanges, withoutItems, workNext } from '@modus-bpm/core'
 import { seedDesign } from '@modus-bpm/core/model/seed'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Delivery, LoggedEvent, Storage, Write } from '../ports'
@@ -42,10 +42,16 @@ function commitEntries(s: Storage, appId: string, version: number, entries: Logg
   return s.transact(appId, version, () => ({ value: 0, write: { state, entries: groups, items: [], outbox: [], tickedAt: 0 } }))
 }
 
+/** `sim` holding bare items with these ids, for writes whose rows a test makes up. */
+export function holding(sim: SimState, ids: string[]): SimState {
+  for (const id of ids) sim.objects[id] = { id, number: id, typeId: 't', workflowId: 'w', data: {}, createdAt: 0, createdBy: 'test', status: 'active', priority: 'normal', tokens: [], tokenSeq: 0, passed: [], history: [] }
+  return sim
+}
+
 /** A command as the runtime will run it: on a copy, committing whatever changed. */
 function writeFor(before: SimState, after: SimState, ctx: Ctx, tickedAt = 0): Write {
   const c = changesBetween(before, after)
-  return { state: after, entries: c.entries, items: c.itemIds.map((id) => projectItem(after, ctx, id)!), outbox: c.outbox, tickedAt }
+  return { state: after, entries: c.entries, items: changedItems(before, after).map((id) => projectItem(after, ctx, id)!), outbox: c.outbox, tickedAt }
 }
 
 export function storageContract(name: string, target: ContractTarget) {
@@ -184,7 +190,7 @@ export function storageContract(name: string, target: ContractTarget) {
       expect(await s.projections.outbox('app_x')).toEqual([])
     })
 
-    it('hands back the stored state only when the caller’s version is stale', async () => {
+    it('hands back what changed only when the caller’s version is stale', async () => {
       const s = await create()
       const sim = newSim('app_a', 1)
       await s.transact('app_a', 0, () => ({ value: 0, write: { state: sim, entries: [], items: [], outbox: [], tickedAt: 5 } }))
@@ -193,9 +199,49 @@ export function storageContract(name: string, target: ContractTarget) {
         return { value: 0 }
       })
       await s.transact('app_a', 0, (stored) => {
-        expect(stored.state).toEqual(JSON.parse(JSON.stringify(sim)))
+        expect(stored.changes).toEqual({ state: JSON.parse(JSON.stringify(sim)), objects: [] })
         return { value: 0 }
       })
+    })
+
+    it('writes only the items listed, and hands back what changed since any version, in item order', async () => {
+      const s = await create()
+      const ctx = ctxOf()
+      const commit = async (known: number, before: SimState, change: (sim: SimState) => void) => {
+        const after = copyState(before)
+        change(after)
+        await s.transact('app_invoice', known, () => ({ value: 0, write: writeFor(before, after, ctx) }))
+        return after
+      }
+      const v1 = await commit(0, newSim('app_invoice', 1), (sim) => {
+        for (const n of ['A', 'B', 'C']) createObject(sim, ctx, 'w_invoice', { f_invno: n }, 'u_maya')
+      })
+      const [a, b, c] = Object.keys(v1.objects)
+      const v2 = await commit(1, v1, (sim) => void (sim.objects[b!]!.priority = 'urgent'))
+      const v3 = await commit(2, v2, (sim) => {
+        createObject(sim, ctx, 'w_invoice', { f_invno: 'D' }, 'u_maya')
+        sim.clock = 9
+      })
+      const d = Object.keys(v3.objects)[3]
+      const ids = async (from: Storage, version: number) => (await from.state.since('app_invoice', version))?.changes?.objects.map((o) => o.id)
+      expect(await ids(s, 0)).toEqual([a, b, c, d])
+      expect(await ids(s, 1)).toEqual([b, d])
+      expect(await ids(s, 2)).toEqual([d])
+      expect(await s.state.since('app_invoice', 3)).toEqual({ version: 3, tickedAt: 0 })
+      expect(await s.state.since('app_x', 0)).toBeUndefined()
+      const since1 = (await s.state.since('app_invoice', 1))!
+      expect(since1.changes!.state).toEqual(JSON.parse(JSON.stringify(withoutItems(v3))))
+      expect(JSON.stringify(withChanges(v1, since1.changes!))).toBe(JSON.stringify(v3))
+      // A transaction hands over the same.
+      await s.transact('app_invoice', 1, (stored) => {
+        expect(stored).toEqual(since1)
+        return { value: 0 }
+      })
+      // After a restart: the whole state with its items in order, and the same changes.
+      const again = await reopen()
+      expect(JSON.stringify((await again.state.load('app_invoice'))!.state)).toBe(JSON.stringify(v3))
+      expect(await ids(again, 1)).toEqual([b, d])
+      expect(await ids(again, 2)).toEqual([d])
     })
 
     it('numbers new entries after what the log already holds for the item', async () => {
@@ -240,7 +286,7 @@ export function storageContract(name: string, target: ContractTarget) {
         { item: item('i_b'), workItems: [work('i_b', 'tz', 3), work('i_b', 'tm', 1), work('i_b', 'ta', 3)] },
         { item: item('i_a'), workItems: [work('i_a', 'tq', 7)] },
       ] as never
-      await s.transact('app_w', 0, () => ({ value: 0, write: { state: newSim('app_w', 1), entries: [], items, outbox: [], tickedAt: 0 } }))
+      await s.transact('app_w', 0, () => ({ value: 0, write: { state: holding(newSim('app_w', 1), ['i_b', 'i_a']), entries: [], items, outbox: [], tickedAt: 0 } }))
       expect((await s.projections.workItems('app_w')).map((w) => `${w.itemId}/${w.tokenId}`)).toEqual(['i_a/tq', 'i_b/tm', 'i_b/ta', 'i_b/tz'])
       expect((await s.projections.workItems('app_w', 'i_b')).map((w) => w.tokenId)).toEqual(['tm', 'ta', 'tz'])
     })
@@ -455,6 +501,8 @@ export function storageContract(name: string, target: ContractTarget) {
         expect(new Set(ids).size).toBe(50)
         const storage = await reopen()
         const stored = (await storage.state.load('app_invoice'))!.state!
+        // Each replica, having applied the other's changes as they came, holds exactly what storage does.
+        for (const rt of [a, b]) await vi.waitFor(() => expect(JSON.stringify(rt.state('app_invoice'))).toBe(JSON.stringify(stored)))
         const objs = Object.values(stored.objects)
         expect(objs).toHaveLength(50)
         expect(new Set(objs.map((o) => o.number)).size).toBe(50)
@@ -462,6 +510,26 @@ export function storageContract(name: string, target: ContractTarget) {
           const log = await storage.events.read({ itemId: o.id, limit: 1000 })
           expect(log.map((e) => e.seq)).toEqual(log.map((_, i) => i + 1))
         }
+        await a.stop()
+        await b.stop()
+      })
+
+      it('end up holding exactly what storage does after a mix of commands on both at once', async () => {
+        const a = await Runtime.create({ storage: await create() })
+        const b = await Runtime.create({ storage: await peer() })
+        const clerks = ['u_jordan', 'u_priya', 'u_sam']
+        // Creating, taking and finishing jobs (a lease changes an item without moving its rows), handing out work.
+        const command = (i: number) =>
+          (i % 2 ? a : b).run('app_invoice', (sim, ctx) => {
+            if (i % 3 === 0) return void createObject(sim, ctx, 'w_invoice', { f_invno: `MIX-${i}` }, 'u_maya')
+            for (const svc of ctx.services ?? [])
+              for (const j of pollJobs(sim, ctx, svc.id, `w${i}`, 2, 30)) if (i % 3 === 1) completeJob(sim, ctx, j.id, {})
+            if (i % 3 === 2) workNext(sim, ctx, clerks[i % clerks.length]!)
+          })
+        await Promise.all(Array.from({ length: 60 }, (_, i) => command(i)))
+        const stored = (await (await reopen()).state.load('app_invoice'))!.state
+        expect(Object.keys(stored.objects)).toHaveLength(20)
+        for (const rt of [a, b]) await vi.waitFor(() => expect(JSON.stringify(rt.state('app_invoice'))).toBe(JSON.stringify(stored)))
         await a.stop()
         await b.stop()
       })

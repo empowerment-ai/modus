@@ -18,7 +18,7 @@ import { type ChangeNotice, type Storage, StorageBusy } from '../ports'
 import { Runtime } from '../runtime'
 import { memoryStorage } from './memory'
 import { migrations, postgresStorage } from './postgres'
-import { storageContract } from './storage.contract'
+import { holding, storageContract } from './storage.contract'
 
 let dir = ''
 let shared: Storage | undefined
@@ -86,7 +86,7 @@ describe.skipIf(!url)('postgres', () => {
       await s.migrate()
       await s.migrate()
       const { rows } = await admin.query(`select name from ${own}.kysely_migration order by name`)
-      expect(rows.map((r) => r.name)).toEqual(['0001_storage', '0002_projections', '0003_outbox_delivery', '0004_state_json'])
+      expect(rows.map((r) => r.name)).toEqual(['0001_storage', '0002_projections', '0003_outbox_delivery', '0004_state_json', '0005_item_state'])
       await s.close()
     })
 
@@ -125,7 +125,7 @@ describe.skipIf(!url)('postgres', () => {
       await drop(schema)
     })
 
-    it('upgrades a database written before M2: backfills projections, starts the clock, numbers after the stored log', async () => {
+    it('upgrades a database written before M2: projects every item, starts the clock, numbers after the stored log', async () => {
       const schema = await fresh()
       // The schema as the release before M2 left it: 0001 only.
       const old = new Kysely<never>({ dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: url, max: 1, options: `-c search_path=${schema}` }) }) })
@@ -149,17 +149,23 @@ describe.skipIf(!url)('postgres', () => {
       const after = await admin.query(`select version, ticked_at from ${schema}.app_state`)
       expect(after.rows).toEqual([{ version: '1', ticked_at: null }])
 
-      const rt = await Runtime.create({ storage: s })
-      // The backfill is the first commit under M2, and starts keeping a clock time.
-      const filled = await admin.query(`select version, ticked_at is not null as ticked from ${schema}.app_state`)
-      expect(filled.rows).toEqual([{ version: '2', ticked: true }])
-      const items = await admin.query(`select count(*)::int as n from ${schema}.item`)
+      // 0005 writes every item's row, projection and state, from the state it splits up.
+      const items = await admin.query(`select number, state is not null as kept from ${schema}.item order by ord`)
       const work = await admin.query(`select count(*)::int as n from ${schema}.work_item`)
-      expect(items.rows[0].n).toBe(2)
+      expect(items.rows).toEqual(Object.values(legacy.objects).map((o) => ({ number: o.number, kept: true })))
       expect(work.rows[0].n).toBeGreaterThan(0)
+      const rest = await admin.query(`select state->'objects' as objects from ${schema}.app_state`)
+      expect(rest.rows).toEqual([{ objects: {} }])
+
+      const rt = await Runtime.create({ storage: s })
+      // Same contents; key order is jsonb's (sorted), as this database always held it.
+      expect(rt.state('app_invoice')).toEqual(JSON.parse(JSON.stringify(legacy)))
+      // Nothing to backfill: the first command is the first commit under M2, and starts keeping a clock time.
+      expect((await admin.query(`select version from ${schema}.app_state`)).rows).toEqual([{ version: '1' }])
       // The legacy item's next entry follows what the log already holds for it.
       const r = await rt.run('app_invoice', (sim, ctx) => setExpedite(sim, ctx, first!, 'u_maya', true, 'upgrade test'))
       expect(r.ok).toBe(true)
+      expect((await admin.query(`select version, ticked_at is not null as ticked from ${schema}.app_state`)).rows).toEqual([{ version: '2', ticked: true }])
       const seqs = await admin.query(`select seq from ${schema}.event where item_id = $1 order by seq`, [first])
       expect(seqs.rows.map((x) => x.seq).slice(0, 4)).toEqual([1, 2, 3, 4])
       await rt.stop()
@@ -195,6 +201,44 @@ describe.skipIf(!url)('postgres', () => {
       expect(Object.values((await s.state.load('app_invoice'))!.state!.objects).map((o) => o.data.f_invno)).toEqual(['JSONB-1', 'JSON-2'])
       await rt.stop()
       await s.close()
+      await drop(schema)
+    })
+
+    it('moves each item into its row, projections included, and back again (0005)', async () => {
+      const schema = await fresh()
+      const db = new Kysely<never>({ dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: url, max: 1, options: `-c search_path=${schema}` }) }) })
+      const migrator = new Migrator({ db, provider: { getMigrations: async () => migrations }, migrationTableSchema: schema })
+      expect((await migrator.migrateTo('0004_state_json')).error).toBeUndefined()
+      // A whole state of three items, as 0004 stored it, and a projection row for only the first (M2 wrote rows
+      // only for items whose projected fields moved).
+      const mem = await Runtime.create({ storage: memoryStorage() })
+      for (const n of ['W-1', 'W-2', 'W-3']) await mem.run('app_invoice', (sim, ctx) => createObject(sim, ctx, 'w_invoice', { f_invno: n }, 'u_maya'))
+      const whole = mem.state('app_invoice')
+      await mem.stop()
+      const [first] = Object.keys(whole.objects)
+      await admin.query(`insert into ${schema}.design (id, doc) values (1, $1)`, [JSON.stringify(mem.design)])
+      await admin.query(`insert into ${schema}.app_state (app_id, state, version, ticked_at) values ('app_invoice', $1, 3, now())`, [JSON.stringify(whole)])
+      await admin.query(
+        `insert into ${schema}.item (app_id, item_id, number, title, status, priority, expedited, created_at, version, data) values ('app_invoice', $1, 'stale', 'stale', 'active', 'normal', false, 0, 1, '{}')`,
+        [first],
+      )
+
+      expect((await migrator.migrateTo('0005_item_state')).error).toBeUndefined()
+      const rows = await admin.query(`select item_id, number, ord, version, state is not null as kept from ${schema}.item order by ord`)
+      expect(rows.rows).toEqual(Object.values(whole.objects).map((o, i) => ({ item_id: o.id, number: o.number, ord: String(i), version: '3', kept: true })))
+      const work = await admin.query(`select distinct item_id from ${schema}.work_item order by item_id`)
+      expect(work.rows.map((r) => r.item_id)).toEqual(Object.keys(whole.objects).sort())
+      const s = postgresStorage(url!, { schema })
+      expect(JSON.stringify((await s.state.load('app_invoice'))?.state)).toBe(JSON.stringify(whole))
+      expect(await s.state.since('app_invoice', 3)).toMatchObject({ version: 3 })
+      await s.close()
+
+      expect((await migrator.migrateTo('0004_state_json')).error).toBeUndefined()
+      const back = await admin.query(`select state from ${schema}.app_state`)
+      expect(JSON.stringify(back.rows[0].state)).toBe(JSON.stringify(whole))
+      const cols = await admin.query(`select column_name from information_schema.columns where table_schema = $1 and table_name = 'item' and column_name in ('state', 'ord')`, [schema])
+      expect(cols.rows).toEqual([])
+      await db.destroy()
       await drop(schema)
     })
 
@@ -331,7 +375,11 @@ describe.skipIf(!url)('postgres', () => {
           const itemId = `i_${i}_${'x'.repeat(200)}`
           return { item: { itemId, number: `B-${i}`, title: 't', status: 'active', priority: 'normal', expedited: false, createdAt: 0, data: {} }, workItems: [] }
         }) as never
-      const commit = (version: number, n: number) => s.transact('app_big', version, () => ({ value: 0, write: { state: newSim('app_big', 1), entries: [], items: items(n), outbox: [], tickedAt: 0 } }))
+      const commit = (version: number, n: number) => {
+        const listed = items(n) as Array<{ item: { itemId: string } }>
+        const state = holding(newSim('app_big', 1), listed.map((p) => p.item.itemId))
+        return s.transact('app_big', version, () => ({ value: 0, write: { state, entries: [], items: listed as never, outbox: [], tickedAt: 0 } }))
+      }
       // 30 ids of ~210 bytes fit; 40 don't (the limit is under 8000 bytes, whatever the count).
       await commit(0, 30)
       await commit(1, 40)
