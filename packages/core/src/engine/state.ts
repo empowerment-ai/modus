@@ -302,6 +302,7 @@ const each = <T>(r: Record<string, T>, copy: (v: T) => T): Record<string, T> => 
   return out
 }
 
+// changedItems compares exactly these levels (COPIED below): keep the two in step.
 const copyObject = (o: SimObject): SimObject => ({
   ...o,
   data: { ...o.data },
@@ -316,8 +317,8 @@ const copyObject = (o: SimObject): SimObject => ({
  * A copy of the state for a command to change, much cheaper than a deep clone: everything the engine
  * changes in place is copied, and what it only ever adds or replaces whole is shared (audit and feed
  * entries, series points, flights, field values and line-item rows, fork and call frames, the
- * expedite flag). The
- * original stays as it was, so `changesBetween(original, copy)` reports what the command did.
+ * expedite flag). The original stays as it was, so `changesBetween(original, copy)` reports what the
+ * command did, and `changedItems` which items it changed.
  */
 export function copyState(s: SimState): SimState {
   return {
@@ -337,6 +338,74 @@ export function copyState(s: SimState): SimState {
     flights: s.flights.slice(),
   }
 }
+
+/** The parts of an item copyState copies (compared level by level), as opposed to fields compared as they are. */
+const COPIED = new Set(['data', 'tokens', 'passed', 'history', 'scopeEnds', 'versions'])
+const FRAMES = new Set(['forks', 'calls'])
+
+/** A field of one differs from the other's by `===`, or one has a key the other doesn't. */
+function differs(a: object, b: object, skip?: Set<string>): boolean {
+  const x = a as Record<string, unknown>
+  const y = b as Record<string, unknown>
+  let keys = 0
+  for (const k in x) {
+    keys++
+    if (!skip?.has(k) && x[k] !== y[k]) return true
+  }
+  for (const _ in y) keys--
+  return keys !== 0
+}
+
+const sameItems = (a: readonly unknown[], b: readonly unknown[]) => a.length === b.length && a.every((v, i) => v === b[i])
+const sameRecord = (a: object | undefined, b: object | undefined) => a === b || (!!a && !!b && !differs(a, b))
+
+function itemChanged(was: SimObject, now: SimObject): boolean {
+  if (differs(now, was, COPIED) || differs(now.data, was.data) || !sameItems(now.passed, was.passed) || !sameItems(now.history, was.history)) return true
+  if (!sameRecord(now.scopeEnds, was.scopeEnds) || !sameRecord(now.versions, was.versions)) return true
+  if (now.tokens.length !== was.tokens.length) return true
+  return now.tokens.some((t, i) => {
+    const u = was.tokens[i]!
+    return differs(t, u, FRAMES) || !sameItems(t.forks, u.forks) || !sameItems(t.calls, u.calls)
+  })
+}
+
+/**
+ * The items a command changed, new ones included, in `objects` order: `after` must be `copyState(before)`
+ * after the command. What copyState shares is never changed in place (copy.test.ts holds the engine to
+ * that), so comparing the copied levels by `===` finds every change without serializing anything. Items
+ * are never removed: storage keeps them for good, so a command that removes one throws.
+ */
+export function changedItems(before: SimState, after: SimState): Id[] {
+  const out: Id[] = []
+  let kept = 0
+  for (const id in after.objects) {
+    const was = before.objects[id]
+    if (was) kept++
+    if (!was || itemChanged(was, after.objects[id]!)) out.push(id)
+  }
+  let had = 0
+  for (const _ in before.objects) had++
+  if (kept !== had) throw new Error('A command removed an item from the state; items are kept for good.')
+  return out
+}
+
+/** What storage hands back of an application since a version the caller holds. */
+export interface StateChanges {
+  /** The application's state without its items (`objects` is empty). */
+  state: SimState
+  /** The items written since, in `objects` order. */
+  objects: SimObject[]
+}
+
+/** The state `base` becomes with `changes`: their rest, base's items with the newer ones replaced and new ones appended. */
+export function withChanges(base: SimState | undefined, changes: StateChanges): SimState {
+  const objects: Record<Id, SimObject> = { ...base?.objects }
+  for (const o of changes.objects) objects[o.id] = o
+  return { ...changes.state, objects }
+}
+
+/** The state without its items, as storage keeps it beside them. */
+export const withoutItems = (s: SimState): SimState => ({ ...s, objects: {} })
 
 export const PRIORITY_RANK: Record<Priority, number> = { low: 0, normal: 1, high: 2, urgent: 3 }
 
