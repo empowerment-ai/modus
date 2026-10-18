@@ -117,11 +117,63 @@ because the work never got past Capture & match PO.
 
 ### Cheap fixes to try before per-item locking
 
-- Serve reads from the committed cache instead of queuing them behind commands.
-- Compute one stream view per change per application, shared by every open stream.
-- Track the items a command changes instead of cloning the whole state and diffing it.
-- Stringify outside the row lock, and compress `app_state.state` (lz4).
-- Apply the other server's changes instead of reloading the whole state.
+- Serve reads from the committed cache instead of queuing them behind commands. *Done.*
+- Compute one stream view per change per application, shared by every open stream. *Done.*
+- Track the items a command changes instead of cloning the whole state and diffing it. *Done as a
+  cheap copy and a cheaper diff; see Speed-ups.*
+- Stringify outside the row lock, and compress `app_state.state` (lz4). *lz4 done, and json instead
+  of jsonb, the bigger win. Stringifying outside the lock only helps several servers; writing only
+  what changed (next) helps both.*
+- Apply the other server's changes instead of reloading the whole state. *Comes with writing only
+  what changed.*
+
+### Speed-ups (2026-10-18)
+
+Done on `feat/speed-ups`, each measured with the bench at 3,500 items:
+
+- Reads answer from the committed state at once instead of queuing behind commands.
+- One view per committed state, shared by every stream, the overview and the Monitor (~32 ms → 1.1 ms
+  per change with 100 streams).
+- Commands run on `copyState`, which copies what the engine changes in place and shares what it
+  only adds (29 ms → 1.7 ms). A test freezes each state before the next command runs on its copy.
+- `changesBetween` compares tokens in place and builds output only for what moved (8 ms → 1.3 ms).
+- The state column is `json` with lz4, not `jsonb` (migration 0004). The Postgres write turned out
+  to be the biggest cost of all: 140 ms per command at 3,500 items, 90 ms of it Postgres parsing
+  the 3.4 MB into jsonb. As json: 50 ms, of which ~45 ms is sending 3.4 MB at all. Reading it
+  back: 73 → 35 ms.
+
+Three `baseline` runs, 1 server, back to back on the same machine (10 CPUs, 8 GB for Docker):
+
+| | main (604ea2e) | copy (17e1e97) | json (81dae4e) |
+| --- | ---: | ---: | ---: |
+| Requests | 10.9/s | 19.3/s | 31.5/s |
+| Items created (10/s offered) | 2,136 | 3,476 | 4,890 |
+| Item arrivals k6 couldn't start | 2,858 | 2,322 | 971 |
+| Reads p95 | 60 s (timeouts) | 25 ms | 31 ms |
+| Changes p95 | 60 s (timeouts) | 52.4 s | 31.0 s |
+| Errors | 19.0% | 0.85% | 0.00% |
+| Releases | 173 | 289 | 636 |
+| Service jobs completed | 724 | 1,230 | 2,431 |
+| Webhook lag p95 | 379 ms | 216 ms | 176 ms |
+
+This main run did worse than the 10-13 one (12.6/s, 0.31% errors): same code, a busier machine,
+which is why only back-to-back runs are compared. Commands answered per second, by minute:
+
+| Minute | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| main | 29.3 | 10.8 | 9.4 | 6.8 | 6.2 | 4.8 | – | – | – | – |
+| json | 55.2 | 32.9 | 24.2 | 18.6 | 14.3 | 13.9 | 12.9 | 11.3 | 10.7 | 9.6 |
+
+(main's server logged nothing after minute 6: every request after that timed out.) It's still
+falling as items pile up: a command still costs time in proportion to the whole state. Per
+command at 3,500 items: about 17 ms in the engine (11 ms of it stringifying the state for the
+write) and about 50 ms writing 3.4 MB to Postgres. Releases racing (3.2%, over the 2% soft limit)
+come with the clerks getting far more work through; worth watching, not a fault.
+
+Next: write only what a command changed. With `copyState` an item changed exactly when its copy
+differs from its original at the levels the copy made, a cheap check. Storing items as their own
+rows beside a small application row would make the write, and another server's reload, cost what
+changed instead of the whole state. That changes the storage layout, so it gets its own design.
 
 ### Harness faults found first
 
