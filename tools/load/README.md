@@ -107,10 +107,10 @@ failed run leaves `FAILED`) and tears the stack down; a cut-short run writes no 
 A section the run could not measure (the observer down, one server for cross-server lag) says
 "not measured" instead of a number.
 
-When the servers fall behind, every kind of request slows together, reads included: a server
-runs one application's commands and reads one at a time, in order, so a read waits behind the
-commands queued ahead of it. A request still unanswered after 60 s is k6's timeout and counts as
-an error.
+When the servers fall behind, every change slows together: a server runs one application's
+commands one at a time, in order, so a command waits behind the ones queued ahead of it. Reads
+answer from the last committed state without waiting, so they slow only as far as the server's
+one thread is busy. A request still unanswered after 60 s is k6's timeout and counts as an error.
 
 ## Comparing
 

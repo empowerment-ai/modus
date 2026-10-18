@@ -177,9 +177,12 @@ export class Runtime {
     return this.command(appId, fn)
   }
 
-  /** Read without changing anything (still ordered after this process's pending commands). */
-  read<T>(appId: Id, fn: (sim: SimState, ctx: Ctx) => T): Promise<T> {
-    return this.serial(appId, () => fn(this.state(appId), this.ctx(appId)))
+  /**
+   * Read the last committed state without changing anything. Not queued behind commands: it sees every
+   * command that finished before it, a caller's own awaited ones included, and none still running.
+   */
+  async read<T>(appId: Id, fn: (sim: SimState, ctx: Ctx) => T): Promise<T> {
+    return fn(this.state(appId), this.ctx(appId))
   }
 
   /** Move the clock of every application this runtime is the ticker for. One failing doesn't stop the rest. */

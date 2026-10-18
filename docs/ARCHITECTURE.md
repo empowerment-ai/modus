@@ -276,6 +276,11 @@ Every change to an application goes through `Storage.transact`. On PostgreSQL:
 6. Only then does the runtime replace its cached state. A failed command or commit leaves the
    cache as it was.
 
+Reads answer from the cached state at once, without waiting for queued commands: they see every
+command that finished before them, and none still running. A cached state is never changed in
+place, so the view the live streams, the overview and the Monitor show is computed once per
+committed state and shared.
+
 Storage numbers the audit entries: each item's new entries follow the highest `seq` already
 stored for it, under the row lock. The runtime never tracks log positions.
 
