@@ -276,6 +276,11 @@ Every change to an application goes through `Storage.transact`. On PostgreSQL:
 6. Only then does the runtime replace its cached state. A failed command or commit leaves the
    cache as it was.
 
+Reads answer from the cached state at once, without waiting for queued commands: they see every
+command that finished before them, and none still running. A cached state is never changed in
+place, so the view the live streams, the overview and the Monitor show is computed once per
+committed state and shared.
+
 Storage numbers the audit entries: each item's new entries follow the highest `seq` already
 stored for it, under the row lock. The runtime never tracks log positions.
 
@@ -516,8 +521,9 @@ Packaging is real today: one image (`ghcr.io/empowerment-ai/modus`) serves the A
 studio, `docker compose up` runs it on PostgreSQL, and `deploy/helm/modus` deploys it to
 Kubernetes. Storage is PostgreSQL (`DB_DIALECT=postgres`) or in memory with JSON snapshots.
 Several replicas can share one PostgreSQL database; the memory store runs as one process. The
-Postgres adapter keeps each application's state as JSONB and writes `item`, `work_item` and
-`outbox` rows beside it in the same transaction. See [DEPLOYMENT.md](DEPLOYMENT.md) and
+Postgres adapter keeps each application's state as JSON (`json`, lz4-compressed: it is only ever
+written and read whole) and writes `item`, `work_item` and `outbox` rows beside it in the same
+transaction. See [DEPLOYMENT.md](DEPLOYMENT.md) and
 [TECH-STACK.md › SaaS architecture](TECH-STACK.md#saas-architecture).
 
 | Tier | Shape |
@@ -536,7 +542,7 @@ customers who need hard separation.
 | | Milestone | Exit criteria |
 | --- | --- | --- |
 | **M1** | Kernel hardening | Split the engine's command handlers from the simulation drivers further (`decide/evolve` over typed events); property tests and a "one million simulated items, zero stuck tokens" fuzz run; versioned JSON Schemas for designs. *Partly done: live mode, tokens, split/join, subflows, OCEL export, separation of duties, line items, search, assistant, supervisors, expedite, workflow versions and migration.* |
-| **M2** | Server on Postgres | Kysely migrations; events + projections + outbox + timers in one transaction per command, so several servers can share a database; object types, objects, lists, attachments; OIDC login; single image + Compose. *Storage done: a PostgreSQL adapter (Kysely, versioned migrations in code, run at startup) stores the design, each application's state (JSONB) and the event log (`UNIQUE (app_id, item_id, seq)`); every command commits state, audit entries, item and work-item projections, outbox rows and the clock in one transaction under the application's row lock; several replicas share one database (LISTEN/NOTIFY, one clock per application by advisory lock); a shared storage contract suite runs against memory and Postgres; Docker Compose runs Modus on Postgres by default. Locking is per application; per item after M1. The outbox is written, and sent to signed webhooks with retries by every server. Next: object types, objects, lists, attachments, then OIDC.* |
+| **M2** | Server on Postgres | Kysely migrations; events + projections + outbox + timers in one transaction per command, so several servers can share a database; object types, objects, lists, attachments; OIDC login; single image + Compose. *Storage done: a PostgreSQL adapter (Kysely, versioned migrations in code, run at startup) stores the design, each application's state (JSON) and the event log (`UNIQUE (app_id, item_id, seq)`); every command commits state, audit entries, item and work-item projections, outbox rows and the clock in one transaction under the application's row lock; several replicas share one database (LISTEN/NOTIFY, one clock per application by advisory lock); a shared storage contract suite runs against memory and Postgres; Docker Compose runs Modus on Postgres by default. Locking is per application; per item after M1. The outbox is written, and sent to signed webhooks with retries by every server. Next: object types, objects, lists, attachments, then OIDC.* |
 | **M3** | Work service and Workspace on the server | Worklists and all distribution modes with SKIP LOCKED claims; delegation, out of office, SLA timers with business calendars; the studio's Workspace and Monitor wired to the API and the live stream. *Monitor done: Live / Simulation on a served Studio, administrator reads over the API and the stream. Next: the Workspace.* |
 | **M4** | Automation | Email from Modus; REST/OpenAPI and MCP connectors; worker SDKs (TypeScript, Python, .NET, Java) from OpenAPI; retries, incidents, tracing. *Done ahead of it: the outbox sender (signed webhooks with retries).* |
 | **M5** | Scale, ingest, analytics | Stream ingest and triage; OCEL/XES export; simulation calibrated from the log; Helm chart; load tests (target 100 signals/s sustained, 1,000 concurrent Workspace users). |

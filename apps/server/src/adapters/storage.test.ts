@@ -86,7 +86,7 @@ describe.skipIf(!url)('postgres', () => {
       await s.migrate()
       await s.migrate()
       const { rows } = await admin.query(`select name from ${own}.kysely_migration order by name`)
-      expect(rows.map((r) => r.name)).toEqual(['0001_storage', '0002_projections', '0003_outbox_delivery'])
+      expect(rows.map((r) => r.name)).toEqual(['0001_storage', '0002_projections', '0003_outbox_delivery', '0004_state_json'])
       await s.close()
     })
 
@@ -162,6 +162,37 @@ describe.skipIf(!url)('postgres', () => {
       expect(r.ok).toBe(true)
       const seqs = await admin.query(`select seq from ${schema}.event where item_id = $1 order by seq`, [first])
       expect(seqs.rows.map((x) => x.seq).slice(0, 4)).toEqual([1, 2, 3, 4])
+      await rt.stop()
+      await s.close()
+      await drop(schema)
+    })
+
+    it('keeps the state as json, compressed with lz4, and upgrades a jsonb state in place', async () => {
+      const schema = await fresh()
+      const old = new Kysely<never>({ dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: url, max: 1, options: `-c search_path=${schema}` }) }) })
+      const migrated = await new Migrator({ db: old, provider: { getMigrations: async () => migrations }, migrationTableSchema: schema }).migrateTo('0003_outbox_delivery')
+      expect(migrated.error).toBeUndefined()
+      await old.destroy()
+      // A state committed before 0004, as jsonb.
+      const mem = await Runtime.create({ storage: memoryStorage() })
+      await mem.run('app_invoice', (sim, ctx) => createObject(sim, ctx, 'w_invoice', { f_invno: 'JSONB-1' }, 'u_maya'))
+      const before = mem.state('app_invoice')
+      await mem.stop()
+      await admin.query(`insert into ${schema}.design (id, doc) values (1, $1)`, [JSON.stringify(mem.design)])
+      await admin.query(`insert into ${schema}.app_state (app_id, state, version, ticked_at) values ('app_invoice', $1, 1, now())`, [JSON.stringify(before)])
+
+      const s = postgresStorage(url!, { schema })
+      await s.migrate()
+      const col = await admin.query(
+        `select data_type, (select attcompression from pg_attribute where attrelid = '${schema}.app_state'::regclass and attname = 'state') as compression
+         from information_schema.columns where table_schema = $1 and table_name = 'app_state' and column_name = 'state'`,
+        [schema],
+      )
+      expect(col.rows).toEqual([{ data_type: 'json', compression: 'l' }])
+      expect((await s.state.load('app_invoice'))?.state).toEqual(JSON.parse(JSON.stringify(before)))
+      const rt = await Runtime.create({ storage: s })
+      await rt.run('app_invoice', (sim, ctx) => createObject(sim, ctx, 'w_invoice', { f_invno: 'JSON-2' }, 'u_maya'))
+      expect(Object.values((await s.state.load('app_invoice'))!.state!.objects).map((o) => o.data.f_invno)).toEqual(['JSONB-1', 'JSON-2'])
       await rt.stop()
       await s.close()
       await drop(schema)

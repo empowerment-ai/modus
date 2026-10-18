@@ -296,6 +296,48 @@ export function newSim(appId: Id, seed = 20261005): SimState {
   }
 }
 
+const each = <T>(r: Record<string, T>, copy: (v: T) => T): Record<string, T> => {
+  const out: Record<string, T> = {}
+  for (const k in r) out[k] = copy(r[k]!)
+  return out
+}
+
+const copyObject = (o: SimObject): SimObject => ({
+  ...o,
+  data: { ...o.data },
+  tokens: o.tokens.map((t) => ({ ...t, forks: t.forks.slice(), calls: t.calls.slice() })),
+  passed: o.passed.slice(),
+  history: o.history.slice(),
+  ...(o.scopeEnds && { scopeEnds: { ...o.scopeEnds } }),
+  ...(o.versions && { versions: { ...o.versions } }),
+})
+
+/**
+ * A copy of the state for a command to change, much cheaper than a deep clone: everything the engine
+ * changes in place is copied, and what it only ever adds or replaces whole is shared (audit and feed
+ * entries, series points, flights, field values and line-item rows, fork and call frames, the
+ * expedite flag). The
+ * original stays as it was, so `changesBetween(original, copy)` reports what the command did.
+ */
+export function copyState(s: SimState): SimState {
+  return {
+    ...s,
+    objects: each(s.objects, copyObject),
+    activeIds: s.activeIds.slice(),
+    users: each(s.users, (u) => ({ ...u })),
+    nodeStats: each(s.nodeStats, (n) => ({ ...n })),
+    edgeCounts: { ...s.edgeCounts },
+    services: each(s.services, (v) => ({ ...v })),
+    forks: each(s.forks, (f) => ({ ...f, arrived: f.arrived.slice() })),
+    nextArrival: { ...s.nextArrival },
+    lastDistribution: { ...s.lastDistribution },
+    rrCursor: { ...s.rrCursor },
+    feed: s.feed.slice(),
+    series: s.series.slice(),
+    flights: s.flights.slice(),
+  }
+}
+
 export const PRIORITY_RANK: Record<Priority, number> = { low: 0, normal: 1, high: 2, urgent: 3 }
 
 /** How urgent an item is for ordering work: expedited items outrank even urgent ones. */

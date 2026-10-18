@@ -242,7 +242,7 @@ async function main() {
   const observer = await maybe('observer stats', () => getJson(`${OBSERVER}/stats`))
   await maybe('observer stop', () => post(`${OBSERVER}/streams/stop`))
   // An overloaded server is still working through the requests k6 left queued, so the end-of-run
-  // reads wait their turn (DRAIN_MS) and try once more. On one server nginx's 90 s read timeout
+  // reads can be slow to answer (DRAIN_MS) and try once more. On one server nginx's 90 s read timeout
   // answers 504 first. On two, nginx hands a timed-out GET to the other server (proxy_next_upstream),
   // so our own 120 s timeout fires first.
   const overview = await maybe('overview', () => again(() => getJson(`${NGINX}/api/apps/${APP}/overview`, {}, DRAIN_MS)))

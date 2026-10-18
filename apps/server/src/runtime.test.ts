@@ -40,6 +40,22 @@ describe('runtime', () => {
     await rt.stop()
   })
 
+  it('answers reads from the last commit, without waiting for a command still running', async () => {
+    const storage = memoryStorage()
+    const rt = await Runtime.create({ storage })
+    await make(rt, 'DONE')
+    const transact = storage.transact
+    let open!: () => void
+    const gate = new Promise<void>((r) => (open = r))
+    storage.transact = (...args) => gate.then(() => transact(...args))
+    const pending = make(rt, 'PENDING')
+    expect(await numbers(rt)).toEqual(['DONE'])
+    open()
+    await pending
+    expect(await numbers(rt)).toEqual(['DONE', 'PENDING'])
+    await rt.stop()
+  })
+
   it('lets an error thrown by the command itself through, unchanged, with nothing written', async () => {
     const storage = memoryStorage()
     const rt = await Runtime.create({ storage })

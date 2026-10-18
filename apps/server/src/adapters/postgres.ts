@@ -223,6 +223,22 @@ export const migrations: Record<string, Migration> = {
       await db.schema.alterTable('outbox').dropColumn('routed').dropColumn('skipped').execute()
     },
   },
+  '0004_state_json': {
+    async up(db) {
+      // The state is written whole by every command and only ever read back whole. As jsonb, Postgres parsed
+      // it into its binary form on every write: about 90 ms of a 140 ms write at 3,500 items. json keeps the text.
+      await sql`alter table app_state alter column state type json using state::json`.execute(db)
+      // lz4 compresses faster than the default; a server built without it keeps the default.
+      await sql`do $$ begin
+        alter table app_state alter column state set compression lz4;
+      exception when feature_not_supported then null;
+      end $$`.execute(db)
+    },
+    async down(db) {
+      await sql`alter table app_state alter column state set compression default`.execute(db)
+      await sql`alter table app_state alter column state type jsonb using state::jsonb`.execute(db)
+    },
+  },
 }
 
 /** Thrown inside a Kysely transaction to roll it back while still returning a value. */

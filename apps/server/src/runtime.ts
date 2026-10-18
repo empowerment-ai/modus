@@ -9,7 +9,7 @@
 // application, the holder of its clock lock, moves the clock.
 
 import { randomUUID } from 'node:crypto'
-import { advance, buildIndex, changesBetween, type Ctx, type Design, type Id, newSim, projectItem, type ProjectedItem, type SimState } from '@modus-bpm/core'
+import { advance, buildIndex, changesBetween, copyState, type Ctx, type Design, type Id, newSim, projectItem, type ProjectedItem, type SimState } from '@modus-bpm/core'
 import { seedDesign } from '@modus-bpm/core/model/seed'
 import { type ChangeNotice, type Deliveries, type Storage, StorageBusy } from './ports'
 
@@ -177,9 +177,12 @@ export class Runtime {
     return this.command(appId, fn)
   }
 
-  /** Read without changing anything (still ordered after this process's pending commands). */
-  read<T>(appId: Id, fn: (sim: SimState, ctx: Ctx) => T): Promise<T> {
-    return this.serial(appId, () => fn(this.state(appId), this.ctx(appId)))
+  /**
+   * Read the last committed state without changing anything. Not queued behind commands: it sees every
+   * command that finished before it, a caller's own awaited ones included, and none still running.
+   */
+  async read<T>(appId: Id, fn: (sim: SimState, ctx: Ctx) => T): Promise<T> {
+    return fn(this.state(appId), this.ctx(appId))
   }
 
   /** Move the clock of every application this runtime is the ticker for. One failing doesn't stop the rest. */
@@ -244,7 +247,7 @@ export class Runtime {
           try {
             if (stored.state) fresh = { version: stored.version, sim: stored.state, tickedAt: stored.tickedAt }
             const before = stored.state ?? cached.sim
-            sim = structuredClone(before)
+            sim = copyState(before)
             // Taken under the lock: waiting for it doesn't count as clock time already spent.
             const now = Date.now()
             // Catch the clock up from when it was last moved, by whichever server. A state from before

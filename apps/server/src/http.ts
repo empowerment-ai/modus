@@ -49,6 +49,8 @@ import {
   requestsBy,
   type Result,
   searchItems,
+  type SimState,
+  type SimView,
   setExpedite,
   superviseAssign,
   superviseRedistribute,
@@ -170,6 +172,16 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     return reply.code(404).send({ ok: false, error: `No route ${req.method} ${path}` })
   })
 
+  // One view per committed state, shared by every live stream, the overview and the Monitor. A committed
+  // state never changes (commands run on a copy), so its view doesn't either; without this each open
+  // stream computed its own after every change.
+  const views = new WeakMap<SimState, SimView>()
+  const viewOf = (sim: SimState, ctx: Ctx) => {
+    let v = views.get(sim)
+    if (!v) views.set(sim, (v = computeView(sim, ctx)))
+    return v
+  }
+
   // Probes run every few seconds; log them only when something is wrong.
   const quiet = { logLevel: 'warn' as const }
 
@@ -215,7 +227,7 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
   app.get('/api/apps/:app/overview', async (req) => {
     const { app: appId } = appParams.parse(req.params)
     return rt.read(appId, (sim, ctx) => {
-      const v = computeView(sim, ctx)
+      const v = viewOf(sim, ctx)
       return { clock: v.clock, active: v.active, completed: v.completed, rejected: v.rejected, stuck: v.stuck, overdue: v.overdue, bottleneckId: v.bottleneckId, steps: v.nodes, services: v.services }
     })
   })
@@ -229,7 +241,7 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     const { app: appId } = appParams.parse(req.params)
     const refused = requireAdmin(req, monitorOnly)
     if (refused) return send(reply, refused)
-    return rt.read(appId, (sim, ctx) => ({ clock: sim.clock, view: computeView(sim, ctx), expeditedByStep: expeditedByStep(sim), working: workingNow(sim) }))
+    return rt.read(appId, (sim, ctx) => ({ clock: sim.clock, view: viewOf(sim, ctx), expeditedByStep: expeditedByStep(sim), working: workingNow(sim) }))
   })
 
   /** Work in flight over time (a point every 15 sim minutes, the last 3000): only points after `since` when given. */
@@ -678,7 +690,7 @@ export function buildServer(rt: Runtime, opts: ServerOptions = {}): FastifyInsta
     ping.unref()
     const live = liveChanges(reply.raw, () =>
       rt.read(appId, (sim, ctx) => {
-        const v = computeView(sim, ctx)
+        const v = viewOf(sim, ctx)
         return { clock: sim.clock, counts: Object.fromEntries(Object.entries(v.nodes).map(([id, m]) => [id, m.total])), active: v.active }
       }),
       { onError: (err) => reply.log.error({ err }, 'live stream: reading the view failed') },
