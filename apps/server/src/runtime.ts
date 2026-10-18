@@ -9,7 +9,7 @@
 // application, the holder of its clock lock, moves the clock.
 
 import { randomUUID } from 'node:crypto'
-import { advance, buildIndex, changesBetween, type Ctx, type Design, type Id, newSim, projectItem, type ProjectedItem, type SimState } from '@modus-bpm/core'
+import { advance, buildIndex, changesBetween, copyState, type Ctx, type Design, type Id, newSim, projectItem, type ProjectedItem, type SimState } from '@modus-bpm/core'
 import { seedDesign } from '@modus-bpm/core/model/seed'
 import { type ChangeNotice, type Deliveries, type Storage, StorageBusy } from './ports'
 
@@ -247,7 +247,7 @@ export class Runtime {
           try {
             if (stored.state) fresh = { version: stored.version, sim: stored.state, tickedAt: stored.tickedAt }
             const before = stored.state ?? cached.sim
-            sim = structuredClone(before)
+            sim = copyState(before)
             // Taken under the lock: waiting for it doesn't count as clock time already spent.
             const now = Date.now()
             // Catch the clock up from when it was last moved, by whichever server. A state from before

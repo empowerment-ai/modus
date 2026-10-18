@@ -102,7 +102,8 @@ const tokenSig = (o: SimObject) => o.tokens.map((t) => `${t.id}|${t.nodeId}|${t.
 
 /**
  * What a command changed: the audit entries to log, the items to re-project, and messages for the outbox.
- * `before` must be a deep snapshot (structuredClone); a shallow copy shares the objects and reports nothing.
+ * `after` must be a copy of `before` the command changed (copyState, or a deep clone); a shallow copy
+ * shares the objects and reports nothing.
  */
 export function changesBetween(before: SimState, after: SimState): Changes {
   const out: Changes = { itemIds: [], entries: [], outbox: [] }
