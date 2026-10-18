@@ -1,6 +1,6 @@
 # Item rows: write only what a command changed
 
-Status: proposed 2026-10-18. Follows the speed-ups in
+Status: approved 2026-10-18, with both open questions decided the other way: item state lives in the `item` projection row, and the memory adapter's files are written per item too. Follows the speed-ups in
 [2026-10-13-load-tests-design.md](2026-10-13-load-tests-design.md#speed-ups-2026-10-18). Comes
 before per-item locking (4a), which still needs M1.
 
@@ -38,18 +38,18 @@ Measured on the test Postgres with the same 3,500 items stored the proposed way:
 
 - `app_state.state` keeps everything except `objects`: the 85 KB, written by every command as
   now. Version, clock time and the row lock stay where they are.
-- New `item_state (app_id, item_id, version bigint, ord bigserial, state json lz4)`, primary
-  key `(app_id, item_id)`, index on `(app_id, version)`. One row per item: its `SimObject` as
-  the engine keeps it. `version` is the application version of the commit that last wrote it.
-  `ord` is assigned on first insert and never changes: loading `order by ord` rebuilds
-  `objects` in the order the items were created. The engine iterates `objects` in places (ties
-  in sorting, search), and every server must hold the same order.
-- A command upserts the rows of the items it changed, in `objects` order, with the new version.
+- The `item` projection row gains `state json` (lz4), the item's `SimObject` as the engine
+  keeps it, and `ord bigint`, the item's position in `objects`, with an index on
+  `(app_id, version)`. `version` (already there) is the application version of the commit that
+  last wrote the row. Items are never removed, so an item's position never changes: loading
+  `order by ord` rebuilds `objects` in the same order. The engine iterates `objects` in places
+  (ties in sorting, search), and every server must hold the same order.
+- A command rewrites the rows of every item it changed: projection columns, state and work-item
+  rows together. That is more items than today's projection writes, which covered only items
+  whose projected fields moved; a worker's lease, say, now rewrites its item's rows too.
 
-Rejected: putting the object into the `item` projection row. Projections are the read model M3
-will query and may reshape, and they are written only for items whose projected fields moved.
-The state row is the engine's private format, written whenever anything in the item changed (a
-worker's lease, say). Keeping them apart keeps both simple.
+Considered: a separate `item_state` table, keeping the engine's private format apart from the
+read model M3 will query. One row per item, written whole, is simpler to keep consistent.
 
 ## 2. Which items changed
 
@@ -70,30 +70,40 @@ false negative would lose a change, so the tests check the opposite way too (sec
 
 ## 3. The port
 
-- `Write` gains `changed: Id[]`: the items whose state rows to write. `state` stays the whole
-  `SimState` (adapters store what they need of it).
-- `Stored.state` (handed over under the lock when another server committed since `known`) and
-  `StateStore.load` give way to a delta: the application row as stored, plus the item rows with
-  `version > known`, in `ord` order. `known = 0` is a full load. A core helper
-  `withItems(base, rest, objects)` builds the new state: the stored rest, the base's objects with
+- `Write.items` becomes the projections of every changed item, in `objects` order; storage
+  writes each one's state from `Write.state.objects`. `state` stays the whole `SimState`.
+- `Stored.state` (handed over under the lock when another server committed since `known`) gives
+  way to `Stored.changes`: the application row as stored, plus the items written after `known`,
+  in `objects` order. `StateStore.since(appId, version)` returns the same outside a transaction;
+  `StateStore.load` still returns the whole state (startup, tests). A core helper
+  `withChanges(base, changes)` builds the new state: the stored rest, the base's objects with
   the newer ones replaced and the new ones appended. The cached state is never changed: the new
   `objects` map is a fresh copy of 3,500 references (well under 1 ms).
 - `ChangeNotice` is unchanged. Hearing one, a server loads the delta since its cached version
   instead of the whole state. That covers "apply the other server's changes".
 
 **Memory adapter.** It holds whole states in memory as now, keeps each item's last-written
-version, and answers deltas the same way, so the contract suite checks both adapters alike.
-With a data directory it still writes the whole state to `state-<app>.json`: it serves one
-process, and per-item files would add little. Its JSON round trip of the whole state per write
-becomes a round trip of the changed items.
+version, and answers deltas the same way, so the contract suite checks both adapters alike. Its
+JSON round trip of the whole state per write becomes a round trip of the rest and the changed
+items. With a data directory it writes per item too: `state-<app>.jsonl`, one line per commit
+with the version, clock time, the rest and the items it changed. A line is one append, so a
+commit is on disk whole or (a torn last line) not at all. Once the lines since the last full one
+add up to more than a full snapshot, the commit writes the file afresh as one full line instead.
+Loading replays the lines. A data directory from before (`state-<app>.json` and
+`meta-<app>.json`) loads as it did, and its first commit writes the new file in full and removes
+the old ones. One file per item was considered: thousands of files, a rename each per change, and
+no way to land one commit's items together.
 
 ## 4. Migration `0005_item_state`
 
-Create `item_state`. For each `app_state` row with a state, insert one row per entry of
-`state->'objects'` in stored order (`json_each ... with ordinality`, order preserved because the
-column is `json` since 0004), with the row's version; then rewrite the state without `objects`.
-In one transaction, like every migration. Down: fold the rows back into the state in `ord` order
-and drop the table.
+Add `item.state` and `item.ord`. For each `app_state` row with a state, write every item's row
+in full (projection, work-item rows, state, position, the row's version), then store the state
+without `objects`. Every item: projections were written only for items whose projected fields
+moved, and a database from before projections (0002) has none until the runtime backfills them,
+which happens after migrations. So the migration projects each item itself, with the core's
+`projectItem` and the stored design (the sample design when none is stored, as the runtime
+does). In one transaction, like every migration. Down: fold the rows back into the state in `ord`
+order and drop the columns.
 
 Rolling upgrades: the chart rolls pods on Postgres, so old and new servers overlap. An old server
 reads `app_state.state` whole and would find no items, and its commits write no item rows, so
@@ -111,13 +121,15 @@ reload (`onError(..., 'listen')`); a reconnect does a full load.
 - Core: `changedItems` never misses a change. In the copy test's random runs (simulated and
   live, versioned too), every item whose JSON differs between before and after is in the list,
   and it adds almost nothing else. Plus a breaking test per copied level, as for `copyState`.
-- Contract (memory and Postgres): a write stores only the changed rows; a full load and a delta
+- Contract (memory and Postgres): a write stores only the listed items; a full load and a delta
   rebuild the same state, key order included; a delta since an older version brings every item
   changed since; items that never changed keep their version.
 - Runtime: two runtimes on one store, a random series of commands on both: after each, the
   incremental reload's state equals a full load's, as JSON.
-- Migration: a database at 0004 with a whole state splits into rows and loads equal; down
-  restores it.
+- Migration: a database at 0004 with a whole state splits into rows and loads equal; one from
+  before 0002 gets full projections from the migration; down restores the whole state.
+- Memory files: replaying the log equals the state in memory; a torn last line is skipped; a
+  compacted file loads the same; an old-format directory loads and converts.
 - Load: `baseline` with 1 and 2 servers, back to back with the run before the change.
 
 ## 6. Expected effect
@@ -136,9 +148,3 @@ that is what 4a, per-item locking, removes.
 - `advance` scans every active token once per simulated minute; with `TIME_SCALE=60` that is
   once per real second per command. A due-time index would make it cheaper; also later.
 - Per-item locking (4a) after M1's engine split.
-
-## Open questions
-
-1. A separate `item_state` table rather than state inside the `item` projection row
-   (recommended above).
-2. The memory adapter's snapshot files stay whole-state (recommended), or become per-item too.
