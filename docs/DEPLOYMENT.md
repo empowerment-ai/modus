@@ -532,7 +532,7 @@ Modus is a prototype the snapshot format follows the engine's state shape and is
 or migrated: an upgrade can require starting with fresh state. The stored `design.json` always
 wins over the sample design built into the image; delete it to pick up a new sample. With
 PostgreSQL, the server applies pending schema migrations at startup (recorded in the
-`kysely_migration` table); the state inside the JSONB rows follows the same caveat as the
+`kysely_migration` table); the state inside the JSON rows follows the same caveat as the
 snapshots. A Helm pre-upgrade migration job is planned, and SQL Server and Oracle installs will
 get migration scripts DBAs can review and run.
 
